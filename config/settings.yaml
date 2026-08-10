@@ -183,15 +183,18 @@ strategy:
   allow_single_leg_bracket: true
 
 # =============================================================
-# DATA — live Kotak UAT websocket (replaces synthetic)
+# DATA — live India feed (yfinance spot + BS options) is the default
 # =============================================================
 data:
   historical_source: yfinance       # 'yfinance' (free), 'nselib', 'truedata', 'dhan'
   truedata_api_key: ""
   nselib_cache: data_cache/nselib
-  # Feed mode: 'synthetic' | 'live_uat' (real Kotak UAT ticks — token discovery wip)
-  # 'live_uat' connects but falls back to synthetic if no ticks within 30s
-  live_feed: synthetic
+  # Feed modes:
+  #   'live_india'  — REAL NIFTY/BANKNIFTY spot from yfinance + Black-Scholes option pricing
+  #                   using real India VIX. Best for paper trading. No broker creds.
+  #   'synthetic'   — random walk (kept for unit tests / offline)
+  #   'live_uat'    — Kotak Neo UAT websocket (token discovery wip)
+  live_feed: live_india
   live_uat_fallback_sec: 30
   resample_intervals: [1, 5, 15, 60]
   news:

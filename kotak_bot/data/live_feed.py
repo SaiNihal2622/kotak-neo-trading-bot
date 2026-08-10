@@ -1,10 +1,12 @@
-"""Live tick feed — three modes:
+"""Live tick feed — four modes:
 - 'synthetic': generates realistic OHLCV for paper testing (no creds needed)
+- 'live_india': REAL NIFTY/BANKNIFTY spot via yfinance + Black-Scholes option pricing
+               (best for paper trading; uses live market data, no broker creds)
 - 'live_uat': subscribes to Kotak Neo UAT websocket (real ticks from UAT)
 - 'live_ws': reserved for prod
 
 Public surface:
-    feed = LiveFeed(mode="synthetic", broker=PaperClient(...))
+    feed = LiveFeed(mode="live_india", broker=PaperClient(...))
     feed.start()
     feed.get_ltp(symbol)
     feed.get_momentum(symbol, window=20)
@@ -26,6 +28,47 @@ from loguru import logger
 
 from kotak_bot.broker.base import Tick
 from kotak_bot.utils.clock import now_ist
+
+
+# ---------------------------------------------------------------------------
+# Black-Scholes helpers (used by live_india mode to price options from a real
+# spot + a real India VIX). Public-domain formula; no external dep.
+# ---------------------------------------------------------------------------
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF using math.erf (no scipy dep)."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def bs_price(spot: float, strike: float, t_years: float, vol: float, r: float, opt_type: str) -> float:
+    """Black-Scholes price for a European option. Returns 0 if t_years<=0."""
+    if t_years <= 0 or vol <= 0 or spot <= 0 or strike <= 0:
+        # intrinsic only
+        if opt_type.upper() == "CE":
+            return max(0.0, spot - strike)
+        return max(0.0, strike - spot)
+    sqrt_t = math.sqrt(t_years)
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol * vol) * t_years) / (vol * sqrt_t)
+    d2 = d1 - vol * sqrt_t
+    if opt_type.upper() == "CE":
+        price = spot * _norm_cdf(d1) - strike * math.exp(-r * t_years) * _norm_cdf(d2)
+    else:
+        price = strike * math.exp(-r * t_years) * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
+    return max(0.01, price)
+
+
+def bs_iv_from_price(price: float, spot: float, strike: float, t_years: float, r: float, opt_type: str) -> float:
+    """Bisection-based implied vol from a market price. Returns the IV (annualized)."""
+    if price <= 0 or t_years <= 0:
+        return 0.0
+    lo, hi = 0.01, 3.0
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        p = bs_price(spot, strike, t_years, mid, r, opt_type)
+        if p > price:
+            hi = mid
+        else:
+            lo = mid
+    return 0.5 * (lo + hi)
 
 
 class LiveFeed:
@@ -61,6 +104,9 @@ class LiveFeed:
             self._running = True
             if self.mode == "synthetic":
                 self._thread = threading.Thread(target=self._synthetic_loop, name="synth-feed", daemon=True)
+                self._thread.start()
+            elif self.mode == "live_india":
+                self._thread = threading.Thread(target=self._live_india_loop, name="live-india-feed", daemon=True)
                 self._thread.start()
             elif self.mode in ("live_uat", "live_ws"):
                 # discover tokens for our symbols
@@ -314,3 +360,130 @@ class LiveFeed:
                             expiry=now.strftime("%Y-%m-%d"),
                             underlying=sym,
                         ))
+
+    # ------- live India feed: real spot from yfinance + Black-Scholes for options -------
+    def _live_india_loop(self) -> None:
+        """Fetch real NIFTY/BANKNIFTY spot + India VIX from yfinance every cycle,
+        then emit real-priced option ticks via Black-Scholes for ATM ±4 strikes.
+
+        This is the 'live_india' mode: prices reflect the real market (modulo
+        NSE's 15-min yfinance delay during market hours, and a synthetic spread
+        bid/ask since yfinance doesn't give live option book depth).
+        Falls back to last-known-good prices if yfinance errors out.
+        """
+        try:
+            import yfinance as yf
+        except ImportError:
+            logger.error("live_india mode requires yfinance. `pip install yfinance` and restart.")
+            return
+
+        # yfinance tickers
+        SPOT_TICKERS = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK"}
+        params = {
+            "NIFTY":     {"lot": 75,  "step": 50,  "min_tte_days": 0, "expiry": None},
+            "BANKNIFTY": {"lot": 30,  "step": 100, "min_tte_days": 0, "expiry": None},
+        }
+        RISK_FREE = 0.06  # India 10-yr ~6%
+        SPREAD_FACTOR = 0.02  # 2% spread baseline (0.5x in tight liquidity, 2x in stress)
+
+        # persistent state
+        spot = {"NIFTY": 24500.0, "BANKNIFTY": 52000.0}
+        vix = {"NIFTY": 14.0, "BANKNIFTY": 14.0}  # default fallback
+        last_fetch = 0.0
+        fetch_interval = 30.0  # refresh from yfinance every 30s (rate-limit friendly)
+        strikes = {"NIFTY": [], "BANKNIFTY": []}
+        regime = {"NIFTY": 0, "BANKNIFTY": 0}
+        regime_timer = 0.0
+        rng = random.Random()  # not seeded — we WANT realistic noise
+
+        logger.info(
+            "LiveIndia feed starting: real NIFTY/BANKNIFTY spot from yfinance, "
+            "options priced via Black-Scholes using India VIX"
+        )
+
+        while self._running:
+            try:
+                time.sleep(0.5)
+                now = now_ist()
+                expiry_str = now.strftime("%d%b%y").upper()
+                expiry_iso = now.strftime("%Y-%m-%d")
+
+                # 1) refresh real spot + VIX from yfinance every fetch_interval seconds
+                if time.time() - last_fetch > fetch_interval:
+                    try:
+                        for sym, ticker in SPOT_TICKERS.items():
+                            hist = yf.Ticker(ticker).history(period="1d")
+                            if len(hist) > 0:
+                                spot[sym] = float(hist["Close"].iloc[-1])
+                        vhist = yf.Ticker("^INDIAVIX").history(period="1d")
+                        if len(vhist) > 0:
+                            vix_val = float(vhist["Close"].iloc[-1])
+                            vix["NIFTY"] = vix["BANKNIFTY"] = vix_val
+                        last_fetch = time.time()
+                        logger.info(
+                            f"LiveIndia refresh: NIFTY={spot['NIFTY']:.2f} "
+                            f"BANKNIFTY={spot['BANKNIFTY']:.2f} VIX={vix['NIFTY']:.2f}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"LiveIndia yfinance refresh failed: {e} (using last-known)")
+
+                # 2) regime switch every 60-180s (drives IV bump for realism)
+                if time.time() - regime_timer > rng.uniform(60, 180):
+                    regime["NIFTY"] = regime["BANKNIFTY"] = rng.choice([0, 0, 0, 1, 1, 2])
+                    regime_timer = time.time()
+                regime_mult = [1.0, 1.0, 1.3][regime["NIFTY"]]
+
+                # 3) time to expiry — weekly expiry on Thursday, but we approximate with
+                #    "days to next Thursday" if today's expiry is past
+                weekday = now.weekday()  # 0=Mon ... 3=Thu ... 6=Sun
+                if weekday <= 3:
+                    days_to_expiry = 3 - weekday
+                else:
+                    days_to_expiry = 7 - weekday + 3  # next Thu
+                # include the time-of-day fraction
+                secs_left = days_to_expiry * 86400 + (15 * 3600 + 30 * 60 - (now.hour * 3600 + now.minute * 60 + now.second))
+                t_years = max(1.0 / 365.0, secs_left / (365.0 * 86400.0))
+
+                # 4) emit spot + options for each underlying
+                for sym in ("NIFTY", "BANKNIFTY"):
+                    p = params[sym]
+                    step = p["step"]
+                    atm = round(spot[sym] / step) * step
+                    strikes[sym] = [atm + (i - 4) * step for i in range(9)]
+                    iv_decimal = (vix[sym] / 100.0) * regime_mult
+
+                    # spot tick (real price)
+                    self._dispatch(Tick(
+                        symbol=sym,
+                        ltp=round(spot[sym], 2),
+                        bid=round(spot[sym] - 0.05, 2),
+                        ask=round(spot[sym] + 0.05, 2),
+                        volume=0, oi=0,
+                        timestamp=now, exchange="NSE", underlying=sym,
+                    ))
+
+                    for k in strikes[sym]:
+                        for opt_type in ("CE", "PE"):
+                            theo = bs_price(spot[sym], k, t_years, iv_decimal, RISK_FREE, opt_type)
+                            # bid/ask spread: tighter near ATM, wider far OTM
+                            distance = abs(spot[sym] - k) / spot[sym]
+                            spread_pct = SPREAD_FACTOR * (0.5 + distance * 10)
+                            half = max(0.05, theo * spread_pct)
+                            bid = round(max(0.05, theo - half), 2)
+                            ask = round(theo + half, 2)
+                            ltp = round(theo, 2)
+                            # synthetic OI/vol proportional to ATM-OI typical levels
+                            base_oi = {"NIFTY": 50000, "BANKNIFTY": 20000}[sym]
+                            oi = int(base_oi * max(0.05, math.exp(-distance * 5)) * rng.uniform(0.5, 1.5))
+                            vol = int(oi * rng.uniform(0.05, 0.3))
+                            sym_full = f"{sym}{expiry_str}{int(k)}{opt_type}"
+                            self._dispatch(Tick(
+                                symbol=sym_full, ltp=ltp, bid=bid, ask=ask,
+                                volume=vol, oi=oi,
+                                timestamp=now, exchange="NFO",
+                                strike=k, option_type=opt_type,
+                                expiry=expiry_iso, underlying=sym,
+                            ))
+            except Exception as e:
+                logger.exception(f"LiveIndia loop error: {e}")
+                time.sleep(2)
