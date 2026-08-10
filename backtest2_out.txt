@@ -1,0 +1,49 @@
+Data: 361 rows, 2025-02-18 to 2026-08-07
+After indicators: 341 rows
+============================================================
+STRATEGY 1: Short strangle in low-ADX (range-bound) market
+============================================================
+
+  Short strangle in range
+    Trades: 5, Total: 9.2%, Annual: 6.7%, Sharpe: 0.13, Max DD: -7.3%, Win: 52% (175W/164L)
+
+============================================================
+STRATEGY 2: Mean reversion (RSI<30 buy, RSI>50 sell)
+============================================================
+
+  Mean reversion
+    Trades: 4, Total: -7.7%, Annual: -5.7%, Sharpe: -0.79, Max DD: -16.5%, Win: 49% (167W/173L)
+
+============================================================
+STRATEGY 3: Buy only on confirmed uptrend (EMA + ADX>25)
+============================================================
+
+  Buy on uptrend
+    Trades: 0, Total: 5.2%, Annual: 3.8%, Sharpe: -0.09, Max DD: -15.2%, Win: 52% (177W/163L)
+
+============================================================
+STRATEGY 4: Sell in trending, buy in range (regime-based)
+============================================================
+
+  Regime contrarian
+    Trades: 9, Total: -9.7%, Annual: -7.3%, Sharpe: -0.90, Max DD: -19.2%, Win: 48% (164W/176L)
+
+============================================================
+STRATEGY 5: Buy & Hold benchmark
+============================================================
+
+  Buy & Hold NIFTY
+    Trades: 1, Total: 6.0%, Annual: 4.4%, Sharpe: -0.05, Max DD: -15.2%, Win: 52% (178W/162L)
+
+============================================================
+STRATEGY 6: Bollinger Band mean reversion
+============================================================
+
+  Bollinger mean reversion
+    Trades: 4, Total: 2.2%, Annual: 1.6%, Sharpe: -0.28, Max DD: -14.0%, Win: 54% (166W/140L)
+
+============================================================
+SUMMARY
+============================================================
+The best strategy (if any has Sharpe > 0.5) is what we should pursue.
+If all are negative or near-zero, the regime-based selector (iron condor in range, strangle in range) is the better path.

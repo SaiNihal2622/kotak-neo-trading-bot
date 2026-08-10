@@ -1,0 +1,256 @@
+﻿======================================================================
+QuotesAPI.get_quotes source:
+======================================================================
+    def get_quotes(self, instrument_tokens=None, quote_type=None):
+        if not quote_type:
+            quote_type = 'all'
+        neo_symbol_str = ",".join(f"{item['exchange_segment']}|{item['instrument_token']}" for item in instrument_tokens)
+        encoded_neo_symbol_str = urllib.parse.quote(neo_symbol_str)
+        header_params = {
+            "Authorization": self.api_client.configuration.consumer_key,
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+
+        URL = self.api_client.configuration.get_url_details("quotes_neo_symbol")
+        URL = URL.format(neo_symbols=encoded_neo_symbol_str, quote_type=quote_type)
+        quotes = self.rest_client.request(
+            url=URL, method='GET',
+            headers=header_params
+        )
+        try:
+            quotes_data = quotes.json()
+        except JSONDecodeError:
+            return {
+                "Error": "Unexpected response format. Expected JSON but received something else."
+            }
+        return quotes_data
+
+
+======================================================================
+ScripMasterAPI source:
+======================================================================
+    def scrip_master_init(self, exchange_segment=None):
+
+        header_params = {
+            "Authorization": self.api_client.configuration.consumer_key,
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+
+        URL = self.api_client.configuration.get_url_details("scrip_master")
+
+        try:
+            scrip_report = self.rest_client.request(url=URL, method='GET', headers=header_params)
+            if scrip_report.status_code != 200:
+                return scrip_report.json()
+            scrip_report = scrip_report.json()["data"]
+
+            if exchange_segment:
+                exchange_segment = settings.exchange_segment[exchange_segment]
+                exchange_segment_csv = [file for file in scrip_report["filesPaths"] if exchange_segment.lower() in file.lower()]
+                if exchange_segment_csv:
+                    return exchange_segment_csv[0]
+                else:
+                    return {"Error": "Exchange segment not found"}
+            return scrip_report
+        except ApiException as ex:
+            return {"error": ex}
+
+
+======================================================================
+NeoAPI.subscribe source:
+======================================================================
+    def subscribe(self, instrument_tokens, isIndex=False, isDepth=False):
+
+        """
+            Subscribe to live feeds for the given instrument tokens.
+
+            Args:
+                instrument_tokens (List): A JSON-encoded list of instrument tokens to subscribe to.
+                isIndex (bool): Whether the instrument is an index. Default is False.
+                isDepth (bool): Whether to subscribe to depth data. Default is False.
+
+            Raises:
+                ValueError: If the login flow is not completed.
+
+            Returns:
+                Live Feed from the socket
+
+            The function establishes a WebSocket connection to the trading platform and subscribes to live feeds for the specified instrument tokens. When a new feed is received, the function's internal callback functions are called with the feed data as their arguments. If an error occurs, the on_error function is called with the error message as its argument.
+        """
+
+        
+        if self.configuration.edit_token and self.configuration.edit_sid:
+            if not self.NeoWebSocket:
+                self.check_callbacks()
+                self.NeoWebSocket = neo_api_client.NeoWebSocket(self.configuration.edit_sid,
+                                                                self.configuration.edit_token,
+                                                                self.configuration.serverId,
+                                                                data_center=None)
+                self.set_neowebsocket_callbacks()
+            self.NeoWebSocket.get_live_feed(instrument_tokens=instrument_tokens, isIndex=isIndex, isDepth=isDepth)
+        else:
+            print("Please complete the Login Flow to Subscribe the Scrips")
+
+
+======================================================================
+OrderAPI.order_placing source:
+======================================================================
+    def order_placing(
+            self,
+            exchange_segment,
+            product,
+            price,
+            order_type,
+            quantity,
+            validity,
+            trading_symbol,
+            transaction_type,
+            amo=None,
+            disclosed_quantity=None,
+            market_protection=None,
+            pf=None,
+            trigger_price=None,
+            tag=None,
+            scrip_token=None,
+            square_off_type=None,
+            stop_loss_type=None,
+            stop_loss_value=None,
+            square_off_value=None,
+            last_traded_price=None,
+            trailing_stop_loss=None,
+            trailing_sl_value=None,
+    ):
+        try:
+            header_params = {
+                "Sid": self.api_client.configuration.edit_sid,
+                "Auth": self.api_client.configuration.edit_token,
+                "Content-Type": "application/x-www-form-urlencoded",
+            }
+
+            body_params = {
+                "am": amo,
+                "dq": disclosed_quantity,
+                "es": exchange_segment,
+                "mp": market_protection,
+                "pc": product,
+                "pf": pf,
+                "pr": price,
+                "pt": order_type,
+                "qt": quantity,
+                "rt": validity,
+                "tp": trigger_price,
+                "ts": trading_symbol,
+                "tt": transaction_type,
+                "ig": tag,
+                "tk": scrip_token,
+                "sot": square_off_type,
+                "slt": stop_loss_type,
+                "slv": stop_loss_value,
+                "sov": square_off_value,
+                "lat": last_traded_price,
+                "tlt": trailing_stop_loss,
+                "tsv": trailing_sl_value,
+                "os": self.order_source,
+            }
+
+            query_params = {"sId": self.api_client.configuration.serverId}
+            URL = self.api_client.configuration.get_url_details("place_order")
+            orders_resp = self.rest_client.request(
+                url=URL, method='POST',
+                query_params=query_params,
+                headers=header_params,
+                body=body_params
+            )
+
+            return orders_resp.json()
+        except ApiException as ex:
+            return {"error": ex}
+
+
+======================================================================
+MarginAPI.margin_init source:
+======================================================================
+    def margin_init(self, exchange_segment, price, order_type, product, quantity, instrument_token, transaction_type,
+                    trigger_price, broker_name, branch_id, stop_loss_type, stop_loss_value,
+                    square_off_type, square_off_value, trailing_stop_loss, trailing_sl_value):
+
+        header_params = {
+            "Sid": self.api_client.configuration.edit_sid,
+            "Auth": self.api_client.configuration.edit_token,
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+
+        body_params = {
+            "exSeg": exchange_segment,
+            "prc": price,
+            "prcTp": order_type,
+            "prod": product,
+            "qty": quantity,
+            "tok": instrument_token,
+            "trnsTp": transaction_type,
+            "trgPrc": trigger_price,
+            "brkName": broker_name,
+            "brnchId": branch_id,
+            "slAbsOrTks": stop_loss_type,
+            "slVal": stop_loss_value,
+            "sqrOffAbsOrTks": square_off_type,
+            "sqrOffVal": square_off_value,
+            "trailSL": trailing_stop_loss,
+            "tSLTks": trailing_sl_value,
+        }
+
+        query_params = {"sId": self.api_client.configuration.serverId}
+
+        try:
+            URL = self.api_client.configuration.get_url_details("margin")
+            margin_resp = self.rest_client.request(
+                url=URL, method='POST',
+                query_params=query_params,
+                headers=header_params,
+                body=body_params
+            )
+
+            return {"data": json.loads(margin_resp.text)}
+
+        except ApiException as ex:
+            return {"error": ex}
+
+
+======================================================================
+NeoWebSocket class methods:
+======================================================================
+  append_ohlc_data(self, new_dict)
+  call_quotes(self)
+  channel_segregation(self, tmp_token_list)
+  depth_resp_mapping(self, response_data)
+  format_tokens_live(self, instrument_tokens)
+  format_un_sub_list(self, instrument_tokens)
+  get_formatted_data(self, instrument_tokens)
+  get_live_feed(self, instrument_tokens, isIndex, isDepth)
+  get_order_feed(self)
+  input_validation(self, instrument_tokens)
+  is_message_for_subscription(self, message)
+  on_hsi_close(self)
+  on_hsi_error(self, error)
+  on_hsi_message(self, message)
+  on_hsi_open(self)
+  on_hsm_close(self)
+  on_hsm_error(self, error)
+  on_hsm_message(self, message)
+  on_hsm_open(self)
+  prepare_un_sub(self)
+  quote_resp_mapper(self, response_data, quote_type=None)
+  quote_response_formatter(self, message)
+  quote_type_filter(self, new_dict, quote_type)
+  quote_type_validation(self, quote_type)
+  remove_items(self, un_sub_json)
+  response_format(self, response_data, quote_type)
+  start_hsi_ping_thread(self)
+  start_hsi_websocket(self)
+  start_hsi_websocket_thread(self)
+  start_hsm_ping_thread(self)
+  start_websocket(self)
+  start_websocket_thread(self)
+  subscribe_scripts(self, channel_tokens)
+  un_subscribe_list(self, instrument_tokens, isIndex=False, isDepth=False)
+  un_subscription(self)

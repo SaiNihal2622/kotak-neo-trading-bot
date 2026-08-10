@@ -1,0 +1,13 @@
+[2026-08-08 20:25 IST] Heartbeat cron
+- Python processes in last 2h: 0 (none alive)
+- Market hours: NO (Saturday 20:25 IST, market closed Mon-Fri 9:00-15:30)
+- Bot action: SKIP (off-hours)
+- bot_stderr.log: no Traceback/FATAL/Killed/Exception in tail; last log entry 2026-08-07 16:51 (Friday close)
+- Dashboard port 8501: was DOWN → restarted
+  - PID 16196, ".\.venv\Scripts\python.exe" -u -m streamlit run dashboard\app.py
+  - Health check after restart: 200 OK
+- Telegram alert: FAILED
+  - getMe → 404 Not Found (token 8859774824:...AAGCzAl1qDUnehmxHAHraMbT9S7id_C4lc8 not recognized)
+  - Bot ID 8859774824 appears revoked
+  - sendMessage → 404 same cause
+  - User needs to regenerate bot via @BotFather and update TELEGRAM_BOT_TOKEN in config/credentials.env

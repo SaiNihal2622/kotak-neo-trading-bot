@@ -1,0 +1,30 @@
+=== FINAL CHECK @ 2026-08-10 01:09:31 IST ===
+
+[1] Power plan: Power Scheme GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (High performance)
+[2] Python processes:
+
+   Id StartTime          
+   -- ---------          
+ 1600 10-08-2026 01:09:30
+ 9824 10-08-2026 01:09:30
+12472 10-08-2026 00:00:31
+12548 10-08-2026 00:00:31
+
+
+
+[3] Dashboard health: 200 OK
+[4] Telegram: TELEGRAM_CHAT_ID=8537408638
+[5] Last 5 bot log lines:
+    2026-08-08 20:43:08.974 | INFO    | __main__:run_paper:117 | Data feed: kotak_ws (live UAT  but currently still using synthetic in this build)
+    2026-08-08 20:43:08.975 | INFO    | kotak_bot.data.live_feed:_synthetic_loop:142 | Synthetic feed generating ticks for NIFTY, BANKNIFTY + 5 strikes each (dated symbol format)
+    2026-08-08 20:43:08.976 | INFO    | kotak_bot.data.live_feed:start:64 | LiveFeed started (mode=synthetic)
+    2026-08-08 20:43:09.585 | INFO    | __main__:run_paper:149 | Dhan not enabled (no creds)  running without it
+    2026-08-08 20:43:09.586 | INFO    | kotak_bot.alerts.telegram_commands:start:79 | TelegramCommandHandler started
+[6] Recent errors (last 50 lines):
+    none
+[7] Paper state:
+    cash: Rs.300,000
+    orders: 0
+    positions: 0
+    realized_pnl: Rs.0
+[8] Crons (via subprocess):

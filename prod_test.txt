@@ -1,0 +1,5 @@
+DhanDataFeed created: enabled=False, package_available=True
+Kotak research PDF URL found: False
+BracketOrderSpec OK: entry=100 SL=50 target=150 trailing=True
+OrderManager with bracket support: OK
+ALL OK

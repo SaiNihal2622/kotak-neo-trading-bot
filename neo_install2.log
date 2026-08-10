@@ -1,0 +1,122 @@
+﻿Processing .\kotak-neo-bot\neo_api_src
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting bidict==0.22.1 (from neo-api-client==2.0.0)
+  Downloading bidict-0.22.1-py3-none-any.whl.metadata (10 kB)
+Collecting certifi==2022.12.7 (from neo-api-client==2.0.0)
+  Downloading certifi-2022.12.7-py3-none-any.whl.metadata (2.9 kB)
+Collecting idna==2.10 (from neo-api-client==2.0.0)
+  Downloading idna-2.10-py2.py3-none-any.whl.metadata (9.1 kB)
+Collecting numpy==2.1.0 (from neo-api-client==2.0.0)
+  Downloading numpy-2.1.0-cp312-cp312-win_amd64.whl.metadata (59 kB)
+Collecting pyjsparser==2.7.1 (from neo-api-client==2.0.0)
+  Downloading pyjsparser-2.7.1.tar.gz (24 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting PyJWT==2.6.0 (from neo-api-client==2.0.0)
+  Downloading PyJWT-2.6.0-py3-none-any.whl.metadata (4.0 kB)
+Collecting python-dateutil==2.8.2 (from neo-api-client==2.0.0)
+  Downloading python_dateutil-2.8.2-py2.py3-none-any.whl.metadata (8.2 kB)
+Collecting python-dotenv==1.0.0 (from neo-api-client==2.0.0)
+  Downloading python_dotenv-1.0.0-py3-none-any.whl.metadata (21 kB)
+Collecting requests==2.32.3 (from neo-api-client==2.0.0)
+  Downloading requests-2.32.3-py3-none-any.whl.metadata (4.6 kB)
+Collecting six==1.16.0 (from neo-api-client==2.0.0)
+  Downloading six-1.16.0-py2.py3-none-any.whl.metadata (1.8 kB)
+Collecting urllib3==1.26.14 (from neo-api-client==2.0.0)
+  Downloading urllib3-1.26.14-py2.py3-none-any.whl.metadata (47 kB)
+Collecting websocket-client==1.8.0 (from neo-api-client==2.0.0)
+  Downloading websocket_client-1.8.0-py3-none-any.whl.metadata (8.0 kB)
+Collecting websockets==8.1 (from neo-api-client==2.0.0)
+  Downloading websockets-8.1.tar.gz (58 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting pandas==2.2.3 (from neo-api-client==2.0.0)
+  Using cached pandas-2.2.3-cp312-cp312-win_amd64.whl.metadata (19 kB)
+Collecting asyncio==3.4.3 (from neo-api-client==2.0.0)
+  Downloading asyncio-3.4.3-py3-none-any.whl.metadata (1.7 kB)
+Requirement already satisfied: pytz>=2020.1 in .\kotak-neo-bot\.venv\Lib\site-packages (from pandas==2.2.3->neo-api-client==2.0.0) (2026.3.post1)
+Requirement already satisfied: tzdata>=2022.7 in .\kotak-neo-bot\.venv\Lib\site-packages (from pandas==2.2.3->neo-api-client==2.0.0) (2026.3)
+Requirement already satisfied: charset-normalizer<4,>=2 in .\kotak-neo-bot\.venv\Lib\site-packages (from requests==2.32.3->neo-api-client==2.0.0) (3.4.9)
+Downloading asyncio-3.4.3-py3-none-any.whl (101 kB)
+Downloading bidict-0.22.1-py3-none-any.whl (35 kB)
+Downloading certifi-2022.12.7-py3-none-any.whl (155 kB)
+Downloading idna-2.10-py2.py3-none-any.whl (58 kB)
+Downloading numpy-2.1.0-cp312-cp312-win_amd64.whl (12.6 MB)
+   ---------------------------------------- 12.6/12.6 MB 3.5 MB/s  0:00:03
+Using cached pandas-2.2.3-cp312-cp312-win_amd64.whl (11.5 MB)
+Downloading PyJWT-2.6.0-py3-none-any.whl (20 kB)
+Downloading python_dateutil-2.8.2-py2.py3-none-any.whl (247 kB)
+Downloading python_dotenv-1.0.0-py3-none-any.whl (19 kB)
+Downloading requests-2.32.3-py3-none-any.whl (64 kB)
+Downloading urllib3-1.26.14-py2.py3-none-any.whl (140 kB)
+Downloading six-1.16.0-py2.py3-none-any.whl (11 kB)
+Downloading websocket_client-1.8.0-py3-none-any.whl (58 kB)
+Building wheels for collected packages: neo-api-client, pyjsparser, websockets
+  Building wheel for neo-api-client (pyproject.toml): started
+  Building wheel for neo-api-client (pyproject.toml): finished with status 'done'
+  Created wheel for neo-api-client: filename=neo_api_client-2.0.0-py3-none-any.whl size=46872 sha256=bb747269a0c395e55a7f42a9d72e3ae8d67cf2136ecc2609760075783c844c48
+  Stored in directory: C:\Users\saini\AppData\Local\Temp\pip-ephem-wheel-cache-tcsqnbck\wheels\cb\c8\00\3a95502b0704fc02d563531e60d44156149279d4d6ad475c1c
+  Building wheel for pyjsparser (pyproject.toml): started
+  Building wheel for pyjsparser (pyproject.toml): finished with status 'done'
+  Created wheel for pyjsparser: filename=pyjsparser-2.7.1-py3-none-any.whl size=26014 sha256=5675263613bf69545fe0aa2c463e71b3864e9c98b63599e5069af87a4276e45d
+  Stored in directory: c:\users\saini\appdata\local\pip\cache\wheels\14\32\1d\9ef7b582e358446aeef4b9052aa89ef4dffa1688c1aae8aa13
+  Building wheel for websockets (pyproject.toml): started
+  Building wheel for websockets (pyproject.toml): finished with status 'done'
+  Created wheel for websockets: filename=websockets-8.1-cp312-cp312-win_amd64.whl size=62854 sha256=5173465362ab1898961bb9ee86a704bf7db7e110f1cc2133f45867242f9b6b34
+  Stored in directory: c:\users\saini\appdata\local\pip\cache\wheels\04\4b\92\86e53875ed9a5976cb84a5479730bd2498892de8ffdf47d8c1
+Successfully built neo-api-client pyjsparser websockets
+Installing collected packages: pyjsparser, asyncio, websockets, websocket-client, urllib3, six, python-dotenv, PyJWT, numpy, idna, certifi, bidict, requests, python-dateutil, pandas, neo-api-client
+  Attempting uninstall: websockets
+    Found existing installation: websockets 16.1.1
+    Uninstalling websockets-16.1.1:
+      Successfully uninstalled websockets-16.1.1
+  Attempting uninstall: urllib3
+    Found existing installation: urllib3 2.7.0
+    Uninstalling urllib3-2.7.0:
+      Successfully uninstalled urllib3-2.7.0
+  Attempting uninstall: six
+    Found existing installation: six 1.17.0
+    Uninstalling six-1.17.0:
+      Successfully uninstalled six-1.17.0
+  Attempting uninstall: python-dotenv
+    Found existing installation: python-dotenv 1.2.2
+    Uninstalling python-dotenv-1.2.2:
+      Successfully uninstalled python-dotenv-1.2.2
+  Attempting uninstall: numpy
+    Found existing installation: numpy 2.4.6
+    Uninstalling numpy-2.4.6:
+      Successfully uninstalled numpy-2.4.6
+  Attempting uninstall: idna
+    Found existing installation: idna 3.18
+    Uninstalling idna-3.18:
+      Successfully uninstalled idna-3.18
+  Attempting uninstall: certifi
+    Found existing installation: certifi 2026.7.22
+    Uninstalling certifi-2026.7.22:
+      Successfully uninstalled certifi-2026.7.22
+  Attempting uninstall: requests
+    Found existing installation: requests 2.34.2
+    Uninstalling requests-2.34.2:
+      Successfully uninstalled requests-2.34.2
+  Attempting uninstall: python-dateutil
+    Found existing installation: python-dateutil 2.9.0.post0
+    Uninstalling python-dateutil-2.9.0.post0:
+      Successfully uninstalled python-dateutil-2.9.0.post0
+  Attempting uninstall: pandas
+    Found existing installation: pandas 3.0.5
+    Uninstalling pandas-3.0.5:
+      Successfully uninstalled pandas-3.0.5
+

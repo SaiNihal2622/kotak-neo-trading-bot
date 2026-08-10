@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "kotak-neo": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://neo.kotaksecurities.com/mcp-server/mcp"
+      ]
+    }
+  },
+  "_comment": "Kotak Neo official MCP server. Free with Kotak Neo account. Provides: holdings, order book, positions, limits, place buy/sell, research recs. Use for human-in-the-loop portfolio review (not for live order placement by the bot itself)."
+}

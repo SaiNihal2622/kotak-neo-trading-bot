@@ -1,0 +1,4 @@
+﻿Now: 2026-08-10 12:50:35 IST
+Session: regular
+Market open: True
+Weekday: Monday

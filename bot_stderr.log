@@ -1,0 +1,140 @@
+[32m2026-08-10 14:56:31.515[0m | [1mINFO   [0m | [36m__main__:run_paper:106[0m | [1m============================================================[0m
+[32m2026-08-10 14:56:31.518[0m | [1mINFO   [0m | [36m__main__:run_paper:107[0m | [1mKotak Neo Trading Bot — PAPER MODE (Production v2)[0m
+[32m2026-08-10 14:56:31.518[0m | [1mINFO   [0m | [36m__main__:run_paper:108[0m | [1m============================================================[0m
+[32m2026-08-10 14:56:31.529[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_load_state:353[0m | [1mPaperClient loaded state: 16 orders, 4 positions[0m
+[32m2026-08-10 14:56:31.529[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:connect:68[0m | [1mPaperClient connected | capital=\u20b9106,234 | orders=16 | positions=4[0m
+[32m2026-08-10 14:56:31.530[0m | [1mINFO   [0m | [36mkotak_bot.data.live_feed:_synthetic_loop:267[0m | [1mSynthetic feed generating ticks for NIFTY, BANKNIFTY + 9 strikes each (dated symbol format, ATM ±4)[0m
+[32m2026-08-10 14:56:31.530[0m | [1mINFO   [0m | [36mkotak_bot.data.live_feed:start:83[0m | [1mLiveFeed started (mode=synthetic)[0m
+[32m2026-08-10 14:56:31.534[0m | [1mINFO   [0m | [36mkotak_bot.signals.llm_judge:__init__:74[0m | [1mLLMNewsJudge initialized: provider=minimax model=MiniMax-M2.7-highspeed base_url=https://agent.minimax.io/mavis/api/v1/llm/v1...[0m
+[32m2026-08-10 14:56:31.534[0m | [32m[1mSUCCESS[0m | [36m__main__:run_paper:146[0m | [32m[1mLLM news judge ENABLED (MiniMax M2.7-highspeed)[0m
+[32m2026-08-10 14:56:31.535[0m | [1mINFO   [0m | [36m__main__:run_paper:153[0m | [1mMacro calendar loaded: 21 events[0m
+[32m2026-08-10 14:56:31.880[0m | [32m[1mSUCCESS[0m | [36m__main__:run_paper:170[0m | [32m[1mIntel layer: performance + alpha decay + auto-tune + journal + multi-broker + OI[0m
+[32m2026-08-10 14:56:32.181[0m | [1mINFO   [0m | [36m__main__:run_paper:190[0m | [1mDhan not enabled (no creds) — running without it[0m
+[32m2026-08-10 14:56:32.182[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:299[0m | [33m[1mSTARTUP RECONCILE: broker has 4 positions but cap is 2. Closing excess to prevent double-trading.[0m
+[32m2026-08-10 14:56:33.206[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-84B0565316 SELL 150×NIFTY10AUG2624700CE MARKET @ 0.0 (startup_reconcile)[0m
+[32m2026-08-10 14:56:33.207[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-84B0565316 150×NIFTY10AUG2624700CE @ 38.58 (tick=38.6)[0m
+[32m2026-08-10 14:56:33.208[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-F758A4E2D5 SELL 150×NIFTY10AUG2624300PE MARKET @ 0.0 (startup_reconcile)[0m
+[32m2026-08-10 14:56:33.209[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-F758A4E2D5 150×NIFTY10AUG2624300PE @ 48.88 (tick=48.9)[0m
+[32m2026-08-10 14:56:33.210[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-D869D2839F SELL 60×BANKNIFTY10AUG2652200CE MARKET @ 0.0 (startup_reconcile)[0m
+[32m2026-08-10 14:56:33.211[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-D869D2839F 60×BANKNIFTY10AUG2652200CE @ 66.61 (tick=66.64)[0m
+[32m2026-08-10 14:56:33.212[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-36ED9B3C8F SELL 60×BANKNIFTY10AUG2651800PE MARKET @ 0.0 (startup_reconcile)[0m
+[32m2026-08-10 14:56:33.212[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-36ED9B3C8F 60×BANKNIFTY10AUG2651800PE @ 58.83 (tick=58.86)[0m
+[32m2026-08-10 14:56:36.214[0m | [1mINFO   [0m | [36m__main__:run_paper:324[0m | [1mSTARTUP RECONCILE: now 0 positions[0m
+[32m2026-08-10 14:56:36.216[0m | [1mINFO   [0m | [36mkotak_bot.alerts.telegram_commands:start:84[0m | [1mTelegramCommandHandler started[0m
+[32m2026-08-10 14:56:37.271[0m | [1mINFO   [0m | [36m__main__:run_paper:582[0m | [1m[SCAN] cycle=1 NIFTY spot=24502.03 atm=24500 opts=18 regime=range conf=0.40 adx=0.4 mom=+0.00[0m
+[32m2026-08-10 14:56:37.272[0m | [1mINFO   [0m | [36mkotak_bot.strategy.selector:select:112[0m | [1mSelected: iron_condor — iron condor: range regime, iv_rank=55, credit=20.93[0m
+[32m2026-08-10 14:56:37.272[0m | [1mINFO   [0m | [36mkotak_bot.risk.engine:check_new_trade:213[0m | [1m[RISK] NIFTY BASE preset | per_trade_cap=\u20b91,000 | conf=0.60 | qty=1[0m
+C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\kotak_bot\__main__.py:74: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  datetime.utcnow().isoformat(),
+[32m2026-08-10 14:56:37.275[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-C93D1100B3 SELL 75×NIFTY10AUG2624600CE LIMIT @ 54.02 (ic_NIFTY_sc)[0m
+[32m2026-08-10 14:56:37.276[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-C93D1100B3 75×NIFTY10AUG2624600CE @ 54.02 (tick=54.02)[0m
+[32m2026-08-10 14:56:37.279[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-CF24D57144 BUY 75×NIFTY10AUG2624700CE LIMIT @ 47.25 (ic_NIFTY_lc)[0m
+[32m2026-08-10 14:56:37.279[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-CF24D57144 75×NIFTY10AUG2624700CE @ 47.25 (tick=47.25)[0m
+[32m2026-08-10 14:56:37.282[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-4D9D55B62C SELL 75×NIFTY10AUG2624400PE LIMIT @ 53.08 (ic_NIFTY_sp)[0m
+[32m2026-08-10 14:56:37.282[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-4D9D55B62C 75×NIFTY10AUG2624400PE @ 53.08 (tick=53.08)[0m
+[32m2026-08-10 14:56:37.285[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-9ABAC2A08E BUY 75×NIFTY10AUG2624300PE LIMIT @ 38.92 (ic_NIFTY_lp)[0m
+[32m2026-08-10 14:56:37.285[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-9ABAC2A08E 75×NIFTY10AUG2624300PE @ 38.92 (tick=38.92)[0m
+[32m2026-08-10 14:56:37.288[0m | [1mINFO   [0m | [36mkotak_bot.execution.order_manager:execute_plan:117[0m | [1mExecuted plan T-D36700F0A3: iron_condor 4 legs[0m
+C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\kotak_bot\__main__.py:56: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  datetime.utcnow().isoformat(),
+[32m2026-08-10 14:56:39.769[0m | [1mINFO   [0m | [36mkotak_bot.alerts.telegram:synthesize_voice:146[0m | [1mvoice: synthesized open_NIFTY_1786353998_1786353999.wav[0m
+[32m2026-08-10 14:56:45.010[0m | [1mINFO   [0m | [36m__main__:run_paper:695[0m | [1m[OI] NIFTY resistance=None support=None max_pain=None pcr=0.00[0m
+[32m2026-08-10 14:56:45.011[0m | [1mINFO   [0m | [36m__main__:run_paper:582[0m | [1m[SCAN] cycle=1 BANKNIFTY spot=51994.81 atm=52000 opts=18 regime=range conf=0.40 adx=0.2 mom=+0.00[0m
+[32m2026-08-10 14:56:45.011[0m | [1mINFO   [0m | [36mkotak_bot.strategy.selector:select:112[0m | [1mSelected: iron_butterfly — iron butterfly: ATM-anchored range, credit=19.17[0m
+[32m2026-08-10 14:56:45.012[0m | [1mINFO   [0m | [36mkotak_bot.risk.engine:check_new_trade:213[0m | [1m[RISK] BANKNIFTY BASE preset | per_trade_cap=\u20b91,000 | conf=0.65 | qty=1[0m
+[32m2026-08-10 14:56:45.014[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-1859197C7A SELL 30×BANKNIFTY10AUG2652000CE LIMIT @ 78.8 (ib_BANKNIFTY_sc)[0m
+[32m2026-08-10 14:56:45.014[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-1859197C7A 30×BANKNIFTY10AUG2652000CE @ 78.8 (tick=78.8)[0m
+[32m2026-08-10 14:56:45.016[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-E6B9083C74 SELL 30×BANKNIFTY10AUG2652000PE LIMIT @ 84.0 (ib_BANKNIFTY_sp)[0m
+[32m2026-08-10 14:56:45.017[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-E6B9083C74 30×BANKNIFTY10AUG2652000PE @ 84.0 (tick=84.0)[0m
+[32m2026-08-10 14:56:45.018[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-7677898F20 BUY 30×BANKNIFTY10AUG2652100CE LIMIT @ 61.01 (ib_BANKNIFTY_lc)[0m
+[32m2026-08-10 14:56:45.018[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-7677898F20 30×BANKNIFTY10AUG2652100CE @ 61.01 (tick=61.01)[0m
+[32m2026-08-10 14:56:45.020[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-AD77CDB7C1 BUY 30×BANKNIFTY10AUG2651900PE LIMIT @ 82.62 (ib_BANKNIFTY_lp)[0m
+[32m2026-08-10 14:56:45.020[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-AD77CDB7C1 30×BANKNIFTY10AUG2651900PE @ 82.62 (tick=82.62)[0m
+[32m2026-08-10 14:56:45.022[0m | [1mINFO   [0m | [36mkotak_bot.execution.order_manager:execute_plan:117[0m | [1mExecuted plan T-53C2F700D9: iron_condor 4 legs[0m
+[32m2026-08-10 14:56:47.544[0m | [1mINFO   [0m | [36mkotak_bot.alerts.telegram:synthesize_voice:146[0m | [1mvoice: synthesized open_BANKNIFTY_1786354006_1786354007.wav[0m
+[32m2026-08-10 14:56:52.003[0m | [1mINFO   [0m | [36m__main__:run_paper:695[0m | [1m[OI] BANKNIFTY resistance=None support=None max_pain=None pcr=0.00[0m
+[32m2026-08-10 14:57:12.017[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=5 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 14:57:42.028[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 14:57:42.032[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=11 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 14:58:12.039[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=17 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 14:58:32.042[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 14:58:42.045[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=23 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 14:59:12.052[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=29 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 14:59:22.070[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 14:59:42.074[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=35 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:00:03.649[0m | [1mINFO   [0m | [36mkotak_bot.alerts.telegram:generate_daily_chart:226[0m | [1mchart: saved data_cache\charts\pnl_2026-08-10.png[0m
+[32m2026-08-10 15:00:15.052[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:00:15.056[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=41 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:00:45.063[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=47 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:01:05.067[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:01:15.071[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=53 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:01:45.078[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=59 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:01:55.080[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:02:15.084[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=65 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:02:45.094[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:02:45.095[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=71 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:03:15.098[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=77 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:03:35.106[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:03:45.107[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=83 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:04:15.120[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=89 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:04:25.124[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:04:45.128[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=95 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:05:15.143[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:05:15.143[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=101 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:05:45.149[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=107 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:06:05.153[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:06:15.156[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=113 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:06:45.170[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=119 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:06:55.174[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:07:15.179[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=125 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:07:45.186[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:07:45.187[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=131 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:08:15.192[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=137 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:08:35.197[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:08:45.199[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=143 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:09:15.209[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=149 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:09:25.213[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:09:45.220[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=155 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:10:15.229[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:10:15.231[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=161 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:10:45.243[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=167 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:11:05.246[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:11:15.250[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=173 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:11:45.254[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=179 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:11:55.255[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:12:15.259[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=185 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:12:45.265[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:12:45.267[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=191 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:13:15.270[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=197 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:13:35.276[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:13:45.277[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=203 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:14:15.285[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=209 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:14:25.286[0m | [33m[1mWARNING[0m | [36m__main__:run_paper:533[0m | [33m[1mreconcile failed: 'str' object has no attribute 'value'[0m
+[32m2026-08-10 15:14:45.290[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=215 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:15:00.292[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-FAFBF4B8EA BUY 75×NIFTY10AUG2624600CE MARKET @ 0.0 (close_PAPER-C93D1100B3)[0m
+[32m2026-08-10 15:15:00.294[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-FAFBF4B8EA 75×NIFTY10AUG2624600CE @ 63.78 (tick=63.75)[0m
+[32m2026-08-10 15:15:00.298[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-65F7A902D2 SELL 75×NIFTY10AUG2624700CE MARKET @ 0.0 (close_PAPER-CF24D57144)[0m
+[32m2026-08-10 15:15:00.299[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-65F7A902D2 75×NIFTY10AUG2624700CE @ 47.66 (tick=47.68)[0m
+[32m2026-08-10 15:15:00.302[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-75DCB429B0 BUY 75×NIFTY10AUG2624400PE MARKET @ 0.0 (close_PAPER-4D9D55B62C)[0m
+[32m2026-08-10 15:15:00.303[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-75DCB429B0 75×NIFTY10AUG2624400PE @ 43.97 (tick=43.95)[0m
+[32m2026-08-10 15:15:00.307[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-3FF7571117 SELL 75×NIFTY10AUG2624300PE MARKET @ 0.0 (close_PAPER-9ABAC2A08E)[0m
+[32m2026-08-10 15:15:00.308[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-3FF7571117 75×NIFTY10AUG2624300PE @ 96.52 (tick=96.57)[0m
+[32m2026-08-10 15:15:00.311[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-6D3D456273 BUY 30×BANKNIFTY10AUG2652000CE MARKET @ 0.0 (close_PAPER-1859197C7A)[0m
+[32m2026-08-10 15:15:00.312[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-6D3D456273 30×BANKNIFTY10AUG2652000CE @ 127.77 (tick=127.71)[0m
+[32m2026-08-10 15:15:00.316[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-9C6047A55B BUY 30×BANKNIFTY10AUG2652000PE MARKET @ 0.0 (close_PAPER-E6B9083C74)[0m
+[32m2026-08-10 15:15:00.317[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-9C6047A55B 30×BANKNIFTY10AUG2652000PE @ 252.7 (tick=252.57)[0m
+[32m2026-08-10 15:15:00.320[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-B452E0EE24 SELL 30×BANKNIFTY10AUG2652100CE MARKET @ 0.0 (close_PAPER-7677898F20)[0m
+[32m2026-08-10 15:15:00.321[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-B452E0EE24 30×BANKNIFTY10AUG2652100CE @ 104.49 (tick=104.54)[0m
+[32m2026-08-10 15:15:00.330[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:place_order:96[0m | [1m[PAPER] PLACE PAPER-26BA616E56 SELL 30×BANKNIFTY10AUG2651900PE MARKET @ 0.0 (close_PAPER-AD77CDB7C1)[0m
+[32m2026-08-10 15:15:00.330[0m | [1mINFO   [0m | [36mkotak_bot.broker.paper_client:_try_fill:238[0m | [1m[PAPER] FILL PAPER-26BA616E56 30×BANKNIFTY10AUG2651900PE @ 142.65 (tick=142.72)[0m
+[32m2026-08-10 15:15:00.334[0m | [1mINFO   [0m | [36m__main__:run_paper:442[0m | [1mSquared off 2 trades at EOD[0m
+[32m2026-08-10 15:15:16.326[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=221 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:15:46.334[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=227 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:16:17.482[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=233 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:16:47.487[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=239 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:17:18.503[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=245 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:17:49.442[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=251 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:18:19.451[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=257 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:18:50.451[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=263 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:19:20.458[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=269 | skip: 4 open positions >= max 2[0m
+[32m2026-08-10 15:19:51.427[0m | [1mINFO   [0m | [36m__main__:run_paper:542[0m | [1m[SCAN] cycle=275 | skip: 4 open positions >= max 2[0m

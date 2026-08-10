@@ -1,0 +1,4 @@
+﻿NIFTY: 176 rows
+  range: 2025-11-20 -> 2026-08-07
+  cols: ['date', 'open', 'high', 'low', 'close', 'volume']
+  latest: {'date': Timestamp('2026-08-07 00:00:00'), 'open': 24538.900390625, 'high': 24630.400390625, 'low': 24522.75, 'close': 24570.650390625, 'volume': 0}

@@ -1,0 +1,5 @@
+[01:06:03] Watching for messages to bot 8859774824... (poll every 10s)
+[01:06:03] >>> GOT MESSAGE: chat_id=8537408638  from=Sai Nihal  text='hi'
+[01:06:03] >>> PATCHED config/credentials.env with TELEGRAM_CHAT_ID=8537408638
+[01:06:04] >>> Sent confirmation to user
+[01:06:04] DONE — chat_id acquired. Exiting watcher.

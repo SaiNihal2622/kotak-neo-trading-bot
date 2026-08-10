@@ -1,0 +1,21 @@
+[23:16:44] ============================================================
+[23:16:44] KOTAK NEO UAT — LIVE TEST
+[23:16:44] ============================================================
+[23:16:46] env=uat  ucc=V6LC6  mobile=+916305842166
+[23:16:46] NeoAPI init OK
+[23:16:46] TOTP: 397870
+[23:16:46] TOTP login OK — got view token + sid
+[23:16:47] MPIN validate OK — trading session active
+[23:16:47] 
+--- Account state ---
+[23:16:47] Margins: {'Error': JSONDecodeError('Expecting value: line 1 column 1 (char 0)'), 'message': 'Exchange Segment is not available'}
+[23:16:47] Positions: None
+[23:16:47] Holdings: None
+[23:16:47] 
+--- Scrip master search ---
+[23:16:47] scrip_search error: 'NeoAPI' object has no attribute 'scrip_search'
+[23:16:47] 
+--- WebSocket subscription ---
+[23:16:47] Subscribed: [{'instrument_token': '26000', 'exchange_segment': 'nse_cm', 'subscription_type': 'ifs'}, {'instrument_token': '26009', 'exchange_segment': 'nse_cm', 'subscription_type': 'ifs'}]
+[23:16:47] 
+--- Listening for 30 seconds ---

@@ -1,0 +1,78 @@
+﻿======================================================================
+KOTAK NEO API v2 � COMPLETE METHOD INVENTORY
+======================================================================
+
+[ScripSearch] (api_client)
+
+[TotpAPI]
+  totp_login(self, mobile_number=None, ucc=None, totp=None)
+  totp_validate(self, mpin=None)
+
+[LoginAPI]
+  session_init(self)
+
+[LogoutAPI]
+  logging_out(self)
+
+[OrderAPI]
+  bracket_order_cancelling(self, order_id, isVerify, amo=None)
+  cover_order_cancelling(self, order_id, isVerify, amo=None)
+  order_cancelling(self, order_id, isVerify, amo=None)
+  order_placing(self, exchange_segment, product, price, order_type, quantity, validity, trading_symbol, transaction_type, amo=None, disclosed_quantity=None, market_protection=None, pf=None, trigger_price=None, tag=None, scrip_token=None, square_off_type=None, stop_loss_type=None, stop_loss_value=None, square_off_value=None, last_traded_price=None, trailing_stop_loss=None, trailing_sl_value=None)
+
+[ModifyOrder]
+  modification_with_orderid(self, order_id, price, order_type, quantity, validity, instrument_token, exchange_segment, product, trading_symbol, transaction_type, trigger_price, dd, market_protection, disclosed_quantity, filled_quantity, amo)
+  quick_modification(self, order_id, price, order_type, quantity, validity, instrument_token, exchange_segment, product, trading_symbol, transaction_type, trigger_price, dd, market_protection, disclosed_quantity, filled_quantity, amo)
+
+[OrderReportAPI]
+  ordered_books(self)
+
+[OrderHistoryAPI]
+  ordered_history(self, order_id)
+
+[TradeReportAPI]
+  trading_report(self, order_id)
+
+[PositionsAPI]
+  position_init(self)
+
+[PortfolioAPI]
+  portfolio_holdings(self)
+
+[MarginAPI]
+  margin_init(self, exchange_segment, price, order_type, product, quantity, instrument_token, transaction_type, trigger_price, broker_name, branch_id, stop_loss_type, stop_loss_value, square_off_type, square_off_value, trailing_stop_loss, trailing_sl_value)
+
+[LimitsAPI]
+  limit_init(self, segment=None, exchange=None, product=None)
+
+[QuotesAPI]
+  get_quotes(self, instrument_tokens=None, quote_type=None)
+
+[ScripMasterAPI]
+  scrip_master_init(self, exchange_segment=None)
+
+[NeoAPI] - main client class methods:
+  cancel_bracket_order(self, order_id, amo='NO', isVerify=False)
+  cancel_cover_order(self, order_id, amo='NO', isVerify=False)
+  cancel_order(self, order_id, amo='NO', isVerify=False)
+  check_callbacks(self)
+  help(self, function_name=None)
+  holdings(self)
+  limits(self, segment='ALL', exchange='ALL', product='ALL')
+  logout(self)
+  margin_required(self, exchange_segment, price, order_type, product, quantity, instrument_token, transaction_type, trigger_price=None, broker_name='KOTAK', branch_id='ONLINE', stop_loss_type=None, stop_loss_value=None, square_off_type=None, square_off_value=None, trailing_stop_loss=None, trailing_sl_value=None)
+  modify_order(self, order_id, price, order_type, quantity, validity, instrument_token=None, exchange_segment=None, product=None, trading_symbol=None, transaction_type=None, trigger_price='0', dd='NA', market_protection='0', disclosed_quantity='0', filled_quantity='0', amo='NO')
+  order_history(self, order_id)
+  order_report(self)
+  place_order(self, exchange_segment, product, price, order_type, quantity, validity, trading_symbol, transaction_type, amo='NO', disclosed_quantity='0', market_protection='0', pf='N', trigger_price='0', tag=None, scrip_token=None, square_off_type=None, stop_loss_type=None, stop_loss_value=None, square_off_value=None, last_traded_price=None, trailing_stop_loss=None, trailing_sl_value=None)
+  positions(self)
+  quotes(self, instrument_tokens=None, quote_type=None)
+  scrip_master(self, exchange_segment=None)
+  search_scrip(self, exchange_segment, symbol='', expiry=None, option_type=None, strike_price=None, ignore_50multiple=True)
+  set_neowebsocket_callbacks(self)
+  subscribe(self, instrument_tokens, isIndex=False, isDepth=False)
+  subscribe_to_orderfeed(self)
+  totp_login(self, mobile_number=None, ucc=None, totp=None)
+  totp_validate(self, mpin=None)
+  trade_report(self, order_id=None)
+  un_subscribe(self, instrument_tokens, isIndex=False, isDepth=False)

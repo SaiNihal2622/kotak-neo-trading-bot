@@ -1,0 +1,3 @@
+header_params-----> {'Authorization': 'ab1c547b-17c0-4f48-ba4a-9a01e3c996b4', 'neo-fin-key': 'neotradeapi', 'Content-Type': 'application/json'}
+body_params-----> {'mobileNumber': '+916305842166', 'ucc': 'V6LC6', 'totp': '727141'}
+URL-----> https://mis.kotaksecurities.com/login/1.0/tradeApiLogin

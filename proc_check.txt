@@ -1,0 +1,54 @@
+=== Process info ===
+
+
+Id        : 13420
+StartTime : 10-08-2026 12:51:36
+CPU       : 0
+WS        : 4239360
+Threads   : {15936, 11372, 7432}
+
+Id        : 14788
+StartTime : 10-08-2026 08:33:36
+CPU       : 85.125
+WS        : 27074560
+Threads   : {14568, 12000, 14620, 10548...}
+
+Id        : 15920
+StartTime : 10-08-2026 08:33:36
+CPU       : 0.015625
+WS        : 3940352
+Threads   : {5056}
+
+Id        : 16652
+StartTime : 10-08-2026 08:33:39
+CPU       : 0
+WS        : 3948544
+Threads   : {20932}
+
+Id        : 18332
+StartTime : 10-08-2026 08:33:39
+CPU       : 953.34375
+WS        : 118099968
+Threads   : {5180, 16252, 16080, 16976...}
+
+Id        : 20568
+StartTime : 10-08-2026 12:51:36
+CPU       : 0.0625
+WS        : 20697088
+Threads   : {20924, 12660, 21408, 16400...}
+
+
+
+
+
+=== Paper state ===
+  cash: Rs.300,000
+  orders: 0
+  positions: 0
+  file mtime: 1786346496.7087772
+  file age: 0.1 sec ago
+
+=== Telegram getUpdates error: HTTP Error 409: Conflict ===
+
+=== bot_stderr.log: mtime 1786344927, size 42775 bytes ===
+   last write: 1575.8 sec ago

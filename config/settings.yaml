@@ -1,0 +1,250 @@
+# Kotak Neo Trading Bot — Production config
+# All values can be overridden by env vars (uppercase, KOTAK_ prefix not used here)
+mode: paper  # 'paper' or 'live'
+
+broker:
+  type: paper            # 'paper' or 'neo' (real Kotak Neo)
+  environment: uat       # 'uat' or 'prod'
+  paper_capital: 100000  # PAPER account size (user said: let paper trading size be 100000)
+  # live_capital: 300000  # actual capital if/when flipping to live
+
+# =============================================================
+# VARIABLE RISK ENGINE — adapts to regime, confidence, and recent performance
+# =============================================================
+risk:
+  # base caps (low-confidence / range regime)
+  base:
+    max_loss_per_trade_pct: 1.0     # 1% of capital
+    max_loss_per_trade_abs: 1500    # Rs 1,500 hard cap
+    max_daily_loss_pct: 3.0
+    max_daily_loss_abs: 3000
+    max_trades_per_day: 6
+    max_weekly_loss_pct: 6.0
+    max_monthly_loss_pct: 12.0
+    max_consecutive_losses: 4
+    default_lots: 1
+    max_lots: 3
+    per_underlying_cap: 0.30
+  # aggressive caps (high-confidence / trending regime, recent wins)
+  aggressive:
+    max_loss_per_trade_pct: 2.0
+    max_loss_per_trade_abs: 2000
+    max_daily_loss_pct: 5.0
+    max_daily_loss_abs: 5000
+    max_trades_per_day: 10
+    default_lots: 1
+    max_lots: 4
+  # defensive caps (low-confidence / volatile regime, recent losses)
+  defensive:
+    max_loss_per_trade_pct: 0.5
+    max_loss_per_trade_abs: 500
+    max_daily_loss_pct: 1.5
+    max_daily_loss_abs: 1500
+    max_trades_per_day: 3
+    default_lots: 1
+    max_lots: 1
+  # timing
+  square_off_time: "15:15"
+  no_new_trades_after: "14:30"
+  # kill switches
+  kill_on_data_stale_min: 5
+  kill_on_news_shock: true
+  # adaptation
+  adapt_to_regime: true              # regime → preset
+  adapt_to_performance: true         # win/loss streak → preset
+  high_confidence_threshold: 0.7     # ≥ this → aggressive
+  low_confidence_threshold: 0.45     # < this → defensive
+  # position cap
+  position_cap: 2                    # 1 NIFTY + 1 BANKNIFTY max
+  cooldown_per_symbol_sec: 600       # 10 min between trades on same symbol
+  min_hold_before_smart_exit_sec: 300  # 5 min minimum hold before smart exit can fire
+  # Hourly P&L snapshot to Telegram
+  hourly_pnl_report: true
+  hourly_pnl_report_minute: 0        # top of each hour
+  # Smart exit thresholds
+  target_profit_pct: 0.95            # exit when 95% of target reached
+  stop_loss_pct: 0.95                # exit when 95% of stop hit
+  partial_profit_pct: 0.50           # scale out 50% at 50% of target
+  regime_flip_min_pnl_pct: 0.30      # min pnl before regime-flip exit
+  iv_crush_pct: -20.0                # IV drop % triggering exit on long premium
+  # Strike selection
+  strike_padding: 4                  # strikes around ATM (e.g. 4 = ATM ±4 = 9 strikes)
+  # Index tokens (NSE standard)
+  index_tokens:
+    NIFTY: "26000"
+    BANKNIFTY: "26009"
+  # Synthetic feed base (paper mode only)
+  synthetic:
+    nifty_base: 24500.0
+    banknifty_base: 52000.0
+    nifty_sigma: 0.16
+    banknifty_sigma: 0.20
+    tick_interval_sec: 0.5
+
+instruments:
+  enabled: [NIFTY, BANKNIFTY]
+  lot_sizes:
+    NIFTY: 75
+    BANKNIFTY: 30
+  strike_step:
+    NIFTY: 50
+    BANKNIFTY: 100
+  expiry_preference: weekly          # 'weekly' (current week) or 'next_weekly'
+
+# =============================================================
+# STRATEGIES — all 10 enabled, regime-driven selection
+# =============================================================
+strategy:
+  regime_detector:
+    adx_trending_threshold: 25
+    adx_range_threshold: 20
+    vix_low: 12
+    vix_high: 18
+    iv_rank_low: 30
+    iv_rank_high: 70
+    lookback_bars: 96
+
+  # 1. Iron condor — range, defined risk
+  iron_condor:
+    enabled: true
+    wing_width: 100
+    short_delta: 0.16
+    profit_target_pct: 50
+    stop_loss_multiplier: 2.0
+    regime_preference: range
+  # 2. Short strangle — range, high IV, undefined risk
+  short_strangle:
+    enabled: true
+    short_delta: 0.20
+    profit_target_pct: 50
+    stop_loss_multiplier: 2.0
+    regime_preference: range
+  # 3. Iron butterfly — range, ATM-anchored, high prob
+  iron_butterfly:
+    enabled: true
+    profit_target_pct: 50
+    stop_loss_multiplier: 1.5
+    regime_preference: range
+  # 4. Jade lizard — high IV, short put + short call spread
+  jade_lizard:
+    enabled: true
+    profit_target_pct: 50
+    stop_loss_multiplier: 1.5
+    regime_preference: range
+  # 5. Bull call vertical — trending up, defined risk
+  bull_call_vertical:
+    enabled: true
+    wing_width: 100
+    target_rr: 2.0
+    regime_preference: trending_up
+  # 6. Bear put vertical — trending down, defined risk
+  bear_put_vertical:
+    enabled: true
+    wing_width: 100
+    target_rr: 2.0
+    regime_preference: trending_down
+  # 7. Long call (single leg) — strong uptrend, momentum
+  long_call:
+    enabled: true
+    target_rr: 2.0
+    regime_preference: trending_up
+  # 8. Long put (single leg) — strong downtrend
+  long_put:
+    enabled: true
+    target_rr: 2.0
+    regime_preference: trending_down
+  # 9. Calendar spread — range, time decay edge
+  calendar:
+    enabled: true
+    profit_target_pct: 40
+    stop_loss_multiplier: 1.5
+    regime_preference: range
+  # 10. Long straddle — event play / volatile / pre-news
+  long_straddle:
+    enabled: true
+    target_rr: 1.5
+    stop_loss_multiplier: 1.0
+    regime_preference: volatile
+  # Event straddle — pre-RBI/Fed/expiry
+  event_straddle:
+    enabled: true
+    straddle_pre_event:
+      entry_minutes_before: 30
+      exit_at_event: true
+    events_calendar:
+      - rbi_policy
+      - us_fed
+      - union_budget
+      - gdp_release
+      - monthly_expiry
+  # Min confidence threshold for any strategy
+  min_confidence: 0.40
+  # Allow single-leg directional trades via bracket
+  allow_single_leg_bracket: true
+
+# =============================================================
+# DATA — live Kotak UAT websocket (replaces synthetic)
+# =============================================================
+data:
+  historical_source: yfinance       # 'yfinance' (free), 'nselib', 'truedata', 'dhan'
+  truedata_api_key: ""
+  nselib_cache: data_cache/nselib
+  # Feed mode: 'synthetic' | 'live_uat' (real Kotak UAT ticks — token discovery wip)
+  # 'live_uat' connects but falls back to synthetic if no ticks within 30s
+  live_feed: synthetic
+  live_uat_fallback_sec: 30
+  resample_intervals: [1, 5, 15, 60]
+  news:
+    fetch_interval_sec: 300
+    sources:
+      - moneycontrol
+      - economic_times
+      - livemint
+      - business_standard
+      - ndtv_profit
+    finbert_model: Vansh180/FinBERT-India-v1
+    llm_judge:
+      enabled: true
+      provider: minimax              # 'minimax' (M2.7-highspeed) or 'anthropic'
+      model: MiniMax-M2.7-highspeed
+      base_url_env: MINIMAX_LLM_BASE_URL
+      api_key_env: MINIMAX_LLM_API_KEY
+      rate_limit_per_min: 30         # stay under TPM cap
+
+# =============================================================
+# ALERTS
+# =============================================================
+alerts:
+  telegram:
+    enabled: true
+    bot_token_env: TELEGRAM_BOT_TOKEN
+    chat_id_env: TELEGRAM_CHAT_ID
+  email:
+    enabled: true
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    user_env: ALERT_EMAIL_USER
+    password_env: ALERT_EMAIL_PASSWORD
+    to_env: ALERT_EMAIL_TO
+  voice:
+    enabled: true                   # synthesize MP3 on every fill
+    on_fill: true
+    on_eod: true
+    on_anomaly: true
+  visual_report:
+    enabled: true                   # generate Plotly chart daily
+    at_eod: true
+
+backtest:
+  default_period_days: 180
+  walk_forward_splits: 5
+  initial_capital: 100000
+  commission_per_order: 20
+  slippage_bps: 5
+
+logging:
+  level: INFO
+  file: logs/bot.log
+  trade_log: logs/trades.csv
+  signal_log: logs/signals.csv
+  audit_log: data_cache/audit_log.jsonl

@@ -1,0 +1,11 @@
+﻿orders: 6
+  PAPER-A76CEDB64B NIFTY07AUG2624600CE              side=SELL  status=open       filled=   0 fill_price=0.0
+  PAPER-2F1E09404F NIFTY07AUG2624400PE              side=SELL  status=open       filled=   0 fill_price=0.0
+  PAPER-C52C6B8338 BANKNIFTY07AUG2652100CE          side=SELL  status=open       filled=   0 fill_price=0.0
+  PAPER-F236C6ABF7 BANKNIFTY07AUG2652200CE          side=BUY   status=open       filled=   0 fill_price=0.0
+  PAPER-AF69D3C807 BANKNIFTY07AUG2651900PE          side=SELL  status=open       filled=   0 fill_price=0.0
+  PAPER-F20DB1F02A BANKNIFTY07AUG2651800PE          side=BUY   status=open       filled=   0 fill_price=0.0
+
+positions: 0
+
+cash: 300000, realized_pnl: 0.0

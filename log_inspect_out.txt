@@ -1,0 +1,26 @@
+﻿Total log lines: 156
+First line: [32m2026-08-10 12:25:13.679[0m | [1mINFO   [0m | [36m__main__:run_paper:106[0m | [1m=============================
+Last line: [32m2026-08-10 12:25:27.145[0m | [33m[1mWARNING[0m | [36mkotak_bot.broker.paper_client:_save_state:301[0m | [33m
+
+Log levels: {'INFO': 10, 'WARNING': 145}
+
+=== Last 15 lines ===
+  2026-08-10 12:25:27.108 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+  2026-08-10 12:25:27.121 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [Errno 13] Permission denied: 'data_cache\\pa
+  2026-08-10 12:25:27.122 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+  2026-08-10 12:25:27.123 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [Errno 13] Permission denied: 'data_cache\\pa
+  2026-08-10 12:25:27.128 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+  2026-08-10 12:25:27.131 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+  2026-08-10 12:25:27.142 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [Errno 13] Permission denied: 'data_cache\\pa
+  ent:_save_state:301 | PaperClient state save failed: [Errno 13] Permission denied: 'data_cache\\paper_state.tmp'
+  2026-08-10 12:25:27.111 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [Errno 13] Permission denied: 'data_cache\\pa
+  2026-08-10 12:25:27.114 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+  2026-08-10 12:25:27.116 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+  2026-08-10 12:25:27.118 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+  2026-08-10 12:25:27.137 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+  2026-08-10 12:25:27.140 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+  2026-08-10 12:25:27.145 | WARNING | kotak_bot.broker.paper_client:_save_state:301 | PaperClient state save failed: [WinError 32] The process cannot access the f
+
+Total errors: 0
+
+Scans/trades in log: 0

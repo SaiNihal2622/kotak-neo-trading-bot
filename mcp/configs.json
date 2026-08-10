@@ -1,0 +1,50 @@
+{
+  "mcpServers": {
+    "kotak-neo": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://neo.kotaksecurities.com/mcp-server/mcp"],
+      "_comment": "Official Kotak Neo MCP. Free. Holdings, positions, orders, place buy/sell, research recs."
+    },
+    "kite": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://mcp.kite.trade/mcp"],
+      "_comment": "Zerodha Kite MCP. Free hosted. 22 tools: profile, margins, quotes, historical, option chain, GTT. NEEDS OAUTH on first use."
+    },
+    "upstox": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://mcp.upstox.com/mcp"],
+      "_comment": "Upstox MCP. Read-only. Quotes, positions, holdings, technicals. NEEDS OAUTH."
+    },
+    "dhan": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://mcp.dhan.co/mcp"],
+      "_comment": "Dhan MCP. Full trading via natural language. FREE account at dhan.co. NEEDS OAUTH."
+    },
+    "tapetide": {
+      "url": "https://mcp.tapetide.com/mcp",
+      "headers": {
+        "Authorization": "Bearer TPT-XXXX-XXXX-XXXX"
+      },
+      "_comment": "Tapetide MCP. 8,200 NSE/BSE stocks, 326-ratio screener, F&O OI, news. No broker account. Get free token at tapetide.com/settings/tokens."
+    },
+    "finstack": {
+      "command": "uvx",
+      "args": ["finstack-mcp"],
+      "_comment": "FinStack MCP. 95 tools. FII/DII, options chain, sentiment, peer compare. pip install finstack-mcp or uvx finstack-mcp."
+    },
+    "openalgo": {
+      "command": "uvx",
+      "args": ["openalgo-mcp"],
+      "_comment": "OpenAlgo MCP. Exposes 30+ brokers (incl. Kotak) under one layer. pip install openalgo-mcp or use marketcalls/openalgo Docker image."
+    }
+  },
+  "discovery": {
+    "_comment": "For Claude Desktop: copy 'mcpServers' to ~/Library/Application Support/Claude/claude_desktop_config.json (Mac) or %APPDATA%\\Claude\\claude_desktop_config.json (Windows). For Cursor: .cursor/mcp.json. For Windsurf: ~/.codeium/windsurf/mcp_config.json",
+    "registry_urls": [
+      "https://glama.ai/mcp/servers?query=indian",
+      "https://mcpmarket.com",
+      "https://mcp.so",
+      "https://www.pulsemcp.com"
+    ]
+  }
+}

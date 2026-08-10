@@ -1,0 +1,17 @@
+Data: 176 rows, 2025-11-20 to 2026-08-07
+After indicators: 156 rows
+
+============================================================
+BACKTEST RESULT — NIFTY directional, 6 months daily data
+============================================================
+  Strategy: SMA 9/21 cross + RSI filter + ADX>20 filter
+  Period: 2025-12-18 → 2026-08-07 (156 days)
+  Trades: 6
+  Total return: -14.0%
+  Annualized: -21.6%
+  Volatility: 15.5%
+  Sharpe ratio: -1.71
+  Max drawdown: -16.3%
+  Win rate: 44.5% (69W / 86L)
+
+VERDICT: ❌ Negative — strategy loses money

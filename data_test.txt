@@ -1,0 +1,3 @@
+2026-08-07 15:33:04.620 | WARNING  | kotak_bot.data.historical:get_equity_ohlc:54 - nselib fetch NIFTY failed: module 'nselib' has no attribute 'capital_market_index_data'
+2026-08-07 15:33:04.621 | WARNING  | kotak_bot.data.historical:get_equity_ohlc:64 - No historical data for NIFTY — falling back to synthetic
+2026-08-07 15:34:24.046 | INFO     | kotak_bot.data.historical:_from_yfinance:113 - yfinance [NIFTY 1d]: 176 rows (2025-11-20 00:00:00 -> 2026-08-07 00:00:00)

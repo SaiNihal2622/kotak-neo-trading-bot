@@ -1,0 +1,10 @@
+2026-08-06 22:05:00.723 | INFO     | kotak_bot.broker.paper_client:connect:68 - PaperClient connected | capital=₹300,000 | orders=0 | positions=0
+2026-08-06 22:05:00.725 | INFO     | kotak_bot.data.live_feed:_synthetic_loop:142 - Synthetic feed generating ticks for NIFTY, BANKNIFTY + 5 strikes each
+2026-08-06 22:05:00.725 | INFO     | kotak_bot.data.live_feed:start:64 - LiveFeed started (mode=synthetic)
+2026-08-06 22:05:03.725 | INFO     | kotak_bot.broker.paper_client:place_order:89 - [PAPER] PLACE PAPER-BB86C82454 BUY 75×NIFTY24500CE MARKET @ 0.0 ()
+2026-08-06 22:05:03.725 | INFO     | kotak_bot.broker.paper_client:_try_fill:215 - [PAPER] FILL PAPER-BB86C82454 75×NIFTY24500CE @ 56.18 (tick=56.15)
+2026-08-06 22:05:03.727 | WARNING  | kotak_bot.alerts.telegram:__init__:17 - TelegramAlerter disabled — set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+2026-08-06 22:05:03.727 | INFO     | kotak_bot.strategy.selector:select:48 - Selected: directional_debit — directional: trending, adx=30.0, BUY CE 24500
+2026-08-06 22:05:03.728 | INFO     | kotak_bot.strategy.selector:select:48 - Selected: short_strangle — short strangle: range + high IV
+2026-08-06 22:05:03.899 | INFO     | kotak_bot.data.live_feed:stop:71 - LiveFeed stopped
+2026-08-06 22:05:03.901 | INFO     | kotak_bot.broker.paper_client:disconnect:75 - PaperClient disconnected

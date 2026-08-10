@@ -1,0 +1,19 @@
+﻿Processing .\kotak-neo-bot\neo_api_src
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: neo-api-client
+  Building wheel for neo-api-client (pyproject.toml): started
+  Building wheel for neo-api-client (pyproject.toml): finished with status 'done'
+  Created wheel for neo-api-client: filename=neo_api_client-2.0.0-py3-none-any.whl size=46872 sha256=014b4c0e37270773ce069501f5c3deb12b78686857d8ab0ed5290725ccb51805
+  Stored in directory: C:\Users\saini\AppData\Local\Temp\pip-ephem-wheel-cache-x17ltn80\wheels\cb\c8\00\3a95502b0704fc02d563531e60d44156149279d4d6ad475c1c
+Successfully built neo-api-client
+Installing collected packages: neo-api-client
+  Attempting uninstall: neo-api-client
+    Found existing installation: neo-api-client 2.0.0
+    Uninstalling neo-api-client-2.0.0:
+      Successfully uninstalled neo-api-client-2.0.0
+Successfully installed neo-api-client-2.0.0

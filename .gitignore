@@ -1,0 +1,30 @@
+# secrets
+config/credentials.env
+.env
+.env.local
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# data
+data_cache/
+logs/*.log
+logs/*.csv
+logs/*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# os
+.DS_Store
+Thumbs.db
+
+# generated
+paper_state.json
+*.tmp
