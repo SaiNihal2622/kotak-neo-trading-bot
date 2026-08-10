@@ -2,14 +2,19 @@
 
 After the SELL bug + close race, paper_state.json may contain:
 - Phantom LONG positions (from EOD close-buys against lost shorts)
-- Open SELL orders that were meant to close those phantoms (now stuck, no ticks)
+- Naked SHORT positions (from incomplete EOD square-off, e.g. when order_mgr
+  lost its _trades dict on restart)
+- Open SELL/BUY orders that were meant to close those phantoms (now stuck, no ticks)
 
 This script:
-1. Wipes the 4 known phantom positions
-2. Marks any SELL MARKET orders with tag='orphan_close' as CANCELLED
-3. Saves the cleaned state
+1. Wipes the 4 known phantom LONG positions
+2. Wipes any SHORT positions (naked shorts are always a bug post-fix)
+3. Marks orphan_close + startup_reconcile orders as CANCELLED
+4. Saves the cleaned state
 
 Idempotent — safe to run multiple times.
+
+USE WITH CAUTION: only run when the bot is STOPPED to avoid races.
 """
 import json
 import sys
@@ -32,25 +37,30 @@ print(f"Loaded state: cash=Rs.{state['cash']:,.0f}  realized=Rs.{state['realized
 print(f"  orders: {len(state['orders'])}")
 print(f"  positions: {len(state['positions'])}")
 
-# 1) drop phantoms
+# 1) drop phantoms (only LONGs at the known phantom symbols)
 removed_positions = 0
 for sym in list(state["positions"].keys()):
-    if sym in PHANTOM_SYMBOLS:
-        p = state["positions"][sym]
-        if p.get("qty", 0) > 0:  # only drop if it's a phantom LONG
-            print(f"  removing phantom position: {sym} qty={p['qty']}")
-            del state["positions"][sym]
-            removed_positions += 1
-print(f"  -> removed {removed_positions} phantom positions")
+    p = state["positions"][sym]
+    if sym in PHANTOM_SYMBOLS and p.get("qty", 0) > 0:
+        print(f"  removing phantom position: {sym} qty={p['qty']}")
+        del state["positions"][sym]
+        removed_positions += 1
+    elif p.get("qty", 0) < 0:
+        # Naked SHORTs are always a bug post-fix (EOD didn't square off)
+        print(f"  removing naked SHORT: {sym} qty={p['qty']}")
+        del state["positions"][sym]
+        removed_positions += 1
+print(f"  -> removed {removed_positions} positions")
 
-# 2) cancel any orphan_close orders that are still open
+# 2) cancel any orphan orders that are still open
 cancelled = 0
 for oid, od in state["orders"].items():
-    if od.get("tag") == "orphan_close" and od.get("status") in ("open", "OPEN", "OrderStatus.OPEN"):
-        print(f"  cancelling open order: {oid} {od.get('symbol')} {od.get('side')}")
-        od["status"] = "cancelled"
-        cancelled += 1
-print(f"  -> cancelled {cancelled} orphan orders")
+    if od.get("status") in ("open", "OPEN", "OrderStatus.OPEN"):
+        if od.get("tag") in ("orphan_close", "startup_reconcile", "close_", None):
+            print(f"  cancelling open order: {oid} tag={od.get('tag')} symbol={od.get('symbol')}")
+            od["status"] = "cancelled"
+            cancelled += 1
+print(f"  -> cancelled {cancelled} open orders")
 
 # write back atomically
 tmp = state_path.with_suffix(".tmp")

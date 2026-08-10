@@ -521,12 +521,21 @@ def run_paper() -> None:
                                 internal_pos[sym]["qty"] += o.filled_qty if hasattr(o, 'side') and o.side.value == "BUY" else -o.filled_qty
                     diff = reconcile_positions(broker_pos, internal_pos)
                     save_reconcile_log(diff)
-                    # only alert on truly actionable diffs, not stale (qty mismatch that comes from old double-up)
+                    # Only alert on actionable diffs; throttled to once per 2h.
+                    # We do NOT auto-rebuild here because the historical order book
+                    # contains SELLs that were never recorded as positions (pre-fix
+                    # bug) — rebuilding would resurrect them as ghost positions.
                     actionable = bool(diff["broker_only"] or diff["internal_only"])
                     if actionable:
-                        msg = format_diff_for_telegram(diff)
-                        if msg:
-                            alerter.warn(msg)
+                        last_alert_ts = getattr(order_mgr, "_last_reconcile_alert_ts", 0)
+                        now_ts = time.time()
+                        if now_ts - last_alert_ts > 7200:  # 2 hours
+                            msg = format_diff_for_telegram(diff)
+                            if msg:
+                                alerter.warn(f"**Reconcile mismatch** (auto-fix disabled, throttled 2h):\n{msg}")
+                                order_mgr._last_reconcile_alert_ts = now_ts
+                        else:
+                            logger.warning(f"reconcile still mismatched (alert throttled): {diff}")
                     else:
                         logger.debug(f"reconcile: {len(diff['matched'])} matched, no actionable diff")
                 except Exception as e:
