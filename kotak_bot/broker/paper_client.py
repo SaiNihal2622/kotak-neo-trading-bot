@@ -246,11 +246,22 @@ class PaperClient(BrokerClient):
         if order.side == OrderSide.BUY:
             self._cash -= fill_value
             if pos:
-                # average up
-                total_qty = pos.qty + order.filled_qty
-                pos.avg_price = (pos.avg_price * pos.qty + order.avg_fill_price * order.filled_qty) / total_qty
-                pos.qty = total_qty
-                pos.ltp = order.avg_fill_price
+                if pos.qty > 0:
+                    # adding to a LONG (average up)
+                    total_qty = pos.qty + order.filled_qty
+                    pos.avg_price = (pos.avg_price * pos.qty + order.avg_fill_price * order.filled_qty) / total_qty
+                    pos.qty = total_qty
+                    pos.ltp = order.avg_fill_price
+                else:
+                    # reducing or closing a SHORT
+                    short_close = min(abs(pos.qty), order.filled_qty)
+                    self._realized_pnl += (pos.avg_price - order.avg_fill_price) * short_close
+                    pos.qty += order.filled_qty  # pos.qty is negative, so adding = closer to 0
+                    if pos.qty == 0:
+                        del self._positions[order.symbol]
+                    elif pos.qty > 0:
+                        # closed the short AND opened a LONG with the excess
+                        pos.avg_price = order.avg_fill_price
             else:
                 self._positions[order.symbol] = Position(
                     symbol=order.symbol,

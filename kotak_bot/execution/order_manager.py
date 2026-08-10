@@ -8,12 +8,17 @@ Now supports:
 - Cover orders (server-side mandatory SL) for single-leg entries
 - Regular orders for multi-leg defined-risk strategies (iron condor, strangle)
 - Pre-trade margin check (margin_required) for every order
+- Persisted state (JSON) so bot restarts don't lose _trades
 """
 from __future__ import annotations
 
+import json
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
+from threading import RLock
 from typing import Callable, Optional
 
 from loguru import logger
@@ -45,17 +50,146 @@ class ManagedTrade:
 
 
 class OrderManager:
-    """Translates TradePlans into broker orders, tracks the resulting positions."""
+    """Translates TradePlans into broker orders, tracks the resulting positions.
 
-    def __init__(self, broker: BrokerClient, smart_router: bool = True):
+    PERSISTENCE: when `persist_path` is set, the entire _trades dict (including
+    open and closed trades) is written to JSON after every open/close event and
+    reloaded on construction. This survives bot restarts — without it, every
+    restart loses the in-memory trade book and the EOD square-off only sees
+    whatever trades the new process happens to discover.
+    """
+
+    def __init__(self, broker: BrokerClient, smart_router: bool = True,
+                 persist_path: str = "data_cache/trades_state.json"):
         self.broker = broker
         self.smart_router = smart_router
         self._trades: dict[str, ManagedTrade] = {}
         self._symbol_to_trade: dict[str, str] = {}
         self._on_trade_event: Optional[Callable] = None
+        self._lock = RLock()
+        self.persist_path = Path(persist_path)
+        self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+        self._load_state()
 
     def set_event_callback(self, cb: Callable) -> None:
         self._on_trade_event = cb
+
+    def _save_state(self) -> None:
+        """Persist the entire _trades dict to JSON. Atomic write + retry."""
+        with self._lock:
+            try:
+                state = {
+                    "trades": {
+                        tid: {
+                            "trade_id": t.trade_id,
+                            "plan": self._plan_to_dict(t.plan) if t.plan else None,
+                            "orders": [self._order_to_dict(o) for o in t.orders],
+                            "opened_at": t.opened_at.isoformat() if t.opened_at else None,
+                            "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+                            "realized_pnl": t.realized_pnl,
+                            "target_hit": t.target_hit,
+                            "stop_hit": t.stop_hit,
+                            "exit_reason": t.exit_reason,
+                        }
+                        for tid, t in self._trades.items()
+                    },
+                    "symbol_to_trade": dict(self._symbol_to_trade),
+                }
+                tmp = self.persist_path.with_suffix(".tmp")
+                tmp.write_text(
+                    json.dumps(state, indent=2, default=str, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                os.replace(tmp, self.persist_path)
+            except Exception as e:
+                logger.warning(f"OrderManager state save failed: {e}")
+
+    def _load_state(self) -> None:
+        if not self.persist_path.exists():
+            return
+        try:
+            state = json.loads(self.persist_path.read_text(encoding="utf-8"))
+            from kotak_bot.strategy.base import TradePlan, StrategyName
+            for tid, td in state.get("trades", {}).items():
+                plan = None
+                if td.get("plan"):
+                    p = td["plan"]
+                    plan = TradePlan(
+                        strategy=StrategyName(p["strategy"]),
+                        underlying=p.get("underlying", ""),
+                        legs=p.get("legs", []),
+                        target=p.get("target", 0.0),
+                        stop=p.get("stop", 0.0),
+                        confidence=p.get("confidence", 0.0),
+                        reason=p.get("reason", ""),
+                        expiry=p.get("expiry", ""),
+                        expected_hold_minutes=p.get("expected_hold_minutes", 60),
+                    )
+                orders = [self._dict_to_order(od) for od in td.get("orders", [])]
+                trade = ManagedTrade(
+                    trade_id=td.get("trade_id", tid),
+                    plan=plan,
+                    orders=orders,
+                    opened_at=datetime.fromisoformat(td["opened_at"]) if td.get("opened_at") else None,
+                    closed_at=datetime.fromisoformat(td["closed_at"]) if td.get("closed_at") else None,
+                    realized_pnl=td.get("realized_pnl", 0.0),
+                    target_hit=td.get("target_hit", False),
+                    stop_hit=td.get("stop_hit", False),
+                    exit_reason=td.get("exit_reason", ""),
+                )
+                self._trades[tid] = trade
+            self._symbol_to_trade = state.get("symbol_to_trade", {})
+            logger.info(
+                f"OrderManager loaded state: {len(self._trades)} trades "
+                f"({len([t for t in self._trades.values() if t.closed_at is None])} open)"
+            )
+        except Exception as e:
+            logger.warning(f"OrderManager state load failed: {e}")
+
+    @staticmethod
+    def _plan_to_dict(plan) -> dict:
+        if not plan:
+            return {}
+        return {
+            "strategy": plan.strategy.value,
+            "underlying": plan.underlying,
+            "legs": list(plan.legs),
+            "target": plan.target,
+            "stop": plan.stop,
+            "confidence": plan.confidence,
+            "reason": plan.reason,
+            "expiry": plan.expiry,
+            "expected_hold_minutes": plan.expected_hold_minutes,
+        }
+
+    @staticmethod
+    def _order_to_dict(o: Order) -> dict:
+        d = o.__dict__.copy()
+        for k, v in list(d.items()):
+            if isinstance(v, datetime):
+                d[k] = v.isoformat()
+            elif hasattr(v, "value"):  # Enum
+                d[k] = v.value
+        return d
+
+    @staticmethod
+    def _dict_to_order(d: dict) -> Order:
+        # Convert string side/order_type back to Enum
+        for k in ("side", "order_type", "product"):
+            if k in d and isinstance(d[k], str):
+                if k == "side":
+                    d[k] = OrderSide(d[k])
+                elif k == "order_type":
+                    d[k] = OrderType(d[k])
+                elif k == "product":
+                    d[k] = ProductType(d[k])
+        if d.get("placed_at") and isinstance(d["placed_at"], str):
+            d["placed_at"] = datetime.fromisoformat(d["placed_at"])
+        if d.get("filled_at") and isinstance(d["filled_at"], str):
+            d["filled_at"] = datetime.fromisoformat(d["filled_at"])
+        if d.get("status") and isinstance(d["status"], str):
+            d["status"] = OrderStatus(d["status"])
+        return Order(**d)
 
     def execute_plan(self, plan: TradePlan, qty: int, expiry: str = "", lot_sizes: dict | None = None,
                      use_bracket: bool = True) -> ManagedTrade:
@@ -121,6 +255,7 @@ class OrderManager:
                 self._on_trade_event("opened", trade)
             except Exception as e:
                 logger.exception(f"trade event cb: {e}")
+        self._save_state()
         return trade
 
     def close_trade(self, trade_id: str, reason: str = "manual") -> ManagedTrade:
@@ -155,6 +290,7 @@ class OrderManager:
                 self._on_trade_event("closed", trade)
             except Exception as e:
                 logger.exception(f"trade event cb: {e}")
+        self._save_state()
         return trade
 
     def square_off_all(self, reason: str = "eod") -> int:
