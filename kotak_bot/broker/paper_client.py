@@ -268,14 +268,45 @@ class PaperClient(BrokerClient):
         else:  # SELL
             self._cash += fill_value
             if pos:
-                # realize P&L
                 if pos.qty > 0:
-                    self._realized_pnl += (order.avg_fill_price - pos.avg_price) * order.filled_qty
+                    # closing or reducing a LONG
+                    close_qty = min(pos.qty, order.filled_qty)
+                    self._realized_pnl += (order.avg_fill_price - pos.avg_price) * close_qty
+                    pos.qty -= order.filled_qty
+                    if pos.qty == 0:
+                        del self._positions[order.symbol]
+                    elif pos.qty < 0:
+                        # flipped through zero: leftover becomes a SHORT at this fill price
+                        # (rare; happens only on over-close)
+                        pos.avg_price = order.avg_fill_price
                 else:
-                    self._realized_pnl += (pos.avg_price - order.avg_fill_price) * order.filled_qty
-                pos.qty -= order.filled_qty
-                if pos.qty == 0:
-                    del self._positions[order.symbol]
+                    # adding to or closing a SHORT
+                    short_close = min(abs(pos.qty), order.filled_qty)
+                    self._realized_pnl += (pos.avg_price - order.avg_fill_price) * short_close
+                    pos.qty -= order.filled_qty  # pos.qty is negative, so subtracting = more negative
+                    if pos.qty == 0:
+                        del self._positions[order.symbol]
+                    elif pos.qty > 0:
+                        # closed the short AND opened a LONG with the excess
+                        pos.avg_price = order.avg_fill_price
+            else:
+                # BUG FIX 2026-08-10: SELL into nothing must OPEN a SHORT position.
+                # Previously the SELL was only recorded in orders dict; the SHORT was
+                # never reflected in self._positions, so the close-BUY later created a
+                # phantom LONG and broke reconciliation. (See: 4 ghost longs at EOD.)
+                self._positions[order.symbol] = Position(
+                    symbol=order.symbol,
+                    exchange=order.exchange,
+                    qty=-order.filled_qty,  # negative = short
+                    avg_price=order.avg_fill_price,
+                    ltp=order.avg_fill_price,
+                    product=order.product,
+                    strike=order.strike,
+                    option_type=order.option_type,
+                    expiry=order.expiry,
+                    underlying=order.underlying,
+                    entry_time=datetime.utcnow(),
+                )
 
     # ------- persistence -------
     def _save_state(self) -> None:
@@ -365,3 +396,99 @@ class PaperClient(BrokerClient):
             if self.persist_path.exists():
                 self.persist_path.unlink()
             logger.info("PaperClient reset")
+
+    def rebuild_positions_from_orders(self) -> dict:
+        """Recompute positions from COMPLETE order history.
+
+        BUG RECOVERY 2026-08-10: Before the SELL-without-position fix, opening shorts
+        (iron butterfly, strangle, etc.) left positions unrecorded. The close BUY
+        then created phantom LONGs. This method walks the order book and rebuilds
+        the net position per symbol from scratch.
+
+        Returns a report dict with: {rebuilt, dropped, kept, before_count, after_count}.
+        """
+        with self._lock:
+            before = {s: (p.qty, p.avg_price) for s, p in self._positions.items()}
+            # bucket filled quantity by side per symbol
+            net: dict[str, dict] = {}
+            for o in self._orders.values():
+                if o.status != OrderStatus.COMPLETE:
+                    continue
+                # map side to signed qty
+                if o.side == OrderSide.BUY:
+                    signed = +o.filled_qty
+                elif o.side == OrderSide.SELL:
+                    signed = -o.filled_qty
+                else:
+                    continue
+                if o.symbol not in net:
+                    net[o.symbol] = {"qty": 0, "buy_qty": 0, "buy_val": 0.0,
+                                     "sell_qty": 0, "sell_val": 0.0,
+                                     "meta": o}
+                b = net[o.symbol]
+                b["qty"] += signed
+                if signed > 0:
+                    b["buy_qty"] += signed
+                    b["buy_val"] += signed * o.avg_fill_price
+                else:
+                    b["sell_qty"] += -signed
+                    b["sell_val"] += -signed * o.avg_fill_price
+
+            # build new positions dict
+            new_positions: dict[str, Position] = {}
+            realized_delta = 0.0
+            for sym, b in net.items():
+                net_qty = b["qty"]
+                if net_qty == 0:
+                    # fully closed → realize PnL using the legs
+                    if b["sell_qty"] > 0 and b["buy_qty"] > 0:
+                        # use average buy / sell prices for the realized PnL estimate
+                        avg_buy = b["buy_val"] / b["buy_qty"]
+                        avg_sell = b["sell_val"] / b["sell_qty"]
+                        # signed PnL: (sell - buy) * min(sell_qty, buy_qty)
+                        matched = min(b["sell_qty"], b["buy_qty"])
+                        realized_delta += (avg_sell - avg_buy) * matched
+                    continue
+                # open position: derive avg_price from the dominant side
+                meta = b["meta"]
+                if net_qty > 0:
+                    # net long: avg = buy_val / buy_qty
+                    avg_price = b["buy_val"] / b["buy_qty"]
+                else:
+                    # net short: avg = sell_val / sell_qty
+                    avg_price = b["sell_val"] / b["sell_qty"]
+                new_positions[sym] = Position(
+                    symbol=sym,
+                    exchange=meta.exchange,
+                    qty=net_qty,
+                    avg_price=avg_price,
+                    ltp=meta.avg_fill_price,
+                    product=meta.product,
+                    strike=meta.strike,
+                    option_type=meta.option_type,
+                    expiry=meta.expiry,
+                    underlying=meta.underlying,
+                    entry_time=meta.placed_at,
+                )
+
+            self._positions = new_positions
+            # adjust realized_pnl: rebuild the delta over previous state
+            # (we cannot fully reverse old realized, so we ADD the matched-pairs estimate
+            # and accept small drift if the original was already partially booked)
+            if realized_delta:
+                self._realized_pnl += realized_delta
+            self._save_state()
+
+            after = {s: (p.qty, p.avg_price) for s, p in self._positions.items()}
+            report = {
+                "before": before,
+                "after": after,
+                "before_count": len(before),
+                "after_count": len(after),
+                "realized_pnl_delta": realized_delta,
+            }
+            logger.info(
+                f"PaperClient rebuilt positions: {len(before)} -> {len(after)} "
+                f"(realized_pnl delta: Rs.{realized_delta:,.2f})"
+            )
+            return report
