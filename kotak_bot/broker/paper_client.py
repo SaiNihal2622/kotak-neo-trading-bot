@@ -322,13 +322,20 @@ class PaperClient(BrokerClient):
     # ------- persistence -------
     def _save_state(self) -> None:
         try:
+            # BUG FIX 2026-08-11: shallow-copy each object's __dict__ before mutating
+            # for serialization. `o.__dict__` returns a REFERENCE to the instance
+            # namespace, so the previous code was mutating the live Order/Position
+            # enums to strings every save. That broke OrderManager's in-memory view
+            # of the trade book. Found by e2e_test.py: o.side became a string
+            # after the first place_order + save.
+            import copy
             state = {
                 "cash": self._cash,
                 "realized_pnl": self._realized_pnl,
-                "orders": {oid: o.__dict__ for oid, o in self._orders.items()},
-                "positions": {s: p.__dict__ for s, p in self._positions.items()},
+                "orders": {oid: copy.copy(o.__dict__) for oid, o in self._orders.items()},
+                "positions": {s: copy.copy(p.__dict__) for s, p in self._positions.items()},
             }
-            # datetime/Enum to string
+            # datetime/Enum to string (now safe — we're mutating the copy, not the original)
             for oid, od in state["orders"].items():
                 for k, v in list(od.items()):
                     if isinstance(v, datetime):
