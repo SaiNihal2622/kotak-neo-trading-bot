@@ -296,32 +296,49 @@ def run_paper() -> None:
         startup_cap = cfg.get("risk", {}).get("position_cap", 2)
         broker_pos = broker.get_positions()
         if len(broker_pos) > startup_cap:
-            logger.warning(
-                f"STARTUP RECONCILE: broker has {len(broker_pos)} positions but cap is {startup_cap}. "
-                f"Closing excess to prevent double-trading."
-            )
-            alerter.warn(
-                f"⚠️ STARTUP RECONCILE: broker has {len(broker_pos)} positions (cap={startup_cap}). "
-                f"Closing excess to normalize state."
-            )
-            for pos in broker_pos:
-                try:
-                    from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
-                    close_order = Order(
-                        symbol=pos.symbol, side=OrderSide.SELL if pos.qty > 0 else OrderSide.BUY,
-                        qty=abs(pos.qty), order_type=OrderType.MARKET, product=ProductType.MIS,
-                        tag='startup_reconcile', exchange=pos.exchange,
-                        strike=pos.strike, option_type=pos.option_type,
-                        expiry=pos.expiry, underlying=pos.underlying,
-                    )
-                    broker.place_order(close_order)
-                except Exception as e:
-                    logger.warning(f"failed to close {pos.symbol}: {e}")
-            # wait for fills
-            import time as _t
-            _t.sleep(3)
-            new_pos_count = len(broker.get_positions())
-            logger.info(f"STARTUP RECONCILE: now {new_pos_count} positions")
+            # BUG FIX 2026-08-11: only close positions that are NOT in any open
+            # trade's orders. The previous logic closed ALL excess positions, which
+            # double-closed the legs of open iron condors (startup_reconcile closed
+            # them, then EOD tried to close them again — second close found an empty
+            # book and created phantom SHORTs).
+            open_trade_symbols = set()
+            for tr in order_mgr.open_trades():
+                for o in tr.orders:
+                    if o.avg_fill_price > 0:
+                        open_trade_symbols.add(o.symbol)
+            orphan_positions = [p for p in broker_pos if p.symbol not in open_trade_symbols]
+            if orphan_positions:
+                logger.warning(
+                    f"STARTUP RECONCILE: {len(broker_pos)} broker positions, {len(orphan_positions)} "
+                    f"orphans (not in any open trade), cap is {startup_cap}. Closing orphans."
+                )
+                alerter.send(
+                    f"STARTUP RECONCILE: {len(orphan_positions)} orphan positions closed "
+                    f"(out of {len(broker_pos)} broker positions, cap={startup_cap})"
+                )
+                for pos in orphan_positions:
+                    try:
+                        from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
+                        close_order = Order(
+                            symbol=pos.symbol, side=OrderSide.SELL if pos.qty > 0 else OrderSide.BUY,
+                            qty=abs(pos.qty), order_type=OrderType.MARKET, product=ProductType.MIS,
+                            tag='startup_reconcile', exchange=pos.exchange,
+                            strike=pos.strike, option_type=pos.option_type,
+                            expiry=pos.expiry, underlying=pos.underlying,
+                        )
+                        broker.place_order(close_order)
+                    except Exception as e:
+                        logger.warning(f"failed to close {pos.symbol}: {e}")
+                # wait for fills
+                import time as _t
+                _t.sleep(3)
+                new_pos_count = len(broker.get_positions())
+                logger.info(f"STARTUP RECONCILE: now {new_pos_count} positions")
+            else:
+                logger.info(
+                    f"STARTUP RECONCILE: {len(broker_pos)} positions but all are in open trades, "
+                    f"no orphans to close"
+                )
     except Exception as e:
         logger.warning(f"startup reconcile failed: {e}")
 
