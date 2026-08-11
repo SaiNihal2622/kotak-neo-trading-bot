@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -96,6 +97,25 @@ def build_broker(cfg: dict):
             starting_capital=broker_cfg.get("paper_capital", 300_000.0),
             slippage_bps=cfg.get("backtest", {}).get("slippage_bps", 5.0),
         )
+    # LIVE mode — require explicit confirmation to prevent accidental real-money trading
+    if os.environ.get("KOTAK_LIVE_CONFIRMED") != "YES":
+        raise RuntimeError(
+            "REFUSING to start in LIVE mode without KOTAK_LIVE_CONFIRMED=YES env var. "
+            "This is a safety guard — set it ONLY when you intend to trade real money. "
+            "Recommended: keep mode=paper for 2-4 weeks, then flip to live after paper P&L validates."
+        )
+    # Require PROD env explicitly
+    if os.environ.get("KOTAK_ENV", "uat") != "prod":
+        raise RuntimeError(
+            "LIVE mode requires KOTAK_ENV=prod. UAT orders are sandboxed but we want the "
+            "explicit env flip so you know you're going to prod."
+        )
+    # Require positive live_capital to be set in config
+    if not broker_cfg.get("live_capital"):
+        logger.warning("live_capital not set in settings.yaml — using paper_capital as fallback")
+    logger.warning("=" * 60)
+    logger.warning("LIVE TRADING MODE — REAL MONEY AT RISK")
+    logger.warning("=" * 60)
     return NeoClient()
 
 
@@ -251,7 +271,17 @@ def run_paper() -> None:
         step = 50 if symbol == "NIFTY" else 100
         atm = round(spot / step) * step
         strikes = [atm + (i - 4) * step for i in range(9)]
-        expiry = now.strftime("%d%b%y").upper()
+        # use nearest weekly expiry from PROD scrip master when on live_kotak
+        try:
+            from kotak_bot.data.kotak_prod_feed import KotakProdFeed
+            kfeed = getattr(feed, "_kotak_feed", None)
+            if isinstance(kfeed, KotakProdFeed):
+                exp = kfeed.get_nearest_expiry(symbol)
+                expiry = kfeed.format_expiry_str(symbol, exp) if exp else now.strftime("%d%b%y").upper()
+            else:
+                expiry = now.strftime("%d%b%y").upper()
+        except Exception:
+            expiry = now.strftime("%d%b%y").upper()
         option_ltps = {}
         for k in strikes:
             for ot in ("CE", "PE"):
@@ -374,9 +404,18 @@ def run_paper() -> None:
     hourly_pnl_minute = cfg.get("risk", {}).get("hourly_pnl_report_minute", 0)
     # synthetic base values (for paper mode)
     syn_cfg = cfg.get("risk", {}).get("synthetic", {})
-    # expiry for symbols — derive from next Thursday for the *current* weekly
-    # but for paper mode, use today's date as the expiry (matches synthetic feed)
-    expiry_str_today = now_ist().strftime("%d%b%y").upper()
+    # expiry for symbols — derived from the loaded PROD scrip master (NIFTY=Mon, BN=Wed).
+    # Falls back to today's date for non-live feeds (synthetic).
+    def _strategy_expiry_str(underlying: str) -> str:
+        try:
+            from kotak_bot.data.kotak_prod_feed import KotakProdFeed
+            if isinstance(getattr(feed, "_kotak_feed", None), KotakProdFeed):
+                exp = feed._kotak_feed.get_nearest_expiry(underlying)
+                if exp:
+                    return feed._kotak_feed.format_expiry_str(underlying, exp)
+        except Exception:
+            pass
+        return now_ist().strftime("%d%b%y").upper()
     cycle_counter = 0
     while True:
         try:
@@ -594,7 +633,7 @@ def run_paper() -> None:
                         for ot in ("CE", "PE"):
                             # FIX 2026-08-10: use dated symbol format to match synthetic feed
                             # synthetic emits: NIFTY10AUG2625000CE; previous code queried NIFTY25000CE
-                            sym_full = f"{symbol}{expiry_str_today}{int(k)}{ot}"
+                            sym_full = f"{symbol}{_strategy_expiry_str(symbol)}{int(k)}{ot}"
                             ltp = feed.get_ltp(sym_full)
                             if ltp > 0:
                                 option_ltps[(k, ot)] = ltp

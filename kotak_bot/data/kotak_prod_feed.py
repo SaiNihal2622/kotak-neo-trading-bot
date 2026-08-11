@@ -308,6 +308,53 @@ class KotakProdFeed:
         with self._lock:
             return self._trdSym_to_pSymbol.get(symbol) or self._strategySym_to_pSymbol.get(symbol)
 
+    def get_nearest_expiry(self, underlying: str, today: Optional[date] = None) -> Optional[date]:
+        """Return the nearest future (or today's) expiry date for `underlying`.
+
+        NSE weekly expiries as of 2024+:
+            - NIFTY: every Monday
+            - BANKNIFTY: every Wednesday
+            - FINNIFTY: every Tuesday
+            - MIDCPNIFTY: every Monday
+
+        If today is an expiry day, returns today. Otherwise returns the next one.
+        Uses the loaded scrip master — if no rows for `underlying`, returns None.
+
+        Returns a `date` (not a string). Use `format_expiry_str(underlying, exp)` to get
+        the strategy-compatible string `NIFTY01SEP26` (used to build option symbols).
+        """
+        with self._lock:
+            today = today or date.today()
+            expiries = sorted({m['exp'] for m in self._pSymbol_to_meta.values() if m['sym'] == underlying and m['exp'] >= today})
+            if not expiries:
+                return None
+            return expiries[0]
+
+    def format_expiry_str(self, underlying: str, exp: date) -> str:
+        """Format an expiry as the strategy's symbol suffix, e.g. '01SEP26'."""
+        return exp.strftime("%d%b%y").upper()
+
+    def get_strategy_sym(self, underlying: str, strike: int, opt_type: str, exp: Optional[date] = None) -> Optional[str]:
+        """Build the canonical strategy sym for a (underlying, strike, opt_type, expiry).
+
+        Returns None if no matching contract in scrip master.
+        """
+        with self._lock:
+            if exp is None:
+                exp = self.get_nearest_expiry(underlying)
+                if not exp:
+                    return None
+            exp_str = self.format_expiry_str(underlying, exp)
+            # pScripRefKey format: NIFTY{DD}{MMM}{YY}{STRIKE}.00{CE|PE}
+            ref = f"{underlying}{exp.strftime('%d%b%y').upper()}{int(strike)}.00{opt_type}"
+            ps = self._trdSym_to_pSymbol.get(ref)  # probably not — pTrdSymbol doesn't have day name
+            # Try via meta lookup
+            for s, p in self._strategySym_to_pSymbol.items():
+                m = self._pSymbol_to_meta[p]
+                if m['sym'] == underlying and m['strike'] == strike and m['opt'] == opt_type and m['exp'] == exp:
+                    return s
+            return None
+
     def is_authenticated(self) -> bool:
         return self.session is not None
 
@@ -510,11 +557,24 @@ class KotakProdFeed:
             d = q.get('depth', {}) or {}
             bids = d.get('buy', []) or []
             asks = d.get('sell', []) or []
-            bid = float(bids[0]['price']) if bids and bids[0]['price'] not in ('0', '0.00', 0) else 0.0
-            ask = float(asks[0]['price']) if asks and asks[0]['price'] not in ('0', '0.00', 0) else 0.0
+            bid = float(bids[0]['price']) if bids and bids[0]['price'] not in ('0', '0.00', 0, '0.0') else 0.0
+            ask = float(asks[0]['price']) if asks and asks[0]['price'] not in ('0', '0.00', 0, '0.0') else 0.0
             ltp = float(q.get('ltp', 0) or 0)
-            oi = int(float(q.get('oi', 0) or 0))
-            vol = int(float(q.get('last_volume', 0) or 0))
+            # OI / volume sometimes come as '-' (Kotak's not-available placeholder).
+            # Robust parse: if it's a valid number, use it; otherwise 0.
+            def _safe_num(v, default=0.0, as_int=False):
+                if v in (None, '', '-', '--', 'NA', 'N/A'):
+                    return default if not as_int else 0
+                try:
+                    out = float(v)
+                    return int(out) if as_int else out
+                except (ValueError, TypeError):
+                    return default if not as_int else 0
+            oi = _safe_num(q.get('oi'), 0.0, as_int=True)
+            vol = _safe_num(q.get('last_volume'), 0.0, as_int=True)
+            # Fallback: oi may be nested under 'oi_data' for /all filter, otherwise None
+            if oi == 0 and 'oi_data' in q and isinstance(q['oi_data'], dict):
+                oi = _safe_num(q['oi_data'].get('current_oi'), 0.0, as_int=True)
             self._update_tick(strat_sym, ltp, bid, ask, oi, vol)
 
     def _fetch_spot_quotes(self, queries: list[str]) -> None:
