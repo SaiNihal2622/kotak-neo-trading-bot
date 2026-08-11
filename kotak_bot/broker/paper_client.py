@@ -390,13 +390,25 @@ class PaperClient(BrokerClient):
                     od["placed_at"] = datetime.fromisoformat(od["placed_at"])
                 if "filled_at" in od and od["filled_at"]:
                     od["filled_at"] = datetime.fromisoformat(od["filled_at"])
-                if "status" in od:
+                if "status" in od and isinstance(od["status"], str):
                     od["status"] = OrderStatus(od["status"])
+                # BUG FIX 2026-08-11: also convert side/order_type/product back
+                # to enums on load. Without this, orders saved by the previous
+                # buggy _save_state (which wrote strings) load with strings,
+                # breaking any code that does `if order.side == OrderSide.BUY`.
+                for k in ("side", "order_type"):
+                    if k in od and isinstance(od[k], str):
+                        if k == "side":
+                            od[k] = OrderSide(od[k])
+                        elif k == "order_type":
+                            od[k] = OrderType(od[k])
+                if "product" in od and isinstance(od["product"], str):
+                    od["product"] = ProductType(od["product"])
                 self._orders[oid] = Order(**od)
             for s, pd in state.get("positions", {}).items():
                 if "entry_time" in pd and pd["entry_time"]:
                     pd["entry_time"] = datetime.fromisoformat(pd["entry_time"])
-                if "product" in pd:
+                if "product" in pd and isinstance(pd["product"], str):
                     pd["product"] = ProductType(pd["product"])
                 self._positions[s] = Position(**pd)
             logger.info(f"PaperClient loaded state: {len(self._orders)} orders, {len(self._positions)} positions")
