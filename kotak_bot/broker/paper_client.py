@@ -42,10 +42,16 @@ class PaperClient(BrokerClient):
         self,
         starting_capital: float = 300_000.0,
         slippage_bps: float = 5.0,  # 5 bps = 0.05% slippage on market orders
+        limit_fill_spread_pct: float = 0.1,  # 0.1% spread for LIMIT order fill simulation
+        limit_fill_min_spread: float = 0.05,  # min Rs.0.05 spread (NSE tick)
+        limit_fill_near_ltp_pct: float = 0.5,  # fill if limit within 0.5% of LTP
         persist_path: str = "data_cache/paper_state.json",
     ):
         self.starting_capital = starting_capital
         self.slippage_bps = slippage_bps
+        self.limit_fill_spread_pct = limit_fill_spread_pct
+        self.limit_fill_min_spread = limit_fill_min_spread
+        self.limit_fill_near_ltp_pct = limit_fill_near_ltp_pct
         self.persist_path = Path(persist_path)
         self.persist_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -203,23 +209,24 @@ class PaperClient(BrokerClient):
         elif order.order_type == OrderType.LIMIT:
             # FIX 2026-08-07: For paper trading, fill LIMIT orders with realistic probability
             # In a real market, a SELL at the LTP would have a buyer within 1-2 ticks
-            # We fill aggressively to make paper trading actually work
-            spread = max(0.05, tick.ltp * 0.001)  # assume 0.1% spread or min Rs.0.05
+            # We fill aggressively to make paper trading actually work.
+            # Spread parameters are configurable via constructor (no hardcodes).
+            spread = max(self.limit_fill_min_spread, tick.ltp * (self.limit_fill_spread_pct / 100.0))
             synthetic_bid = tick.ltp - spread
             synthetic_ask = tick.ltp + spread
             if order.side == OrderSide.BUY:
                 # BUY at limit: fill if limit >= synthetic_ask (realistic)
                 if order.price >= synthetic_ask:
                     fill_price = min(order.price, synthetic_ask)
-                # Also fill if limit is at LTP (within 0.5% of ask)
-                elif abs(order.price - tick.ltp) / tick.ltp < 0.005:
+                # Also fill if limit is at LTP (within near-LTP pct of ask)
+                elif abs(order.price - tick.ltp) / tick.ltp < (self.limit_fill_near_ltp_pct / 100.0):
                     fill_price = order.price
             elif order.side == OrderSide.SELL:
                 # SELL at limit: fill if limit <= synthetic_bid (realistic)
                 if order.price <= synthetic_bid:
                     fill_price = max(order.price, synthetic_bid)
-                # Also fill if limit is at LTP (within 0.5% of bid)
-                elif abs(order.price - tick.ltp) / tick.ltp < 0.005:
+                # Also fill if limit is at LTP (within near-LTP pct of bid)
+                elif abs(order.price - tick.ltp) / tick.ltp < (self.limit_fill_near_ltp_pct / 100.0):
                     fill_price = order.price
         elif order.order_type == OrderType.SL:
             if (order.side == OrderSide.BUY and tick.ltp >= order.trigger_price) or \

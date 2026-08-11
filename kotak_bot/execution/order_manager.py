@@ -192,13 +192,26 @@ class OrderManager:
         return Order(**d)
 
     def execute_plan(self, plan: TradePlan, qty: int, expiry: str = "", lot_sizes: dict | None = None,
-                     use_bracket: bool = True) -> ManagedTrade:
+                     use_bracket: bool = True,
+                     bracket_config: dict | None = None) -> ManagedTrade:
         """Place all legs of a plan.
 
         - For 1-leg directional trades: use BRACKET order (server-side SL+target+trailing)
         - For multi-leg defined-risk (iron condor, strangle): use regular LIMIT orders
         - For cover orders: not used in this version (multi-leg only)
+        bracket_config: dict with keys {sl_pct, target_mult, trail_pct} for bracket order
+                        calculation. If None, uses defaults from settings (no hardcodes).
         """
+        # Bracket defaults — pulled from settings if available, else these are the last-resort defaults.
+        # Note: __main__.py should pass cfg.risk.bracket.* values, but we have safe defaults
+        # for unit tests and other call sites.
+        bc = {
+            "sl_pct": 0.5,        # SL = entry * sl_pct (50% of premium for long options)
+            "target_mult": 1.5,   # target = entry * target_mult (50% above entry)
+            "trail_pct": 0.1,     # trailing SL trail = entry * trail_pct
+            **(bracket_config or {}),
+        }
+
         lot_sizes = lot_sizes or {}
         lot_size = lot_sizes.get(plan.underlying, 1)
         trade_id = f"T-{uuid.uuid4().hex[:10].upper()}"
@@ -227,12 +240,12 @@ class OrderManager:
             # Pre-trade margin check (NeoClient only)
             bracket = None
             if use_bracket_for_this and leg["side"] == "BUY":
-                # Build bracket: SL = entry * 0.5, target = entry * 1.5
+                # Build bracket using configurable parameters (no hardcodes)
                 entry = leg.get("price", 0)
                 if entry > 0:
-                    sl = round(entry * 0.5, 2)
-                    target = round(entry * 1.5, 2)
-                    trailing = round(entry * 0.1, 2)
+                    sl = round(entry * bc["sl_pct"], 2)
+                    target = round(entry * bc["target_mult"], 2)
+                    trailing = round(entry * bc["trail_pct"], 2)
                     bracket = BracketOrderSpec(
                         entry_price=entry,
                         stop_loss=sl,

@@ -31,7 +31,7 @@ from kotak_bot.strategy.selector import StrategySelector
 from kotak_bot.alerts.telegram import TelegramAlerter
 from kotak_bot.alerts.telegram_commands import TelegramCommandHandler
 from kotak_bot.alerts.email import EmailAlerter
-from kotak_bot.utils.clock import now_ist, is_market_open, is_square_off_time, market_session
+from kotak_bot.utils.clock import now_ist, is_market_open, is_square_off_time, market_session, set_market_hours
 from kotak_bot.utils.logger import setup_logger
 
 # trade log CSV
@@ -96,6 +96,9 @@ def build_broker(cfg: dict):
         return PaperClient(
             starting_capital=broker_cfg.get("paper_capital", 300_000.0),
             slippage_bps=cfg.get("backtest", {}).get("slippage_bps", 5.0),
+            limit_fill_spread_pct=broker_cfg.get("limit_fill_spread_pct", 0.1),
+            limit_fill_min_spread=broker_cfg.get("limit_fill_min_spread", 0.05),
+            limit_fill_near_ltp_pct=broker_cfg.get("limit_fill_near_ltp_pct", 0.5),
         )
     # LIVE mode — require explicit confirmation to prevent accidental real-money trading
     if os.environ.get("KOTAK_LIVE_CONFIRMED") != "YES":
@@ -123,6 +126,8 @@ def run_paper() -> None:
     cfg = load_config()
     setup_logger(level=cfg.get("logging", {}).get("level", "INFO"),
                  log_file=cfg.get("logging", {}).get("file", "logs/bot.log"))
+    # Configure market hours from settings (NSE standard by default; can be overridden)
+    set_market_hours(cfg.get("market_hours", {}))
     logger.info("=" * 60)
     logger.info("Kotak Neo Trading Bot — PAPER MODE (Production v2)")
     logger.info("=" * 60)
@@ -268,9 +273,13 @@ def run_paper() -> None:
         spot = feed.get_ltp(symbol)
         if spot <= 0:
             return f"Cannot force trade — no spot LTP for {symbol} (synthetic feed may not have ticked yet)."
-        step = 50 if symbol == "NIFTY" else 100
+        # Pull strike step + count + padding from settings, NOT hardcoded
+        instr_cfg = cfg.get("instruments", {})
+        step = instr_cfg.get("strike_step", {}).get(symbol, 50)
+        padding = instr_cfg.get("strike_padding", 4)
+        strike_count = padding * 2 + 1
         atm = round(spot / step) * step
-        strikes = [atm + (i - 4) * step for i in range(9)]
+        strikes = [atm + (i - padding) * step for i in range(strike_count)]
         # use nearest weekly expiry from PROD scrip master when on live_kotak
         try:
             from kotak_bot.data.kotak_prod_feed import KotakProdFeed
@@ -623,10 +632,14 @@ def run_paper() -> None:
                     if spot <= 0:
                         logger.info(f"[SCAN] cycle={cycle_counter} {symbol} | skip: spot ltp=0 (synthetic feed may not have emitted yet)")
                         continue
-                    step = 50 if symbol == "NIFTY" else 100
+                    # Pull strike step, count, padding from settings.yaml (not hardcoded).
+                    # See config: instruments.strike_step, instruments.strike_padding
+                    instr_cfg_local = cfg.get("instruments", {})
+                    step = instr_cfg_local.get("strike_step", {}).get(symbol, 50)
+                    padding = instr_cfg_local.get("strike_padding", 4)
+                    strike_count = padding * 2 + 1
                     atm = round(spot / step) * step
-                    # EXPANDED to ±4 strikes for iron condor (needs ±3-4 step wings)
-                    strikes = [atm + (i - 4) * step for i in range(9)]
+                    strikes = [atm + (i - padding) * step for i in range(strike_count)]
                     option_ltps = {}
                     option_ltp_count = 0
                     for k in strikes:
@@ -719,7 +732,8 @@ def run_paper() -> None:
                     if plan:
                         expiry = now.strftime("%Y-%m-%d")
                         lot_sizes = cfg.get("instruments", {}).get("lot_sizes", {})
-                        trade = order_mgr.execute_plan(plan, qty=dec.suggested_qty, expiry=expiry, lot_sizes=lot_sizes)
+                        trade = order_mgr.execute_plan(plan, qty=dec.suggested_qty, expiry=expiry, lot_sizes=lot_sizes,
+                                                        bracket_config=cfg.get("risk", {}).get("bracket", {}))
                         risk.on_position_opened()
                         risk.state.trades_today += 1
                         last_trade_at[symbol] = now
@@ -813,9 +827,11 @@ def run_paper() -> None:
                             current_greeks={},
                             current_iv_change_pct=0.0,
                             minutes_to_expiry=minutes_to_expiry,
+                            config=cfg.get("risk", {}).get("smart_exit", {}),
                         )
-                        # Min hold: don't allow smart exit in first 5 min (avoid noise from synthetic ticks)
-                        min_hold_min = 5
+                        # Min hold: don't allow smart exit in first N min (avoid noise from
+                        # synthetic ticks or premature stops). Pulled from settings, NOT hardcoded.
+                        min_hold_min = int(min_hold_before_exit_sec / 60)
                         if es.should_exit and hold_min >= min_hold_min:
                             logger.info(
                                 f"[EXIT] {trade.plan.strategy.value} {trade.plan.underlying} | "

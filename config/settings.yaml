@@ -7,6 +7,22 @@ broker:
   environment: uat       # 'uat' or 'prod'
   paper_capital: 100000  # PAPER account size (user said: let paper trading size be 100000)
   # live_capital: 300000  # actual capital if/when flipping to live
+  # PaperClient fill simulation (no hardcodes in code):
+  limit_fill_spread_pct: 0.1      # 0.1% spread for LIMIT order fill simulation
+  limit_fill_min_spread: 0.05    # min Rs.0.05 spread (NSE tick)
+  limit_fill_near_ltp_pct: 0.5    # fill LIMIT if within 0.5% of LTP
+
+# =============================================================
+# MARKET HOURS — NSE standard. All time thresholds live here.
+# Override only if NSE changes schedule (rare). NO hardcodes in code.
+# =============================================================
+market_hours:
+  pre_open_start: "09:00"
+  pre_open_end:   "09:15"
+  opening_end:    "09:30"
+  regular_end:    "15:00"
+  close:          "15:30"
+  square_off:     "15:15"
 
 # =============================================================
 # VARIABLE RISK ENGINE — adapts to regime, confidence, and recent performance
@@ -61,14 +77,31 @@ risk:
   # Hourly P&L snapshot to Telegram
   hourly_pnl_report: true
   hourly_pnl_report_minute: 0        # top of each hour
-  # Smart exit thresholds
-  target_profit_pct: 0.95            # exit when 95% of target reached
-  stop_loss_pct: 0.95                # exit when 95% of stop hit
-  partial_profit_pct: 0.50           # scale out 50% at 50% of target
-  regime_flip_min_pnl_pct: 0.30      # min pnl before regime-flip exit
-  iv_crush_pct: -20.0                # IV drop % triggering exit on long premium
+
+  # =============================================================
+  # SMART EXIT THRESHOLDS — no hardcodes in code, all configurable
+  # =============================================================
+  smart_exit:
+    target_pct: 0.95                # exit when pnl >= 95% of plan.target
+    stop_pct: 0.95                  # exit when -pnl >= 95% of plan.stop
+    min_hold_pnl_pct: 0.5           # time-decay exit if pnl < 50% of target
+    expiry_minutes_threshold: 30    # "close to expiry" = within N min
+    max_hold_multiplier: 1.5        # max-hold exit if hold > 1.5x expected
+    max_hold_pnl_pct: 0.7           # max-hold exit requires pnl < 70% target
+    iv_crush_pct: -20.0             # IV drop % triggering exit on long premium
+    iv_crush_pnl_pct: 0.3           # IV-crush exit requires pnl < 30% target
+    partial_profit_low: 0.5         # partial take at >= 50% of target
+    partial_profit_high: 0.95       # and < 95% of target
+    partial_profit_hold_pct: 0.3    # only after 30% of expected hold
+    regime_flip_pnl_pct: 0.3        # regime-flip exit if pnl < 30% target
+
   # Strike selection
   strike_padding: 4                  # strikes around ATM (e.g. 4 = ATM ±4 = 9 strikes)
+  # Bracket order parameters (live trading — paper uses these too for parity)
+  bracket:
+    sl_pct: 0.5         # SL = entry * 0.5 (50% of premium for long options)
+    target_mult: 1.5    # target = entry * 1.5 (50% above entry)
+    trail_pct: 0.1      # trailing SL trail = entry * 0.1
   # Index tokens (NSE standard)
   index_tokens:
     NIFTY: "26000"
