@@ -84,7 +84,7 @@ risk:
 instruments:
   enabled: [NIFTY, BANKNIFTY]
   lot_sizes:
-    NIFTY: 75
+    NIFTY: 65               # Updated 2026-08-11 from PROD scrip master (was 75)
     BANKNIFTY: 30
   strike_step:
     NIFTY: 50
@@ -190,11 +190,13 @@ data:
   truedata_api_key: ""
   nselib_cache: data_cache/nselib
   # Feed modes:
+  #   'live_kotak'  — REAL NSE option prices from Kotak Neo PROD via REST polling.
+  #                   Real bid/ask depth, ltp, oi. ~2s latency. Recommended for paper trading.
   #   'live_india'  — REAL NIFTY/BANKNIFTY spot from yfinance + Black-Scholes option pricing
-  #                   using real India VIX. Best for paper trading. No broker creds.
+  #                   using real India VIX. Option prices are theoretical (no bid/ask depth).
   #   'synthetic'   — random walk (kept for unit tests / offline)
-  #   'live_uat'    — Kotak Neo UAT websocket (token discovery wip)
-  live_feed: live_india
+  #   'live_uat'    — Kotak Neo UAT websocket (UAT has no real market data — limited)
+  live_feed: live_kotak
   live_uat_fallback_sec: 30
   resample_intervals: [1, 5, 15, 60]
   news:

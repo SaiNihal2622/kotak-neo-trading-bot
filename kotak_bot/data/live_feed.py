@@ -1,12 +1,14 @@
-"""Live tick feed — four modes:
+"""Live tick feed — five modes:
 - 'synthetic': generates realistic OHLCV for paper testing (no creds needed)
 - 'live_india': REAL NIFTY/BANKNIFTY spot via yfinance + Black-Scholes option pricing
-               (best for paper trading; uses live market data, no broker creds)
+               (best for paper trading with no broker creds; option prices are theoretical)
 - 'live_uat': subscribes to Kotak Neo UAT websocket (real ticks from UAT)
 - 'live_ws': reserved for prod
+- 'live_kotak': REAL NSE option prices from Kotak Neo PROD via polling (recommended)
+                (real bid/ask depth, real LTP, real OI; ~2s latency)
 
 Public surface:
-    feed = LiveFeed(mode="live_india", broker=PaperClient(...))
+    feed = LiveFeed(mode="live_kotak", broker=PaperClient(...))
     feed.start()
     feed.get_ltp(symbol)
     feed.get_momentum(symbol, window=20)
@@ -15,7 +17,9 @@ Public surface:
 from __future__ import annotations
 
 import math
+import os
 import random
+import re
 import threading
 import time
 from collections import deque
@@ -96,6 +100,8 @@ class LiveFeed:
         self._ws_connected = False
         # token map for live WS (synth mode doesn't need this)
         self._token_map: dict[str, dict] = {}  # symbol -> {token, exchange_segment, ...}
+        # for live_kotak (KotakProdFeed adapter)
+        self._kotak_feed = None  # initialized in start() for live_kotak mode
 
     def start(self) -> None:
         with self._lock:
@@ -107,6 +113,37 @@ class LiveFeed:
                 self._thread.start()
             elif self.mode == "live_india":
                 self._thread = threading.Thread(target=self._live_india_loop, name="live-india-feed", daemon=True)
+                self._thread.start()
+            elif self.mode == "live_kotak":
+                # Real NSE option prices via Kotak Neo PROD polling.
+                # Reads creds from env: KOTAK_API_KEY, KOTAK_MOBILE, KOTAK_UCC,
+                # KOTAK_TOTP_SECRET, KOTAK_MPIN, KOTAK_ENV (default 'uat').
+                from kotak_bot.data.kotak_prod_feed import KotakProdFeed
+                access_token = os.environ.get('KOTAK_API_KEY', '')
+                self._kotak_feed = KotakProdFeed(
+                    env=os.environ.get('KOTAK_ENV', 'uat'),
+                    access_token=access_token,
+                    mobile=os.environ.get('KOTAK_MOBILE', ''),
+                    ucc=os.environ.get('KOTAK_UCC', ''),
+                    totp_secret=os.environ.get('KOTAK_TOTP_SECRET', ''),
+                    mpin=os.environ.get('KOTAK_MPIN', ''),
+                    poll_interval_sec=float(os.environ.get('KOTAK_PROD_POLL_SEC', '2.0')),
+                )
+                self._kotak_feed.on_tick(self._on_kotak_tick)
+                # Subscribe to spot + whatever was already requested
+                self._kotak_feed.subscribe(['NIFTY', 'BANKNIFTY'])
+                for s in self._subscribed:
+                    if s not in ('NIFTY', 'BANKNIFTY'):
+                        self._kotak_feed.subscribe([s])
+                try:
+                    self._kotak_feed.start()
+                except Exception as e:
+                    logger.error(f"KotakProdFeed start failed: {e} — falling back to live_india")
+                    self._running = False
+                    self.mode = "live_india"
+                    return self.start()
+                # Heartbeat thread for log visibility
+                self._thread = threading.Thread(target=self._live_kotak_loop, name="live-kotak-feed", daemon=True)
                 self._thread.start()
             elif self.mode in ("live_uat", "live_ws"):
                 # discover tokens for our symbols
@@ -133,6 +170,11 @@ class LiveFeed:
             self._running = False
         if self._thread:
             self._thread.join(timeout=2)
+        if self._kotak_feed is not None:
+            try:
+                self._kotak_feed.stop()
+            except Exception:
+                pass
         logger.info("LiveFeed stopped")
 
     def subscribe(self, symbols: list[str]) -> None:
@@ -155,6 +197,11 @@ class LiveFeed:
                                 logger.info(f"LiveFeed: subscribed to {s} token={tok['token']}")
                         except Exception as e:
                             logger.warning(f"subscribe {s}: {e}")
+                    elif self.mode == "live_kotak" and self._kotak_feed is not None:
+                        try:
+                            self._kotak_feed.subscribe([s])
+                        except Exception as e:
+                            logger.warning(f"kotak subscribe {s}: {e}")
         if self.mode == "synthetic":
             pass  # synthetic loop emits on demand
 
@@ -264,6 +311,77 @@ class LiveFeed:
         self._ws_connected = True
         # re-subscribe on reconnect
         self.subscribe(list(self._subscribed))
+
+    # ------- live_kotak: PROD polling adapter -------
+    def _on_kotak_tick(self, t: dict) -> None:
+        """Convert a KotakProdFeed tick (dict) to our Tick dataclass and dispatch.
+
+        Real NSE options arrive as full pTrdSymbol (e.g. 'NIFTY11AUG2624500CE').
+        Real NSE spot arrives as 'NIFTY' or 'BANKNIFTY'.
+        """
+        try:
+            sym = t.get('symbol', '')
+            ltp = float(t.get('ltp', 0) or 0)
+            if ltp <= 0:
+                return
+            bid = float(t.get('bid', 0) or 0)
+            ask = float(t.get('ask', 0) or 0)
+            oi = int(t.get('oi', 0) or 0)
+            vol = int(t.get('volume', 0) or 0)
+            # Parse option metadata from symbol (NIFTY/BANKNIFTY + DDMMMYY + STRIKE + CE/PE)
+            underlying = None
+            strike = 0.0
+            option_type = None
+            expiry = None
+            exchange = "NSE"
+            if sym in ('NIFTY', 'BANKNIFTY'):
+                underlying = sym
+                exchange = "NSE"
+            elif sym.startswith('NIFTY') or sym.startswith('BANKNIFTY'):
+                # Try to parse full symbol
+                m = re.match(r'^(NIFTY|BANKNIFTY)(\d{2})(\d{2})(\d{2})(\d+)(CE|PE)$', sym)
+                if m:
+                    underlying = m.group(1)
+                    dd, mm, yy, strike_s, opt = m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)
+                    try:
+                        expiry = f"20{yy}-{mm}-{dd}"
+                    except Exception:
+                        expiry = None
+                    strike = float(strike_s)
+                    option_type = opt
+                    exchange = "NFO"
+            tick = Tick(
+                symbol=sym, ltp=ltp, bid=bid, ask=ask,
+                volume=vol, oi=oi,
+                timestamp=now_ist(), exchange=exchange,
+                strike=strike, option_type=option_type, expiry=expiry,
+                underlying=underlying,
+            )
+            self._dispatch(tick)
+        except Exception as e:
+            logger.debug(f"kotak tick parse: {e}")
+
+    def _live_kotak_loop(self) -> None:
+        """Heartbeat / health log for live_kotak mode. KotakProdFeed does the actual work."""
+        if not hasattr(self, '_kotak_feed') or self._kotak_feed is None:
+            return
+        f = self._kotak_feed
+        last_heartbeat = 0.0
+        while self._running:
+            try:
+                now = time.time()
+                if now - last_heartbeat > 60:
+                    last_heartbeat = now
+                    authed = f.is_authenticated()
+                    subscribed = len(f._subscribed) if hasattr(f, '_subscribed') else 0
+                    latest_count = len(f._latest) if hasattr(f, '_latest') else 0
+                    logger.info(
+                        f"LiveKotak heartbeat: authed={authed} subscribed={subscribed} "
+                        f"latest={latest_count} tick_count={self._tick_count}"
+                    )
+            except Exception as e:
+                logger.debug(f"kotak heartbeat: {e}")
+            time.sleep(5)
 
     def _ws_loop(self) -> None:
         """Background WS health check + reconnect."""
