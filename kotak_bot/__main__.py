@@ -151,6 +151,10 @@ def run_paper() -> None:
     feed = LiveFeed(mode=feed_mode, broker=broker, neo_client=neo_client_for_feed)
     feed.start()
     feed.subscribe(["NIFTY", "BANKNIFTY"])
+    # FIX 2026-08-12: pin strikes for any open orders that survived a bot restart,
+    # so live_kotak feed keeps polling them and the paper fill sim can fill them.
+    # Run AFTER order_mgr is created below, so we can read open_trades() leg symbols.
+    _pending_startup_pin = True
 
     # ------- pipeline -------
     risk = RiskEngine(cfg.get("risk", {}))
@@ -193,6 +197,21 @@ def run_paper() -> None:
     anomaly = AnomalyDetector({"cooldown_sec": 300})
     oi_heatmap_gen = OIHeatmapGenerator()
     logger.success("Intel layer: performance + alpha decay + auto-tune + journal + multi-broker + OI")
+
+    # Now that order_mgr exists, pin the leg strikes of any pre-existing open trades
+    # so the live_kotak feed keeps polling them and the paper fill sim can fill them.
+    if _pending_startup_pin:
+        try:
+            pinned = set()
+            for t in order_mgr.open_trades():
+                for o in t.orders:
+                    if o.symbol and o.symbol not in ('NIFTY', 'BANKNIFTY'):
+                        pinned.add(o.symbol)
+            if pinned:
+                feed.keep_alive_subscribe(list(pinned))
+                logger.info(f"[KEEP-ALIVE] pinned {len(pinned)} open-trade leg strikes on startup: {sorted(pinned)}")
+        except Exception as e:
+            logger.warning(f"startup keep_alive pin failed: {e}")
 
     # ------- News pipeline (lazy) -------
     news = None
@@ -320,6 +339,15 @@ def run_paper() -> None:
         expiry_full = now.strftime("%Y-%m-%d")
         lot_sizes = cfg.get("instruments", {}).get("lot_sizes", {})
         trade = order_mgr.execute_plan(plan, qty=1, expiry=expiry_full, lot_sizes=lot_sizes)
+        # FIX 2026-08-12: pin leg strikes to keep_alive subscription so KotakProdFeed
+        # keeps polling them even after the scan loop rotates the ATM window.
+        # Without this, open orders on older strikes get NO ticks and never fill.
+        try:
+            leg_syms = [_strategy_leg_symbol(l) for l in plan.legs]
+            feed.keep_alive_subscribe(leg_syms)
+            logger.info(f"[KEEP-ALIVE] pinned {len(leg_syms)} leg strikes: {leg_syms}")
+        except Exception as e:
+            logger.warning(f"keep_alive_subscribe failed: {e}")
         alerter.trade_opened(plan)
         legs_str = ", ".join([f"{l.get('side','')} {int(l.get('strike',0))}{l.get('opt_type','')} @ {l.get('price',0)}" for l in plan.legs])
         return (
@@ -425,6 +453,14 @@ def run_paper() -> None:
         except Exception:
             pass
         return now_ist().strftime("%d%b%y").upper()
+
+    def _strategy_leg_symbol(leg: dict) -> str:
+        """Build the strategy-format symbol for a plan leg: {UNDERLYING}{DDMMMYY}{STRIKE}{CE|PE}.
+        Handles 'underlying' (preferred) or 'symbol' (legacy) fields."""
+        underlying = leg.get('underlying') or leg.get('symbol', '')
+        strike = int(leg.get('strike', 0))
+        opt = leg.get('opt_type', leg.get('option_type', ''))
+        return f"{underlying}{_strategy_expiry_str(underlying)}{strike}{opt}"
     cycle_counter = 0
     while True:
         try:
@@ -640,6 +676,17 @@ def run_paper() -> None:
                     strike_count = padding * 2 + 1
                     atm = round(spot / step) * step
                     strikes = [atm + (i - padding) * step for i in range(strike_count)]
+                    # FIX 2026-08-12: live_kotak feed doesn't auto-emit option ticks
+                    # like live_india does. We must explicitly subscribe the ATM ±padding
+                    # option symbols each scan cycle so KotakProdFeed polls them.
+                    opt_symbols = [
+                        f"{symbol}{_strategy_expiry_str(symbol)}{int(k)}{ot}"
+                        for k in strikes for ot in ("CE", "PE")
+                    ]
+                    try:
+                        feed.subscribe(opt_symbols)
+                    except Exception as e:
+                        logger.warning(f"[SCAN] subscribe options failed: {e}")
                     option_ltps = {}
                     option_ltp_count = 0
                     for k in strikes:
@@ -734,6 +781,13 @@ def run_paper() -> None:
                         lot_sizes = cfg.get("instruments", {}).get("lot_sizes", {})
                         trade = order_mgr.execute_plan(plan, qty=dec.suggested_qty, expiry=expiry, lot_sizes=lot_sizes,
                                                         bracket_config=cfg.get("risk", {}).get("bracket", {}))
+                        # FIX 2026-08-12: pin leg strikes to keep_alive so KotakProdFeed
+                        # keeps polling them after the scan loop rotates ATM window.
+                        try:
+                            leg_syms = [_strategy_leg_symbol(l) for l in plan.legs]
+                            feed.keep_alive_subscribe(leg_syms)
+                        except Exception as e:
+                            logger.warning(f"keep_alive_subscribe failed: {e}")
                         risk.on_position_opened()
                         risk.state.trades_today += 1
                         last_trade_at[symbol] = now

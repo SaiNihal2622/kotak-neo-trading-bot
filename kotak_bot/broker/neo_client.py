@@ -183,7 +183,13 @@ class NeoClient(BrokerClient):
     # Scrip Master + Search (dynamic option discovery)
     # ============================================================
     def load_scrip_master(self, exchange_segments: list[str] = None) -> int:
-        """Download full scrip master for given segments. Caches to data_cache/scrip_master.json."""
+        """Download full scrip master for given segments. Caches to data_cache/scrip_master.json.
+
+        The neo_api_client SDK's scrip_master() returns 'Exchange Segment is not available'
+        in PROD. So we use the actual working endpoint:
+            {baseUrl}/script-details/1.0/masterscrip/file-paths
+        which returns S3 URLs to CSV files. We download them directly.
+        """
         if not self._connected:
             raise RuntimeError("Not connected")
         segments = exchange_segments or ["nse_cm", "nse_fo", "bse_cm", "bse_fo"]
@@ -191,31 +197,68 @@ class NeoClient(BrokerClient):
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         total_loaded = 0
         all_data = {}
-        for seg in segments:
-            try:
-                url_or_data = self._client.scrip_master(exchange_segment=seg)
-                if isinstance(url_or_data, str) and url_or_data.startswith("http"):
-                    # download the CSV from URL
-                    import urllib.request
-                    with urllib.request.urlopen(url_or_data, timeout=30) as r:
-                        csv_text = r.read().decode("utf-8")
-                    reader = csv.DictReader(csv_text.splitlines())
-                    rows = list(reader)
+
+        # First, get the list of CSV URLs from the working endpoint
+        try:
+            import urllib.request
+            url = f"{self._base_url}/script-details/1.0/masterscrip/file-paths"
+            req = urllib.request.Request(url, headers={"Authorization": self._client.api_key if hasattr(self._client, "api_key") else ""})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                paths_resp = json.loads(r.read().decode())
+            file_paths = paths_resp.get("data", {}).get("filesPaths", [])
+        except Exception as e:
+            logger.warning(f"masterscrip/file-paths failed: {e}, falling back to SDK")
+            file_paths = None
+
+        if not file_paths:
+            # Fallback to SDK (which may not work in PROD)
+            for seg in segments:
+                try:
+                    url_or_data = self._client.scrip_master(exchange_segment=seg)
+                    if isinstance(url_or_data, str) and url_or_data.startswith("http"):
+                        import urllib.request
+                        with urllib.request.urlopen(url_or_data, timeout=30) as r:
+                            csv_text = r.read().decode("utf-8")
+                        rows = list(csv.DictReader(csv_text.splitlines()))
+                        all_data[seg] = rows
+                        total_loaded += len(rows)
+                except Exception as e:
+                    logger.warning(f"scrip_master[{seg}] failed: {e}")
+        else:
+            # Use the file paths to download directly
+            for url in file_paths:
+                seg = "unknown"
+                if "nse_fo" in url: seg = "nse_fo"
+                elif "nse_cm" in url: seg = "nse_cm"
+                elif "bse_fo" in url: seg = "bse_fo"
+                elif "bse_cm" in url: seg = "bse_cm"
+                elif "cde_fo" in url: seg = "cde_fo"
+                elif "mcx_fo" in url: seg = "mcx_fo"
+                if segments and seg not in segments:
+                    continue
+                try:
+                    import urllib.request, gzip
+                    req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0", "Accept-Encoding": "gzip"})
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        data = r.read()
+                    if data[:2] == b"\x1f\x8b":
+                        data = gzip.decompress(data)
+                    rows = list(csv.DictReader(data.decode("utf-8", errors="ignore").splitlines()))
                     all_data[seg] = rows
                     total_loaded += len(rows)
                     logger.info(f"scrip_master[{seg}]: {len(rows)} rows downloaded")
-                elif isinstance(url_or_data, list):
-                    all_data[seg] = url_or_data
-                    total_loaded += len(url_or_data)
-                else:
-                    logger.warning(f"scrip_master[{seg}] unexpected return: {str(url_or_data)[:200]}")
-            except Exception as e:
-                logger.warning(f"scrip_master[{seg}] failed: {e}")
+                except Exception as e:
+                    logger.warning(f"scrip_master[{seg}] download failed: {e}")
+
+        if total_loaded == 0:
+            logger.error("load_scrip_master: no data loaded")
+            return 0
+
         # cache
         cache_path.write_text(json.dumps(all_data, default=str), encoding="utf-8")
         self._scrip_master = all_data
         self._scrip_master_loaded_at = datetime.utcnow()
-        # build token index
+        # build token index — note: prod CSV uses 'pSymbol' not 'token'
         for seg, rows in all_data.items():
             for row in rows:
                 tk = str(row.get("token", row.get("pSymbol", "")))
@@ -467,9 +510,35 @@ class NeoClient(BrokerClient):
         try:
             resp = self._client.order_history(order_id=order_id)
             self._audit("order_history", {"order_id": order_id, "response": resp})
-            return resp if isinstance(resp, list) else [resp]
+            if isinstance(resp, list):
+                return resp
+            if isinstance(resp, dict):
+                if self._is_status_no_data(resp):
+                    return []
+                return resp.get("data", [])
+            return []
         except Exception as e:
             logger.warning(f"order_history failed: {e}")
+            return []
+
+    def get_order_report(self) -> list:
+        """All today's orders. The SDK may return a 'no data' status dict
+        (e.g. after market hours when no orders were placed today), an
+        actual list, or a dict with 'data' list inside.
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected")
+        try:
+            resp = self._client.order_report()
+            if isinstance(resp, list):
+                return resp
+            if isinstance(resp, dict):
+                if self._is_status_no_data(resp):
+                    return []
+                return resp.get("data", [])
+            return []
+        except Exception as e:
+            logger.warning(f"order_report failed: {e}")
             return []
 
     def get_trade_report(self, order_id: Optional[str] = None) -> list:
@@ -477,22 +546,19 @@ class NeoClient(BrokerClient):
         if not self._connected:
             raise RuntimeError("Not connected")
         try:
-            resp = self._client.trade_report(order_id=order_id)
-            self._audit("trade_report", {"order_id": order_id, "response": resp})
-            return resp if isinstance(resp, list) else [resp]
+            if order_id is not None:
+                resp = self._client.trade_report(order_id=order_id)
+            else:
+                resp = self._client.trade_report()
+            if isinstance(resp, list):
+                return resp
+            if isinstance(resp, dict):
+                if self._is_status_no_data(resp):
+                    return []
+                return resp.get("data", [])
+            return []
         except Exception as e:
             logger.warning(f"trade_report failed: {e}")
-            return []
-
-    def get_order_report(self) -> list:
-        """All today's orders."""
-        if not self._connected:
-            raise RuntimeError("Not connected")
-        try:
-            resp = self._client.order_report()
-            return resp if isinstance(resp, list) else [resp]
-        except Exception as e:
-            logger.warning(f"order_report failed: {e}")
             return []
 
     # ============================================================
@@ -521,29 +587,55 @@ class NeoClient(BrokerClient):
             return []
 
     def get_margins(self) -> dict:
+        """Get account margin info. The neo_api_client SDK returns a flat dict with
+        89+ fields like AmountUtilizedPrsnt, RealizedMtomPrsnt, etc. We map the
+        most useful ones to our standard {available, used, total} format.
+        Returns zeros if the SDK call fails or returns invalid data.
+        """
+        empty = {"available": 0.0, "used": 0.0, "total": 0.0, "unrealized_pnl": 0.0, "realized_pnl": 0.0, "collateral": 0.0}
         with self._lock:
             if not self._connected:
                 raise RuntimeError("Not connected")
             try:
                 resp = self._client.limits()
-                self._margin = resp if isinstance(resp, dict) else {}
-                self._heartbeat = datetime.utcnow()
-                return {
-                    "available": float(self._margin.get("equityAvailableMargin", 0) or 0),
-                    "used": float(self._margin.get("equityUsedMargin", 0) or 0),
-                    "total": float(self._margin.get("equityTotalMargin", 0) or 0),
-                }
             except Exception as e:
-                logger.warning(f"limits failed: {e}")
-                return {"available": 0, "used": 0, "total": 0}
+                logger.warning(f"limits() SDK call failed: {e}")
+                return empty
+            self._heartbeat = datetime.utcnow()
+            if resp is None or not isinstance(resp, dict):
+                return empty
+            if self._is_status_no_data(resp):
+                return empty
+            self._margin = resp
+            # Field mapping — use whatever SDK returns, with safe fallbacks.
+            net = float(resp.get("Net", 0) or 0)
+            used = float(resp.get("AmountUtilizedPrsnt", 0) or 0)
+            total_field = float(resp.get("NotionalCash", 0) or 0)
+            total = total_field if total_field > 0 else (net + used)
+            return {
+                "available": net,
+                "used": used,
+                "total": total,
+                "unrealized_pnl": float(resp.get("UnrealizedMtomPrsnt", 0) or 0),
+                "realized_pnl": float(resp.get("RealizedMtomPrsnt", 0) or 0),
+                "collateral": float(resp.get("CollateralValue", 0) or 0),
+            }
 
     def get_segment_limits(self, segment: str = "ALL", exchange: str = "ALL", product: str = "ALL") -> dict:
-        """Get limits for a specific segment."""
+        """Get limits for a specific segment. The neo_api_client SDK call
+        'limits(segment=..., exchange=..., product=...)' returns 'Exchange Segment
+        is not available' error in PROD. Use limits() with no args (full margin info)
+        and filter locally if needed.
+        """
         if not self._connected:
             raise RuntimeError("Not connected")
         try:
-            resp = self._client.limits(segment=segment, exchange=exchange, product=product)
-            return resp
+            # The SDK's parameterized limits() doesn't work in PROD (returns error).
+            # Use the unparameterized version which returns the full margin dict.
+            resp = self._client.limits()
+            if isinstance(resp, dict) and self._is_status_no_data(resp):
+                return {}
+            return resp if isinstance(resp, dict) else {}
         except Exception as e:
             logger.warning(f"segment_limits failed: {e}")
             return {}
@@ -711,9 +803,33 @@ class NeoClient(BrokerClient):
         return {"MARKET": "MKT", "LIMIT": "L", "SL": "SL", "SL-M": "SL-M"}.get(v, "L")
 
     def _parse_positions(self, resp) -> list[Position]:
+        """Parse positions response. The neo_api_client SDK returns either:
+        - a status dict like {'stCode': 5203, 'errMsg': 'No Data', 'stat': 'Not_Ok'} (no positions)
+        - a dict with 'data' key containing a list of positions
+        - a list of positions directly
+        - None (network error / SDK returned None) → treat as empty
+        """
         out = []
         try:
-            data = resp if isinstance(resp, list) else resp.get("data", [])
+            # None → empty
+            if resp is None:
+                return out
+            # Handle status dict (no data)
+            if isinstance(resp, dict) and resp.get("stCode") in (5201, 5203, 5204):
+                return out
+            if isinstance(resp, dict) and resp.get("stat") == "Not_Ok":
+                return out
+            if isinstance(resp, dict) and "Error" in resp:
+                return out
+            # Real response
+            if isinstance(resp, list):
+                data = resp
+            elif isinstance(resp, dict):
+                data = resp.get("data", [])
+            else:
+                return out
+            if not isinstance(data, list):
+                return out
             for d in data:
                 qty = int(d.get("qty", d.get("netQty", 0)) or 0)
                 if qty == 0:
@@ -730,3 +846,15 @@ class NeoClient(BrokerClient):
         except Exception as e:
             logger.exception(f"parse_positions: {e}")
         return out
+
+    def _is_status_no_data(self, resp) -> bool:
+        """Check if a response is a Kotak 'no data' status dict (e.g. stCode 5203)."""
+        if not isinstance(resp, dict):
+            return False
+        if resp.get("stCode") in (5201, 5203, 5204):
+            return True
+        if resp.get("stat") == "Not_Ok":
+            return True
+        if "errMsg" in resp and "data" not in resp and "stCode" in resp:
+            return True
+        return False

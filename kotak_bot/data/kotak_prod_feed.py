@@ -184,6 +184,7 @@ class KotakProdFeed:
         self._trdSym_to_pSymbol: dict[str, str] = {}  # pTrdSymbol (e.g. NIFTY2681124600CE) → pSymbol
         self._strategySym_to_pSymbol: dict[str, str] = {}  # strategy format (e.g. NIFTY11AUG2624600CE) → pSymbol
         self._subscribed: set[str] = set()  # either 'NIFTY' or 'BANKNIFTY' (spot) or full trdSym
+        self._keep_alive: set[str] = set()  # strikes with open paper orders — never drop
         self._latest: dict[str, dict] = {}  # symbol → {ltp, bid, ask, oi, vol, ts}
         self._price_history: dict[str, list[float]] = {}
         self._lock = threading.RLock()
@@ -227,6 +228,24 @@ class KotakProdFeed:
                 if s and s not in self._subscribed:
                     self._subscribed.add(s)
             logger.debug(f"KotakProdFeed subscribe: {symbols} (total {len(self._subscribed)})")
+
+    def keep_alive_subscribe(self, symbols: list[str]) -> None:
+        """Pin a symbol to permanent subscription. Used for strikes with open paper orders,
+        so the poll loop never drops them even if the strategy rotates ATM strikes.
+        These are added to _subscribed AND to a separate _keep_alive set so they
+        survive any external pruning of _subscribed."""
+        with self._lock:
+            for s in symbols:
+                if not s:
+                    continue
+                self._keep_alive.add(s)
+                self._subscribed.add(s)
+            logger.debug(f"KotakProdFeed keep_alive: {symbols} (keep_alive total {len(self._keep_alive)})")
+
+    def clear_keep_alive(self) -> None:
+        """Remove all keep-alive pins (e.g. when starting fresh day)."""
+        with self._lock:
+            self._keep_alive.clear()
 
     def on_tick(self, callback: Callable[[dict], None]) -> None:
         self._callbacks.append(callback)
@@ -507,6 +526,10 @@ class KotakProdFeed:
                 if not self._reauth_if_needed():
                     time.sleep(self.poll_interval * 5)
                     continue
+                # Re-add keep-alive strikes each cycle in case they were pruned.
+                with self._lock:
+                    for s in self._keep_alive:
+                        self._subscribed.add(s)
                 # 1) Fetch option quotes if any subscribed
                 psyms = self.get_subscribed_pSymbols()
                 if psyms:

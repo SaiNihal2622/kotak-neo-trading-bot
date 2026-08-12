@@ -177,6 +177,20 @@ class LiveFeed:
                 pass
         logger.info("LiveFeed stopped")
 
+    def keep_alive_subscribe(self, symbols: list[str]) -> None:
+        """Pin symbols to permanent subscription. Used for strikes with open paper orders
+        so the underlying KotakProdFeed (or any future live feed) keeps polling them
+        even if the strategy rotates the ATM strike window."""
+        with self._lock:
+            for s in symbols:
+                if s:
+                    self._subscribed.add(s)
+            if self.mode == "live_kotak" and self._kotak_feed is not None:
+                try:
+                    self._kotak_feed.keep_alive_subscribe(list(symbols))
+                except Exception as e:
+                    logger.warning(f"kotak keep_alive: {e}")
+
     def subscribe(self, symbols: list[str]) -> None:
         with self._lock:
             for s in symbols:
@@ -455,7 +469,10 @@ class LiveFeed:
                 step = p["step"]
                 if strike_cache[sym] is None or (time.time() - last_emit) > 5:
                     atm = round(spot[sym] / step) * step
-                    strikes[sym] = [atm + (i - 4) * step for i in range(9)]
+                    # strike_count from config (not hardcoded 9)
+                    sc = p.get("strike_count", 9)
+                    pad = (sc - 1) // 2
+                    strikes[sym] = [atm + (i - pad) * step for i in range(sc)]
                     last_emit = time.time()
                 for k in strikes[sym]:
                     intrinsic_ce = max(0, spot[sym] - k)
@@ -567,7 +584,9 @@ class LiveFeed:
                     p = params[sym]
                     step = p["step"]
                     atm = round(spot[sym] / step) * step
-                    strikes[sym] = [atm + (i - 4) * step for i in range(9)]
+                    sc = p.get("strike_count", 9)
+                    pad = (sc - 1) // 2
+                    strikes[sym] = [atm + (i - pad) * step for i in range(sc)]
                     iv_decimal = (vix[sym] / 100.0) * regime_mult
 
                     # spot tick (real price)
