@@ -128,18 +128,23 @@ def test_provider_exception_does_not_kill_thread(tmp_path: Path):
         state_provider=bad_provider,
     )
     mon.start()
-    # Wait for at least 2 ticks
-    deadline = time.time() + 5.0
+    # Wait for the running state (up to 15s — heavy CI can be slow)
+    deadline = time.time() + 15.0
+    payload = None
     while time.time() < deadline:
-        d = _read_json(mon.ping_file)
-        if d.get("state") == "running":
-            break
-        time.sleep(0.2)
+        try:
+            d = _read_json(mon.ping_file)
+            if d.get("state") == "running":
+                payload = d
+                break
+        except Exception:
+            pass
+        time.sleep(0.3)
     # Thread must still be running
     assert mon._thread.is_alive()  # type: ignore[union-attr]
+    assert payload is not None, "liveness never reached 'running' state within 15s"
     # Ping file should still be valid JSON, and the error should be recorded
     # inside the snapshot rather than killing the thread
-    payload = _read_json(mon.ping_file)
     assert "snapshot" in payload
     assert "provider_error" in payload["snapshot"]
     assert "boom" in payload["snapshot"]["provider_error"]

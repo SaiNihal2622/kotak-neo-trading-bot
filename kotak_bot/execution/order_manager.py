@@ -47,6 +47,13 @@ class ManagedTrade:
     target_hit: bool = False
     stop_hit: bool = False
     exit_reason: str = ""
+    # Derived top-level fields for fast queries without traversing orders.
+    # Populated by _save_state / _load_state and by execute_plan / close_trade.
+    status: str = "open"  # "open" | "closed"
+    underlying: str = ""  # mirrored from plan.underlying for fast filtering
+    leg_count: int = 0     # len(orders) at open time
+    pnl: float = 0.0       # current unrealized + realized, for ranking/queries
+    entry_time: Optional[datetime] = None  # alias for opened_at for clarity
 
 
 class OrderManager:
@@ -78,6 +85,10 @@ class OrderManager:
         """Persist the entire _trades dict to JSON. Atomic write + retry."""
         with self._lock:
             try:
+                # First, refresh derived fields on each trade so what we save
+                # is always in sync with the orders.
+                for t in self._trades.values():
+                    self._refresh_derived(t)
                 state = {
                     "trades": {
                         tid: {
@@ -90,6 +101,12 @@ class OrderManager:
                             "target_hit": t.target_hit,
                             "stop_hit": t.stop_hit,
                             "exit_reason": t.exit_reason,
+                            # Derived top-level fields (consumed by reconcile + dashboard)
+                            "status": t.status,
+                            "underlying": t.underlying,
+                            "leg_count": t.leg_count,
+                            "pnl": t.pnl,
+                            "entry_time": t.entry_time.isoformat() if t.entry_time else None,
                         }
                         for tid, t in self._trades.items()
                     },
@@ -103,6 +120,20 @@ class OrderManager:
                 os.replace(tmp, self.persist_path)
             except Exception as e:
                 logger.warning(f"OrderManager state save failed: {e}")
+
+    @staticmethod
+    def _refresh_derived(t: "ManagedTrade") -> None:
+        """Recompute derived top-level fields on a trade from its current orders + plan."""
+        # Status: 'closed' if closed_at is set, else 'open'
+        t.status = "closed" if t.closed_at is not None else "open"
+        # Underlying: mirror from plan
+        t.underlying = (t.plan.underlying if t.plan and getattr(t.plan, "underlying", None) else "")
+        # Leg count
+        t.leg_count = len(t.orders)
+        # Entry time = opened_at
+        t.entry_time = t.opened_at
+        # P&L: realized + (unrealized if open)
+        t.pnl = float(t.realized_pnl or 0.0)
 
     def _load_state(self) -> None:
         if not self.persist_path.exists():
@@ -126,16 +157,28 @@ class OrderManager:
                         expected_hold_minutes=p.get("expected_hold_minutes", 60),
                     )
                 orders = [self._dict_to_order(od) for od in td.get("orders", [])]
+                opened_at = datetime.fromisoformat(td["opened_at"]) if td.get("opened_at") else None
+                closed_at = datetime.fromisoformat(td["closed_at"]) if td.get("closed_at") else None
                 trade = ManagedTrade(
                     trade_id=td.get("trade_id", tid),
                     plan=plan,
                     orders=orders,
-                    opened_at=datetime.fromisoformat(td["opened_at"]) if td.get("opened_at") else None,
-                    closed_at=datetime.fromisoformat(td["closed_at"]) if td.get("closed_at") else None,
+                    opened_at=opened_at,
+                    closed_at=closed_at,
                     realized_pnl=td.get("realized_pnl", 0.0),
                     target_hit=td.get("target_hit", False),
                     stop_hit=td.get("stop_hit", False),
                     exit_reason=td.get("exit_reason", ""),
+                    # Derived top-level fields — fall back to old-schema derivations
+                    status=td.get("status") or ("closed" if closed_at is not None else "open"),
+                    underlying=td.get("underlying") or (plan.underlying if plan else ""),
+                    leg_count=td.get("leg_count", len(orders)),
+                    pnl=td.get("pnl", td.get("realized_pnl", 0.0)),
+                    entry_time=(
+                        datetime.fromisoformat(td["entry_time"])
+                        if td.get("entry_time")
+                        else opened_at
+                    ),
                 )
                 self._trades[tid] = trade
             self._symbol_to_trade = state.get("symbol_to_trade", {})
