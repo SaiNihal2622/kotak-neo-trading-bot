@@ -90,3 +90,132 @@ def is_square_off_time(now: Optional[datetime] = None, threshold: Optional[time]
     now = now or now_ist()
     t = threshold or _MARKET_HOURS["square_off"]
     return now.time() >= t
+
+
+# Intraday mode configuration (separate from market_hours to make intent explicit)
+_INTRADAY = {
+    "allow_overnight": False,    # master switch — when False, no positions held past close
+    "no_new_trades_after": time(13, 30),  # block new entries this many minutes before close
+    "force_square_off_time": time(14, 30),  # hard square-off all positions this time
+    "opening_buffer_min": 15,    # don't enter in first 15 min (9:15-9:30) — let price settle
+    "avoid_first_5_min_after_open": True,
+    "event_blackout_min_before": 60,  # don't trade within 60 min of a macro event
+    "event_blackout_min_after": 15,   # or within 15 min after
+}
+
+
+def set_intraday(cfg: dict) -> None:
+    """Configure intraday behavior. Pass empty dict to reset to defaults."""
+    global _INTRADAY
+    if not cfg:
+        return
+    new_cfg = dict(_INTRADAY)
+    for k, v in cfg.items():
+        if k in new_cfg:
+            if k in ("no_new_trades_after", "force_square_off_time") and isinstance(v, str):
+                try:
+                    h, m = v.split(":")
+                    new_cfg[k] = time(int(h), int(m))
+                except (ValueError, AttributeError):
+                    pass
+            else:
+                new_cfg[k] = v
+    _INTRADAY = new_cfg
+
+
+def get_intraday() -> dict:
+    return dict(_INTRADAY)
+
+
+def is_past_no_new_trades_time(now: Optional[datetime] = None) -> bool:
+    """True if we're past the time when new entries should be blocked (intraday safety)."""
+    now = now or now_ist()
+    return now.time() >= _INTRADAY["no_new_trades_after"]
+
+
+def is_past_force_square_off_time(now: Optional[datetime] = None) -> bool:
+    """True if it's time to force-square-off all intraday positions."""
+    now = now or now_ist()
+    return now.time() >= _INTRADAY["force_square_off_time"]
+
+
+def is_in_opening_buffer(now: Optional[datetime] = None) -> bool:
+    """True if we're in the first 15 min after market open (9:15-9:30) — avoid trading."""
+    if not _INTRADAY.get("avoid_first_5_min_after_open", True):
+        return False
+    now = now or now_ist()
+    # opening_end is 9:30, opening starts at 9:15 (pre_open_end)
+    return now.time() >= _MARKET_HOURS["pre_open_end"] and now.time() < _MARKET_HOURS["opening_end"]
+
+
+def is_allow_overnight() -> bool:
+    """True if overnight positions are allowed. False = intraday-only mode."""
+    return _INTRADAY.get("allow_overnight", False)
+
+
+def in_event_blackout(now: Optional[datetime] = None, macro_cal=None) -> bool:
+    """True if we're in a macro-event blackout window (e.g. RBI policy, US Fed)."""
+    if macro_cal is None:
+        return False
+    try:
+        ev = macro_cal.get_event_window(
+            now or now_ist(),
+            minutes_before=_INTRADAY.get("event_blackout_min_before", 60),
+            minutes_after=_INTRADAY.get("event_blackout_min_after", 15),
+        )
+        return ev is not None
+    except Exception:
+        return False
+
+
+# =============================================================
+# INDIA VIX — fetched once at startup, refreshed every 15 min
+# Used by VIX-aware position sizing and trade skipping.
+# =============================================================
+_INDIA_VIX = 14.0  # default fallback if fetch fails
+_VIX_LAST_FETCH = None  # datetime of last successful fetch
+
+
+def fetch_india_vix(force: bool = False) -> float:
+    """Fetch India VIX from yfinance. Cached for 15 min. Falls back to last value."""
+    global _INDIA_VIX, _VIX_LAST_FETCH
+    from datetime import datetime, timedelta
+    if not force and _VIX_LAST_FETCH and (datetime.utcnow() - _VIX_LAST_FETCH) < timedelta(minutes=15):
+        return _INDIA_VIX
+    try:
+        import yfinance as yf
+        # India VIX ticker on yfinance
+        vix_ticker = yf.Ticker("^INDIAVIX")
+        hist = vix_ticker.history(period="5d")
+        if not hist.empty:
+            _INDIA_VIX = float(hist["Close"].iloc[-1])
+            _VIX_LAST_FETCH = datetime.utcnow()
+    except Exception:
+        pass  # keep last value
+    return _INDIA_VIX
+
+
+def get_india_vix() -> float:
+    return _INDIA_VIX
+
+
+def vix_position_size_multiplier(vix: float) -> float:
+    """Return position size multiplier based on VIX.
+    VIX <= 12: 1.0x (calm)
+    VIX 12-15: 1.0x
+    VIX 15-18: 0.75x
+    VIX 18-22: 0.5x
+    VIX > 22: 0.0x (no trade)
+    """
+    if vix > 22:
+        return 0.0
+    if vix > 18:
+        return 0.5
+    if vix > 15:
+        return 0.75
+    return 1.0
+
+
+def vix_should_skip(vix: float, max_vix: float = 22.0) -> bool:
+    """True if VIX is too high to trade."""
+    return vix > max_vix

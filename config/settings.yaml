@@ -11,6 +11,11 @@ broker:
   limit_fill_spread_pct: 0.1      # 0.1% spread for LIMIT order fill simulation
   limit_fill_min_spread: 0.05    # min Rs.0.05 spread (NSE tick)
   limit_fill_near_ltp_pct: 0.5    # fill LIMIT if within 0.5% of LTP
+  # Fill mode for paper:
+  #   'market_like'      : force fill at LTP +/- slippage (paper validation of strategy logic) - DEFAULT
+  #   'aggressive_limit' : fill if within 5% of LTP, else defer (close to live)
+  #   'realistic_limit'  : original logic - only fill if limit crosses synthetic bid/ask
+  fill_mode: market_like
 
 # =============================================================
 # MARKET HOURS — NSE standard. All time thresholds live here.
@@ -62,6 +67,31 @@ risk:
   # timing
   square_off_time: "15:15"
   no_new_trades_after: "14:30"
+  # =============================================================
+  # INTRADAY-ONLY MODE — prevents overnight gap risk
+  # When allow_overnight=false, no new entries after no_new_trades_after
+  # and all positions force-square-off by force_square_off_time
+  # =============================================================
+  intraday:
+    allow_overnight: false           # MASTER SWITCH: false = intraday only
+    no_new_trades_after: "13:30"     # block new entries this IST time
+    force_square_off_time: "14:30"   # hard close all positions by this IST time
+    avoid_first_5_min_after_open: true  # don't trade 9:15-9:30 (let price settle)
+    event_blackout_min_before: 60    # no trades within 60 min BEFORE macro event
+    event_blackout_min_after: 15     # no trades within 15 min AFTER macro event
+  # =============================================================
+  # VIX-AWARE POSITION SIZING — scales lot count down as volatility rises
+  # =============================================================
+  vix:
+    fetch_symbol: "^INDIAVIX"
+    refresh_minutes: 15
+    thresholds:
+      calm_max: 15.0                 # VIX <= 15 → 1.0x lots
+      elevated_max: 18.0             # VIX 15-18 → 0.75x
+      high_max: 22.0                 # VIX 18-22 → 0.5x
+      # VIX > 22 → no trades
+    skip_above: 22.0                 # hard skip threshold
+    refresh_on_startup: true
   # kill switches
   kill_on_data_stale_min: 5
   kill_on_news_shock: true

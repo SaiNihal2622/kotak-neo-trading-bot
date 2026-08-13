@@ -169,6 +169,7 @@ class TestPaperClientConfigurable(unittest.TestCase):
                 starting_capital=100_000,
                 limit_fill_spread_pct=1.0,  # 1% spread (large)
                 limit_fill_min_spread=0.01,
+                fill_mode="realistic_limit",  # use original limit logic to test spread
                 persist_path=tmp.name,  # isolate from production state
             )
             c.connect()

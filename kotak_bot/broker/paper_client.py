@@ -45,6 +45,10 @@ class PaperClient(BrokerClient):
         limit_fill_spread_pct: float = 0.1,  # 0.1% spread for LIMIT order fill simulation
         limit_fill_min_spread: float = 0.05,  # min Rs.0.05 spread (NSE tick)
         limit_fill_near_ltp_pct: float = 0.5,  # fill if limit within 0.5% of LTP
+        fill_mode: str = "market_like",  # 'market_like' | 'aggressive_limit' | 'realistic_limit'
+        #   'market_like'      : force fill at LTP ± slippage (paper validation of strategy logic)
+        #   'aggressive_limit' : fill if within 5% of LTP, else defer (close to live)
+        #   'realistic_limit'  : original logic — only fill if limit crosses synthetic bid/ask
         persist_path: str = "data_cache/paper_state.json",
     ):
         self.starting_capital = starting_capital
@@ -52,6 +56,7 @@ class PaperClient(BrokerClient):
         self.limit_fill_spread_pct = limit_fill_spread_pct
         self.limit_fill_min_spread = limit_fill_min_spread
         self.limit_fill_near_ltp_pct = limit_fill_near_ltp_pct
+        self.fill_mode = fill_mode
         self.persist_path = Path(persist_path)
         self.persist_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -105,8 +110,46 @@ class PaperClient(BrokerClient):
             )
             # attempt immediate fill
             self._try_fill(order)
+            # market_like mode: if not filled yet and no tick, force fill at expected_price
+            # (paper sim is about validating strategy logic, not fill mechanics)
+            if order.status == OrderStatus.OPEN and self.fill_mode == "market_like":
+                self._force_fill_market_like(order)
             self._save_state()
             return order
+
+    def _force_fill_market_like(self, order: Order) -> None:
+        """Force-fill a still-open order in market_like mode. Uses the cached tick
+        (any latest LTP for the symbol) or the strategy's expected_price as a fallback.
+        Adds slippage in the direction of the trade."""
+        tick = self._ticks.get(order.symbol)
+        if tick is not None and tick.ltp > 0:
+            ref_price = tick.ltp
+        elif order.price and order.price > 0:
+            ref_price = order.price
+        elif order.expected_fill_price and order.expected_fill_price > 0:
+            ref_price = order.expected_fill_price
+        else:
+            # Rate-limit warnings to once per order to avoid log flooding
+            if not getattr(self, "_fill_skip_warned", None):
+                self._fill_skip_warned = set()
+            if order.order_id not in self._fill_skip_warned:
+                self._fill_skip_warned.add(order.order_id)
+                logger.warning(f"[PAPER] FORCE_FILL skipped for {order.order_id} {order.symbol}: "
+                               f"no tick, no price, no expected_fill_price")
+            return
+        slip = ref_price * (self.slippage_bps / 10_000)
+        fill_price = ref_price + (slip if order.side == OrderSide.BUY else -slip)
+        fill_price = round(fill_price, 2)
+        order.expected_fill_price = ref_price
+        order.avg_fill_price = fill_price
+        order.filled_qty = order.qty
+        order.status = OrderStatus.COMPLETE
+        order.filled_at = datetime.utcnow()
+        self._apply_fill(order)
+        logger.info(
+            f"[PAPER] FORCE_FILL (market_like) {order.order_id} {order.qty}×{order.symbol} "
+            f"@ {order.avg_fill_price} (ref={ref_price}, mode=market_like)"
+        )
 
     def modify_order(self, order_id: str, **kwargs) -> Order:
         with self._lock:
@@ -184,10 +227,18 @@ class PaperClient(BrokerClient):
             if pos:
                 pos.ltp = tick.ltp
                 pos.pnl = (pos.ltp - pos.avg_price) * pos.qty
-            # check open orders
+            # check open orders for this symbol
             for order in self._orders.values():
                 if order.status == OrderStatus.OPEN and order.symbol == tick.symbol:
                     self._try_fill(order)
+            # market_like mode: force-fill any still-open order on EVERY tick, regardless
+            # of symbol. This handles strikes whose keep-alive subscription may not be
+            # getting fresh data — as long as any tick comes in, all open orders get
+            # re-evaluated.
+            if self.fill_mode == "market_like":
+                for order in list(self._orders.values()):
+                    if order.status == OrderStatus.OPEN:
+                        self._force_fill_market_like(order)
             self._save_state()
         for cb in self._tick_callbacks:
             try:
@@ -411,7 +462,15 @@ class PaperClient(BrokerClient):
                             od[k] = OrderType(od[k])
                 if "product" in od and isinstance(od["product"], str):
                     od["product"] = ProductType(od["product"])
-                self._orders[oid] = Order(**od)
+                order = Order(**od)
+                # 2026-08-13: zombie order cleanup. Historical OPEN orders from previous
+                # days were saved with price=0 (multi-leg strategy orders that never
+                # got a real limit). They will never fill and would flood warnings.
+                # Cancel them on load so the bot starts clean.
+                if order.status == OrderStatus.OPEN and (order.price or 0) <= 0:
+                    order.status = OrderStatus.CANCELLED
+                    logger.info(f"[PAPER] ZOMBIE_CLEAN cancelled {oid} {order.symbol} (loaded with price=0)")
+                self._orders[oid] = order
             for s, pd in state.get("positions", {}).items():
                 if "entry_time" in pd and pd["entry_time"]:
                     pd["entry_time"] = datetime.fromisoformat(pd["entry_time"])

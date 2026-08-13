@@ -31,7 +31,12 @@ from kotak_bot.strategy.selector import StrategySelector
 from kotak_bot.alerts.telegram import TelegramAlerter
 from kotak_bot.alerts.telegram_commands import TelegramCommandHandler
 from kotak_bot.alerts.email import EmailAlerter
-from kotak_bot.utils.clock import now_ist, is_market_open, is_square_off_time, market_session, set_market_hours
+from kotak_bot.utils.clock import (
+    now_ist, is_market_open, is_square_off_time, market_session, set_market_hours,
+    set_intraday, get_intraday, is_past_no_new_trades_time, is_past_force_square_off_time,
+    is_in_opening_buffer, is_allow_overnight, in_event_blackout,
+    fetch_india_vix, get_india_vix, vix_position_size_multiplier, vix_should_skip,
+)
 from kotak_bot.utils.logger import setup_logger
 
 # trade log CSV
@@ -99,6 +104,7 @@ def build_broker(cfg: dict):
             limit_fill_spread_pct=broker_cfg.get("limit_fill_spread_pct", 0.1),
             limit_fill_min_spread=broker_cfg.get("limit_fill_min_spread", 0.05),
             limit_fill_near_ltp_pct=broker_cfg.get("limit_fill_near_ltp_pct", 0.5),
+            fill_mode=broker_cfg.get("fill_mode", "market_like"),
         )
     # LIVE mode — require explicit confirmation to prevent accidental real-money trading
     if os.environ.get("KOTAK_LIVE_CONFIRMED") != "YES":
@@ -128,6 +134,16 @@ def run_paper() -> None:
                  log_file=cfg.get("logging", {}).get("file", "logs/bot.log"))
     # Configure market hours from settings (NSE standard by default; can be overridden)
     set_market_hours(cfg.get("market_hours", {}))
+    # Configure intraday mode (no_overnight, no_new_trades_after, force_square_off_time, VIX rules)
+    set_intraday(cfg.get("risk", {}).get("intraday", {}))
+    intraday_cfg = get_intraday()
+    logger.info(f"Intraday mode: allow_overnight={intraday_cfg['allow_overnight']}, "
+                f"no_new_trades_after={intraday_cfg['no_new_trades_after'].strftime('%H:%M')}, "
+                f"force_square_off_time={intraday_cfg['force_square_off_time'].strftime('%H:%M')}")
+    # Fetch India VIX at startup (used for VIX-aware position sizing)
+    if cfg.get("risk", {}).get("vix", {}).get("refresh_on_startup", True):
+        v0 = fetch_india_vix(force=True)
+        logger.info(f"India VIX (startup): {v0:.2f}")
     logger.info("=" * 60)
     logger.info("Kotak Neo Trading Bot — PAPER MODE (Production v2)")
     logger.info("=" * 60)
@@ -541,6 +557,17 @@ def run_paper() -> None:
                 if open_trades:
                     closed = order_mgr.square_off_all(reason="eod_square_off")
                     logger.info(f"Squared off {closed} trades at EOD")
+            # 2b) INTRADAY SAFETY: force square-off by force_square_off_time
+            # (default 14:30 — 60 min before EOD, so all risk is closed well before close)
+            if not is_allow_overnight() and is_past_force_square_off_time(now):
+                open_trades = order_mgr.open_trades()
+                if open_trades:
+                    closed = order_mgr.square_off_all(reason="intraday_force_close")
+                    logger.warning(f"[INTRADAY] force-closed {closed} open trades (force_square_off_time hit)")
+                    try:
+                        alerter.send(f"⏰ [INTRADAY] force-closed {closed} open trades at {now.strftime('%H:%M')} IST — overnight positions blocked")
+                    except Exception:
+                        pass
             # 3) news ingestion every N seconds
             if news and (now - last_news_ingest).total_seconds() >= news_interval:
                 try:
@@ -644,7 +671,41 @@ def run_paper() -> None:
             # 4) scan every 30s during market hours
             cycle_counter += 1
             if (now - last_scan).total_seconds() >= 30 and is_market_open(now):
+                # ----------------------------------------------------------------
+                # INTRADAY + VIX GATES (block new entries before 14:30 if overnight blocked)
+                # ----------------------------------------------------------------
+                if not is_allow_overnight() and is_past_no_new_trades_time(now):
+                    logger.info(f"[SCAN] cycle={cycle_counter} | skip: intraday mode — no_new_trades_after "
+                                f"({intraday_cfg['no_new_trades_after'].strftime('%H:%M')}) hit")
+                    last_scan = now
+                    time.sleep(5)
+                    continue
+                if is_in_opening_buffer(now):
+                    logger.info(f"[SCAN] cycle={cycle_counter} | skip: in opening buffer (9:15-9:30 — let price settle)")
+                    last_scan = now
+                    time.sleep(5)
+                    continue
+                # VIX-aware skip (fetch fresh VIX if cache > 15 min old)
+                current_vix = fetch_india_vix(force=False)
+                if vix_should_skip(current_vix, max_vix=cfg.get("risk", {}).get("vix", {}).get("skip_above", 22.0)):
+                    logger.info(f"[SCAN] cycle={cycle_counter} | skip: India VIX={current_vix:.2f} > skip threshold "
+                                f"({cfg.get('risk', {}).get('vix', {}).get('skip_above', 22.0)})")
+                    last_scan = now
+                    time.sleep(5)
+                    continue
+                # Macro event blackout (RBI, US Fed, etc.)
+                if in_event_blackout(now, macro_cal=macro_cal):
+                    logger.info(f"[SCAN] cycle={cycle_counter} | skip: macro event blackout window")
+                    last_scan = now
+                    time.sleep(5)
+                    continue
+                # Position size multiplier from VIX (informational; selectors read it)
+                vix_mult = vix_position_size_multiplier(current_vix)
+                if vix_mult < 1.0:
+                    logger.info(f"[SCAN] cycle={cycle_counter} | VIX={current_vix:.2f} → lot multiplier {vix_mult}x")
+                # ----------------------------------------------------------------
                 # position cap check (count both order_mgr and broker positions for safety)
+                # ----------------------------------------------------------------
                 open_pos = [p for p in broker.get_positions() if p.qty != 0]
                 open_trades = order_mgr.open_trades()
                 total_open = max(len(open_trades), len(open_pos))
