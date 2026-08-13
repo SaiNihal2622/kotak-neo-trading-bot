@@ -126,6 +126,14 @@ risk:
       enabled: true
       primary: "kotak_prod"
       fallbacks: ["dhan", "yfinance"]  # tried in order on primary failure
+  # ----- Margin tracking (Phase 1.4) -----
+  margin:
+    enabled: true
+    refresh_sec: 30                    # how often to fetch fresh margin
+    alert_levels_pct: [50, 70, 90]     # when to alert (utilization %)
+    alert_cooldown_hours: 4            # min hours between re-alerts at the same level
+    min_free_margin_pct: 10            # block new trades if free margin < 10%
+    pre_trade_buffer_pct: 5            # require 5% headroom on top of trade cost
 
   # =============================================================
   # SMART EXIT THRESHOLDS — no hardcodes in code, all configurable

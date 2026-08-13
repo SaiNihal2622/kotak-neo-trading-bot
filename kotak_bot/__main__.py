@@ -230,6 +230,12 @@ def run_paper() -> None:
     logger.success(f"Resilient executor wired (retry={resilient_cfg.retry_enabled}, "
                    f"cr={resilient_cfg.cr_enabled}, fallback={resilient_cfg.fallback_enabled})")
     alerter = TelegramAlerter(voice_enabled=cfg.get("alerts", {}).get("voice", {}).get("enabled", True))
+    # Phase 1.4: real margin tracking
+    from kotak_bot.risk.margin import MarginTracker, MarginAlertConfig
+    margin_cfg = MarginAlertConfig.from_dict(cfg.get("risk", {}).get("margin", {}))
+    margin_tracker = MarginTracker(broker, config=margin_cfg, alerter=alerter)
+    logger.success(f"Margin tracker wired (refresh={margin_cfg.refresh_sec}s, "
+                   f"levels={margin_cfg.alert_levels_pct}, min_free={margin_cfg.min_free_margin_pct}%)")
 
     # ------- LLM news judge (MiniMax) -------
     llm_judge = None
@@ -478,6 +484,8 @@ def run_paper() -> None:
     cmd_handler.pause = _pause
     cmd_handler.resume = _resume
     cmd_handler.force_close = _force_close
+    # Phase 1.4: expose margin tracker to telegram commands
+    cmd_handler.margin_tracker = margin_tracker
     cmd_handler.force_trade = _force_trade
     cmd_handler.live_feed = feed
     cmd_handler.perf_tracker = perf_tracker
@@ -754,6 +762,12 @@ def run_paper() -> None:
                         logger.debug(f"reconcile: {len(diff['matched'])} matched, no actionable diff")
                 except Exception as e:
                     logger.warning(f"reconcile failed: {e}")
+            # 3e) Phase 1.4: margin alert check every 5 min
+            if cycle_counter % 10 == 0:
+                try:
+                    margin_tracker.check_and_alert()
+                except Exception as e:
+                    logger.debug(f"margin check failed: {e}")
             # 4) scan every 30s during market hours
             cycle_counter += 1
             if (now - last_scan).total_seconds() >= 30 and is_market_open(now):
