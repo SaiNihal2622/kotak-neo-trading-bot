@@ -1,3 +1,24 @@
 2026-08-07 15:33:04.620 | WARNING  | kotak_bot.data.historical:get_equity_ohlc:54 - nselib fetch NIFTY failed: module 'nselib' has no attribute 'capital_market_index_data'
 2026-08-07 15:33:04.621 | WARNING  | kotak_bot.data.historical:get_equity_ohlc:64 - No historical data for NIFTY — falling back to synthetic
 2026-08-07 15:34:24.046 | INFO     | kotak_bot.data.historical:_from_yfinance:113 - yfinance [NIFTY 1d]: 176 rows (2025-11-20 00:00:00 -> 2026-08-07 00:00:00)
+2026-08-13 19:40:12.703 | INFO     | kotak_bot.data.historical:_from_yfinance:113 - yfinance [NIFTY 1d]: 176 rows (2025-11-26 00:00:00 -> 2026-08-13 00:00:00)
+2026-08-13 19:40:12.984 | INFO     | kotak_bot.broker.paper_client:reset:494 - PaperClient reset
+2026-08-13 19:40:12.984 | INFO     | kotak_bot.broker.paper_client:connect:79 - PaperClient connected | capital=₹100,000 | orders=0 | positions=0
+2026-08-13 19:40:12.996 | INFO     | kotak_bot.data.kotak_prod_feed:start:209 - KotakProdFeed: reusing cached session (baseUrl=https://e22.kotaksecurities.com, expires in 37 min)
+2026-08-13 19:40:12.996 | INFO     | kotak_bot.data.kotak_prod_feed:_load_scrip_master:444 - KotakProdFeed: using cached scrip master (age 5.4h)
+2026-08-13 19:40:14.007 | INFO     | kotak_bot.data.kotak_prod_feed:_load_scrip_master:489 - KotakProdFeed: scrip master loaded — 6334 active NIFTY/BN options (6334 strategy symbols mapped)
+2026-08-13 19:40:14.008 | INFO     | kotak_bot.data.kotak_prod_feed:start:216 - KotakProdFeed started (env=uat, poll=2.0s, subscribed=2)
+2026-08-13 19:40:14.010 | INFO     | kotak_bot.data.live_feed:_live_kotak_loop:392 - LiveKotak heartbeat: authed=True subscribed=2 latest=0 tick_count=0
+2026-08-13 19:40:14.010 | INFO     | kotak_bot.data.live_feed:start:166 - LiveFeed started (mode=live_kotak)
+2026-08-13 19:40:21.048 | INFO     | kotak_bot.strategy.selector:select:112 - Selected: bull_call_vertical — bull call vertical: adx=30.0, mom=+0.80, debit=49.10
+2026-08-13 19:40:21.048 | INFO     | kotak_bot.risk.engine:check_new_trade:213 - [RISK] NIFTY AGGRESSIVE preset | per_trade_cap=₹1,000 | conf=0.80 | qty=2
+2026-08-13 19:40:21.049 | INFO     | kotak_bot.broker.paper_client:place_order:107 - [PAPER] PLACE PAPER-68F07815F6 BUY 130×NIFTY18AUG2624400CE LIMIT @ 122.05 (bcv_NIFTY_long)
+2026-08-13 19:40:21.049 | INFO     | kotak_bot.broker.paper_client:_try_fill:296 - [PAPER] FILL PAPER-68F07815F6 130×NIFTY18AUG2624400CE @ 122.05 (tick=122.05)
+2026-08-13 19:40:21.051 | INFO     | kotak_bot.broker.paper_client:place_order:107 - [PAPER] PLACE PAPER-830227A337 SELL 130×NIFTY18AUG2624500CE LIMIT @ 72.95 (bcv_NIFTY_short)
+2026-08-13 19:40:21.051 | INFO     | kotak_bot.broker.paper_client:_try_fill:296 - [PAPER] FILL PAPER-830227A337 130×NIFTY18AUG2624500CE @ 72.95 (tick=72.95)
+2026-08-13 19:40:21.053 | INFO     | kotak_bot.execution.order_manager:execute_plan:264 - Executed plan T-3E49F3CD4D: directional_debit 2 legs
+2026-08-13 19:40:21.055 | INFO     | kotak_bot.broker.paper_client:place_order:107 - [PAPER] PLACE PAPER-DA61C319F5 SELL 130×NIFTY18AUG2624400CE MARKET @ 0.0 (close_PAPER-68F07815F6)
+2026-08-13 19:40:21.055 | INFO     | kotak_bot.broker.paper_client:_try_fill:296 - [PAPER] FILL PAPER-DA61C319F5 130×NIFTY18AUG2624400CE @ 121.99 (tick=122.05)
+2026-08-13 19:40:21.057 | INFO     | kotak_bot.broker.paper_client:place_order:107 - [PAPER] PLACE PAPER-F903018668 BUY 130×NIFTY18AUG2624500CE MARKET @ 0.0 (close_PAPER-830227A337)
+2026-08-13 19:40:21.057 | INFO     | kotak_bot.broker.paper_client:_try_fill:296 - [PAPER] FILL PAPER-F903018668 130×NIFTY18AUG2624500CE @ 72.99 (tick=72.95)
+2026-08-13 19:40:21.061 | INFO     | kotak_bot.broker.paper_client:reset:494 - PaperClient reset

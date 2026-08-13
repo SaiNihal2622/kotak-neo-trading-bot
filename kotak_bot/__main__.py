@@ -38,11 +38,30 @@ from kotak_bot.utils.clock import (
     fetch_india_vix, get_india_vix, vix_position_size_multiplier, vix_should_skip,
 )
 from kotak_bot.utils.logger import setup_logger
+from kotak_bot.utils.liveness import install_default as install_liveness, get_default as get_liveness
 
 # trade log CSV
 TRADES_CSV = Path("logs/trades.csv")
 SIGNALS_CSV = Path("logs/signals.csv")
 TRADES_CSV.parent.mkdir(parents=True, exist_ok=True)
+
+# State provider will be set after broker/feed/order_mgr are built; the closure
+# captures references that are populated in-place. Until then the liveness
+# monitor ships a noop provider.
+def _noop_state() -> dict:
+    return {"phase": "init"}
+
+
+# Install liveness monitor very early so we capture even startup crashes
+_LIVENESS_INTERVAL = float(os.environ.get("KOTAK_LIVENESS_INTERVAL", "30"))
+_LIVENESS = install_liveness(
+    ping_file=os.environ.get("KOTAK_LIVENESS_FILE", "data_cache/liveness.json"),
+    crash_file=os.environ.get("KOTAK_LIVENESS_CRASH", "data_cache/liveness_crash.jsonl"),
+    interval_sec=_LIVENESS_INTERVAL,
+    state_provider=_noop_state,
+)
+_LIVENESS.start()
+logger.info(f"Liveness monitor started (interval={_LIVENESS_INTERVAL}s, pid={os.getpid()})")
 
 
 def init_csv(path: Path, header: list[str]) -> None:
@@ -433,6 +452,43 @@ def run_paper() -> None:
     cmd_handler.live_feed = feed
     cmd_handler.perf_tracker = perf_tracker
     cmd_handler.start()
+
+    # ------- Liveness state provider -------
+    # Now that everything is wired, replace the noop state provider with a real
+    # one that captures live state. The closure can read module-level locals
+    # (broker, feed, order_mgr, risk, regime) on every call.
+    _liveness_state: dict = {"phase": "running", "boot_time": now_ist().isoformat()}
+
+    def _liveness_provider() -> dict:
+        try:
+            _liveness_state["ts"] = now_ist().isoformat()
+            _liveness_state["capital"] = float(risk.state.capital)
+            _liveness_state["realized_pnl"] = float(risk.state.realized_pnl or 0)
+            _liveness_state["trades_today"] = int(risk.state.trades_today or 0)
+            try:
+                _liveness_state["open_positions"] = len(broker.get_positions())
+            except Exception as e:
+                _liveness_state["positions_error"] = str(e)
+            try:
+                _liveness_state["open_orders"] = len(broker.get_open_orders())
+            except Exception:
+                pass
+            try:
+                _liveness_state["vix"] = float(get_india_vix())
+            except Exception:
+                pass
+            _liveness_state["data_source"] = feed_mode
+            _liveness_state["risk_preset"] = risk.state.current_preset
+            _liveness_state["is_paused"] = bool(risk.state.paused)
+        except Exception as e:
+            _liveness_state["provider_error"] = str(e)
+        return _liveness_state
+
+    _LIVE = get_liveness()
+    if _LIVE is not None:
+        # Replace the noop provider with the real one
+        _LIVE.state_provider = _liveness_provider
+        logger.info("Liveness state provider wired (capital, P&L, positions, VIX)")
     alerter.info(
         f"Paper bot started. Capital=₹{paper_cap:,.0f}. "
         f"Feed={feed_mode}. "
@@ -973,6 +1029,10 @@ def run_paper() -> None:
             time.sleep(5)
         except KeyboardInterrupt:
             logger.info("Shutting down on Ctrl+C")
+            _LIVE = get_liveness()
+            if _LIVE:
+                _LIVE.register_exit("KeyboardInterrupt")
+                _LIVE.stop(reason="KeyboardInterrupt")
             cmd_handler.stop()
             break
         except Exception as e:
@@ -982,6 +1042,10 @@ def run_paper() -> None:
     broker.disconnect()
     feed.stop()
     cmd_handler.stop()
+    # Final liveness shutdown (also covered by atexit, but be explicit)
+    _LIVE = get_liveness()
+    if _LIVE:
+        _LIVE.stop(reason="main_loop_exit")
 
 
 def show_status() -> None:
