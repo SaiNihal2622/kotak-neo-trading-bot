@@ -107,6 +107,25 @@ risk:
   # Hourly P&L snapshot to Telegram
   hourly_pnl_report: true
   hourly_pnl_report_minute: 0        # top of each hour
+  # ----- Execution resilience (Phase 1.3) -----
+  # Wraps broker.place_order with retry/backoff + cancel-replace on stale orders
+  # + fallback to alternative data feeds when primary fails.
+  execution:
+    retry:
+      enabled: true
+      max_attempts: 3
+      backoff_sec: [1.0, 2.0, 4.0]    # one per attempt
+      retryable_errors: ["timeout", "network", "rate limit", "5xx", "session expired"]
+    cancel_replace:
+      enabled: true
+      stale_after_sec: 60             # consider OPEN >60s as stale
+      move_threshold_pct: 0.5         # LTP must have moved >0.5% from order price
+      max_replaces_per_order: 1       # don't replace the same order more than once
+      price_adjust_pct: 0.1           # new price = LTP +/- 0.1% toward market
+    fallback_data:
+      enabled: true
+      primary: "kotak_prod"
+      fallbacks: ["dhan", "yfinance"]  # tried in order on primary failure
 
   # =============================================================
   # SMART EXIT THRESHOLDS — no hardcodes in code, all configurable

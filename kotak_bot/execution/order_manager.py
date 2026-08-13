@@ -67,9 +67,13 @@ class OrderManager:
     """
 
     def __init__(self, broker: BrokerClient, smart_router: bool = True,
-                 persist_path: str = "data_cache/trades_state.json"):
+                 persist_path: str = "data_cache/trades_state.json",
+                 resilient_executor: Optional[Any] = None):
         self.broker = broker
         self.smart_router = smart_router
+        # Optional Phase 1.3 resilient executor — if set, place_order is routed
+        # through it for retry/backoff + cancel-replace + fallback data
+        self._resilient = resilient_executor
         self._trades: dict[str, ManagedTrade] = {}
         self._symbol_to_trade: dict[str, str] = {}
         self._on_trade_event: Optional[Callable] = None
@@ -77,6 +81,10 @@ class OrderManager:
         self.persist_path = Path(persist_path)
         self.persist_path.parent.mkdir(parents=True, exist_ok=True)
         self._load_state()
+
+    def set_resilient_executor(self, resilient) -> None:
+        """Inject the resilient executor after construction (used by __main__)."""
+        self._resilient = resilient
 
     def set_event_callback(self, cb: Callable) -> None:
         self._on_trade_event = cb
@@ -298,7 +306,11 @@ class OrderManager:
                     )
                     logger.info(f"  -> Using BRACKET order: SL={sl} target={target} trail={trailing}")
             # Use bracket= for the BUY leg, None for hedging legs (multi-leg won't use bracket)
-            placed = self.broker.place_order(order, bracket=bracket)
+            # Route through ResilientExecutor if injected (Phase 1.3)
+            if self._resilient is not None:
+                placed = self._resilient.place_order(order, bracket=bracket)
+            else:
+                placed = self.broker.place_order(order, bracket=bracket)
             trade.orders.append(placed)
         self._trades[trade_id] = trade
         for o in trade.orders:

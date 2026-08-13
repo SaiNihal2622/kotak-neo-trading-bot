@@ -199,6 +199,36 @@ def run_paper() -> None:
     regime = RegimeDetector(cfg.get("strategy", {}).get("regime_detector", {}))
     selector = StrategySelector(cfg.get("strategy", {}))
     order_mgr = OrderManager(broker)
+    # Phase 1.3: wrap broker with retry + cancel-replace + fallback data
+    from kotak_bot.execution.resilient import ResilientExecutor, ResilientConfig
+    resilient_cfg = ResilientConfig.from_dict(cfg.get("risk", {}).get("execution", {}))
+    resilient = ResilientExecutor(broker, config=resilient_cfg)
+    order_mgr.set_resilient_executor(resilient)
+    # Phase 1.3: wrap broker with retry + cancel-replace + fallback data
+    from kotak_bot.execution.resilient import ResilientExecutor, ResilientConfig
+    resilient_cfg = ResilientConfig.from_dict(cfg.get("risk", {}).get("execution", {}))
+    resilient = ResilientExecutor(broker, config=resilient_cfg)
+    # Register yfinance fallback (always available)
+    try:
+        import yfinance as yf
+        def _yf_ltp(symbol: str) -> float:
+            # Try a few common ticker forms; options strikes don't have tickers,
+            # so this only works for index/spot symbols like NIFTY, BANKNIFTY.
+            sym_clean = symbol.upper().replace(" ", "")
+            for t in [f"^{sym_clean}", f"{sym_clean}.NS", sym_clean]:
+                try:
+                    tkr = yf.Ticker(t)
+                    hist = tkr.history(period="1d")
+                    if not hist.empty:
+                        return float(hist["Close"].iloc[-1])
+                except Exception:
+                    continue
+            return 0.0
+        resilient.register_fallback("yfinance", _yf_ltp)
+    except Exception as e:
+        logger.debug(f"yfinance fallback not registered: {e}")
+    logger.success(f"Resilient executor wired (retry={resilient_cfg.retry_enabled}, "
+                   f"cr={resilient_cfg.cr_enabled}, fallback={resilient_cfg.fallback_enabled})")
     alerter = TelegramAlerter(voice_enabled=cfg.get("alerts", {}).get("voice", {}).get("enabled", True))
 
     # ------- LLM news judge (MiniMax) -------
