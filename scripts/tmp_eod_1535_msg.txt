@@ -1,0 +1,17 @@
+EOD Report (15:35 IST)
+Date: Tue 2026-08-18
+Trades: 0
+Wins: 0 | Losses: 0
+Net P&L: Rs.0
+Best trade: N/A
+Worst trade: N/A
+
+Day 9 paper trading: 0 new fills (all-day intraday gate active).
+- 779 SCAN cycles (510 skipped on 16 phantom positions, 269 on intraday 13:30 cutoff, 0 entry signals generated)
+- 0 orders placed, 0 filled, 0 closed
+- Carried realized: Rs.5,597.55 (unchanged from Aug 13)
+- VIX 11.31 (low) - range regime expected to continue
+
+Tomorrow (Wed 19 Aug): Continue with current strategy. Intraday mode, no_new_trades_after 13:30, force_square_off_time 14:30. Phantoms still expected to persist until manual reconcile fix. Bot comes back up 09:00 IST.
+
+Note: This is a follow-up to the 15:30 operational EOD. Compliance PDF: data_cache\compliance\compliance_2026-08-18.pdf

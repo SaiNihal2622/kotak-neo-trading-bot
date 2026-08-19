@@ -1,0 +1,9 @@
+﻿Day 10 (Wed 19 Aug 10:40 IST) â€” bot alive, market open.
+
+8:30 daily-start cron fired, bot restarted, 2 procs healthy.
+Dashboard UP :8501.
+16 phantoms (12AUG/13AUG expiry) still blocking all SCAN entries â€” same as Day 9, +16 startup_reconcile orders on restart.
+Capital: Rs.1,32,749.95 / realized Rs.5,597.55 / 188 orders / 16 positions (unchanged from Day 9 close).
+
+Intraday cutoff 13:30. EOD report at 15:30.
+Phantoms need manual action to unblock: (a) /force skip_reconcile, or (b) broker terminal close, or (c) wait for T+1 auto-settle.

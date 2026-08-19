@@ -10,11 +10,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
+import json
 import os
+import signal
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
 
 import yaml
@@ -432,7 +435,21 @@ def run_paper() -> None:
     try:
         # hardcoded cap (matches position_cap in settings.yaml)
         startup_cap = cfg.get("risk", {}).get("position_cap", 2)
-        broker_pos = broker.get_positions()
+        all_broker_pos = broker.get_positions()
+        # Filter out expired options — broker may still report positions from expired
+        # contracts (e.g. 12AUG/13AUG) that haven't been auto-settled. These can't be
+        # closed (force-fill fails) and shouldn't count against the cap.
+        _today_str_recon = date.today().strftime('%Y-%m-%d')
+        broker_pos = [
+            p for p in all_broker_pos
+            if (not p.expiry or str(p.expiry)[:10] >= _today_str_recon)
+        ]
+        n_expired_filtered = len(all_broker_pos) - len(broker_pos)
+        if n_expired_filtered:
+            logger.info(
+                f"STARTUP RECONCILE: filtered {n_expired_filtered} expired broker positions "
+                f"(expiry < {_today_str_recon}) from cap check"
+            )
         if len(broker_pos) > startup_cap:
             # BUG FIX 2026-08-11: only close positions that are NOT in any open
             # trade's orders. The previous logic closed ALL excess positions, which
@@ -572,6 +589,72 @@ def run_paper() -> None:
         opt = leg.get('opt_type', leg.get('option_type', ''))
         return f"{underlying}{_strategy_expiry_str(underlying)}{strike}{opt}"
     cycle_counter = 0
+
+    # ------- crash forensics (BUG FIX 2026-08-20: clean-exit death) -------
+    # The bot has died cleanly 8+ times with no traceback and no log. This block
+    # captures WHY so we can fix the root cause instead of just masking it with
+    # the watchdog. Writes a JSON-line trace to data_cache/liveness_crash.jsonl
+    # on every exit (atexit), every signal (SIGINT/SIGTERM/SIGBREAK), and every
+    # unhandled exception in the main loop.
+    import threading as _threading
+    from pathlib import Path as _Path
+    _CRASH_LOG = _Path('data_cache/liveness_crash.jsonl')
+    _CRASH_LOCK = _threading.Lock()
+    _loop_start_ts = datetime.now(timezone.utc)
+    _last_cycle_ts = _loop_start_ts
+    _cycle_counter = 0
+
+    def _write_crash(reason: str, **details):
+        try:
+            _CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
+            entry = {
+                'ts': datetime.now(timezone.utc).isoformat(),
+                'pid': os.getpid(),
+                'reason': reason,
+                'cycle': _cycle_counter,
+                'last_cycle_ts': _last_cycle_ts.isoformat(),
+                'loop_uptime_sec': (datetime.now(timezone.utc) - _loop_start_ts).total_seconds(),
+                **details,
+            }
+            with _CRASH_LOCK:
+                with _CRASH_LOG.open('a', encoding='utf-8') as f:
+                    f.write(json.dumps(entry, default=str) + '\n')
+            logger.error(f"[CRASH-FORENSIC] reason={reason} cycle={_cycle_counter} details={details}")
+        except Exception as e:
+            logger.error(f"[CRASH-FORENSIC] failed to write trace: {e}")
+
+    def _atexit_handler():
+        try:
+            _write_crash('atexit', uptime_sec=(datetime.now(timezone.utc) - _loop_start_ts).total_seconds())
+        except Exception:
+            pass
+
+    def _signal_handler(sig, frame):
+        try:
+            sig_name = signal.Signals(sig).name if hasattr(signal, 'Signals') else str(sig)
+        except Exception:
+            sig_name = str(sig)
+        try:
+            _write_crash('signal', signal_name=sig_name)
+        except Exception:
+            pass
+        # Re-raise default handler so the process still exits cleanly
+        try:
+            signal.signal(sig, signal.SIG_DFL)
+        except Exception:
+            pass
+        os._exit(0)
+
+    atexit.register(_atexit_handler)
+    try:
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
+        if hasattr(signal, 'SIGBREAK'):  # Windows
+            signal.signal(signal.SIGBREAK, _signal_handler)
+    except Exception as e:
+        logger.debug(f"signal handler setup skipped: {e}")
+    # ------- end crash forensics -------
+
     while True:
         try:
             now = now_ist()
@@ -770,6 +853,8 @@ def run_paper() -> None:
                     logger.debug(f"margin check failed: {e}")
             # 4) scan every 30s during market hours
             cycle_counter += 1
+            _cycle_counter = cycle_counter
+            _last_cycle_ts = datetime.now(timezone.utc)
             if (now - last_scan).total_seconds() >= 30 and is_market_open(now):
                 # ----------------------------------------------------------------
                 # INTRADAY + VIX GATES (block new entries before 14:30 if overnight blocked)
@@ -805,8 +890,15 @@ def run_paper() -> None:
                     logger.info(f"[SCAN] cycle={cycle_counter} | VIX={current_vix:.2f} → lot multiplier {vix_mult}x")
                 # ----------------------------------------------------------------
                 # position cap check (count both order_mgr and broker positions for safety)
+                # Filter out expired options — broker may still report positions from
+                # expired contracts (e.g. 12AUG/13AUG) that haven't been auto-settled.
                 # ----------------------------------------------------------------
-                open_pos = [p for p in broker.get_positions() if p.qty != 0]
+                _today_str = date.today().strftime('%Y-%m-%d')
+                open_pos = [
+                    p for p in broker.get_positions()
+                    if p.qty != 0
+                    and (not p.expiry or str(p.expiry)[:10] >= _today_str)
+                ]
                 open_trades = order_mgr.open_trades()
                 total_open = max(len(open_trades), len(open_pos))
                 if total_open >= MAX_OPEN_POSITIONS:

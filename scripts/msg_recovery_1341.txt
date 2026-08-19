@@ -1,0 +1,10 @@
+﻿RESOLVED (13:41 IST) â€” Dashboard :8501 is back UP. Bot running normally.
+
+State now:
+- Bot: 2 procs healthy (new instance started 13:40:29, liveness monitor active)
+- Dashboard: HTTP 200
+- SCAN cycle 7: skip "intraday mode â€” no_new_trades_after (13:30) hit" (GATE SHIFT confirmed â€” time gate now dominant)
+- Capital: Rs.1,32,749.95 / realized Rs.5,597.55 / 16 phantoms unchanged
+- Startup reconcile: 16 positions (all 12AUG/13AUG expiry phantoms, no new fills)
+
+Old bot (PID 25956+26852) had clean-exit death at ~3h05m uptime â€” recurring pattern. Investigating later.

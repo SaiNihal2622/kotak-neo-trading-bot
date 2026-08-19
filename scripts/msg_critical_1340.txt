@@ -1,0 +1,10 @@
+﻿Day 10 (Wed 19 Aug 13:40 IST) â€” CRITICAL
+
+Bot just RESTARTED at 13:40:29 (fresh PID 26812 + liveness monitor). Old instance (PID 25956+26852 from 10:35:35, ~3h05m uptime) is gone.
+Dashboard :8501 currently DOWN (port unreachable).
+
+Intraday cutoff 13:30 already hit; new bot startup completed but dashboard supervisor may still be coming up.
+
+16 phantoms persist (same as Day 9). Capital unchanged.
+
+Will recheck dashboard in 30s. If dashboard stays down, may need manual streamlit restart.

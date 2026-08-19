@@ -1,48 +1,73 @@
-$ErrorActionPreference = 'Continue'
-Set-Location "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot"
+$ErrorActionPreference = 'Stop'
+$py = ".\.venv\Scripts\python.exe"
 
-Write-Host "=== 1. Bot process check ==="
-$bots = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.StartTime -gt (Get-Date).AddHours(-2) }
-$count = ($bots | Measure-Object).Count
-Write-Host "Python processes started in last 2h: $count"
-$bots | Select-Object Id, ProcessName, StartTime, @{Name='Age_min';Expression={[math]::Round(((Get-Date) - $_.StartTime).TotalMinutes,1)}} | Format-Table -AutoSize
+# Step 1: First check (4h window) — only counts processes started in last 4 hours
+$alive = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' -and $_.StartTime -gt (Get-Date).AddHours(-4) } | Measure-Object | Select-Object -ExpandProperty Count
+Write-Output "FIRST_CHECK_4H: $alive"
 
-Write-Host ""
-Write-Host "=== 2. Stderr log tail (last 30 lines) ==="
-$log = "bot_stderr.log"
-if (Test-Path $log) {
-    Get-Content $log -Tail 30 -ErrorAction SilentlyContinue
-} else {
-    Write-Host "No bot_stderr.log file"
-}
+# Compute IST market hours (9:00-15:30 Mon-Fri, no DST in IST).
+# System is in IST (UTC+05:30), so Get-Date returns local IST directly — no +5:30 conversion.
+$now = Get-Date
+$hour = $now.Hour
+$minute = $now.Minute
+$dayOfWeek = $now.DayOfWeek
+$isMarketHours = ($dayOfWeek -ne 'Saturday' -and $dayOfWeek -ne 'Sunday') -and (
+    ($hour -gt 9 -or ($hour -eq 9 -and $minute -ge 0)) -and
+    ($hour -lt 15 -or ($hour -eq 15 -and $minute -le 30))
+)
+Write-Output ("LOCAL_TIME: {0} | Day: {1} | MarketHours: {2}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dayOfWeek, $isMarketHours)
 
-Write-Host ""
-Write-Host "=== 3. Recent errors (Traceback|FATAL|Killed|Exception) ==="
-if (Test-Path $log) {
-    $errs = Select-String -Path $log -Pattern 'Traceback|FATAL|Killed|Exception' -ErrorAction SilentlyContinue | Select-Object -Last 3
-    if ($errs) {
-        $errs | ForEach-Object { Write-Host $_.Line }
+$needsSecondCheck = ($alive -eq 0) -and $isMarketHours
+$restarted = $false
+$restartPid = $null
+
+if ($needsSecondCheck) {
+    $fullCount = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' } | Measure-Object | Select-Object -ExpandProperty Count
+    Write-Output "SECOND_CHECK_FULL: $fullCount"
+    if ($fullCount -eq 0) {
+        Write-Output "RESTARTING_BOT"
+        $proc = Start-Process -FilePath $py -ArgumentList "-u", "-m", "kotak_bot", "paper" -RedirectStandardOutput "bot_stdout.log" -RedirectStandardError "bot_stderr.log" -WindowStyle Hidden -PassThru
+        $restarted = $true
+        $restartPid = $proc.Id
+        Write-Output "RESTARTED_PID: $restartPid"
     } else {
-        Write-Host "No error patterns found"
+        Write-Output "BOT_ALIVE_VIA_SECOND_CHECK: $fullCount"
     }
 } else {
-    Write-Host "No log file"
+    Write-Output "NO_RESTART_NEEDED"
 }
 
-Write-Host ""
-Write-Host "=== 4. Dashboard health (localhost:8501) ==="
+# Step 2: Check bot stderr log for errors
+$logPath = "Logs\bot_stderr.log"
+if (Test-Path $logPath) {
+    $errors = Select-String -Path $logPath -Pattern 'Traceback|FATAL|Killed|Exception' | Select-Object -Last 3
+    Write-Output "---LAST_3_ERRORS---"
+    if ($errors) {
+        $errors | ForEach-Object { Write-Output $_.Line }
+    } else {
+        Write-Output "NO_ERRORS"
+    }
+} else {
+    Write-Output "LOG_NOT_FOUND: $logPath"
+}
+
+# Step 3: Check dashboard health
+$dashboardRestarted = $false
 try {
-    $resp = Invoke-WebRequest -Uri "http://localhost:8501/_stcore/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-    Write-Host "Dashboard status: $($resp.StatusCode)"
+    $dashResp = Invoke-WebRequest -Uri "http://localhost:8501/_stcore/health" -UseBasicParsing -TimeoutSec 5
+    Write-Output ("DASHBOARD: {0} ({1})" -f $dashResp.StatusCode, $dashResp.StatusDescription)
 } catch {
-    Write-Host "Dashboard DOWN: $($_.Exception.Message)"
+    Write-Output ("DASHBOARD_DOWN: {0}" -f $_.Exception.Message)
+    Write-Output "RESTARTING_DASHBOARD"
+    $dashProc = Start-Process -FilePath $py -ArgumentList "-u", "-m", "streamlit", "run", "dashboard\app.py", "--server.port=8501", "--server.headless=true" -WindowStyle Hidden -PassThru
+    $dashboardRestarted = $true
+    Write-Output "DASHBOARD_RESTARTED_PID: $($dashProc.Id)"
 }
 
-Write-Host ""
-Write-Host "=== 5. Market hours check ==="
-$now = Get-Date
-$dayOfWeek = $now.DayOfWeek
-$hour = $now.Hour
-$isWeekday = ($dayOfWeek -ne 'Saturday' -and $dayOfWeek -ne 'Sunday')
-$marketOpen = $isWeekday -and ($hour -ge 9) -and ($hour -lt 15 -or ($hour -eq 15 -and $now.Minute -le 30))
-Write-Host "Day: $dayOfWeek, Hour: $hour, Market hours: $marketOpen"
+# Step 5: Telegram if any restart happened
+if ($restarted) {
+    Write-Output "TELEGRAM: Bot was down, restarted. PID: $restartPid"
+}
+if ($dashboardRestarted) {
+    Write-Output "TELEGRAM: Dashboard was down, restarted."
+}
