@@ -76,7 +76,7 @@ def init_csv(path: Path, header: list[str]) -> None:
 
 def log_trade(trade: dict) -> None:
     init_csv(TRADES_CSV, [
-        "timestamp", "trade_id", "symbol", "side", "qty", "price", "tag", "status", "fill_price"
+        "timestamp", "trade_id", "order_id", "symbol", "side", "qty", "price", "tag", "status", "filled_qty", "fill_price"
     ])
     with open(TRADES_CSV, "a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -84,12 +84,14 @@ def log_trade(trade: dict) -> None:
             w.writerow([
                 datetime.utcnow().isoformat(),
                 trade.get("trade_id", ""),
+                o.get("order_id", ""),
                 o.get("symbol", ""),
                 o.get("side", ""),
                 o.get("qty", 0),
                 o.get("price", 0),
                 o.get("tag", ""),
                 str(o.get("status", "")),
+                o.get("filled_qty", 0),
                 o.get("avg_fill_price", 0),
             ])
 
@@ -1156,12 +1158,14 @@ def run_paper() -> None:
                         risk.state.trades_today += 1
                         last_trade_at[symbol] = now
                         log_trade({
-                            "trade_id": getattr(trade, 'plan', plan).__class__.__name__,
+                            "trade_id": getattr(trade, 'trade_id', None) or f"T-{int(datetime.utcnow().timestamp()*1000)}",
                             "orders": [
                                 {
+                                    "order_id": getattr(o, 'order_id', ''),
                                     "symbol": o.symbol, "side": o.side.value if hasattr(o.side, 'value') else str(o.side),
                                     "qty": o.qty, "price": o.price, "tag": o.tag,
                                     "status": str(o.status), "avg_fill_price": o.avg_fill_price,
+                                    "filled_qty": getattr(o, 'filled_qty', 0),
                                 }
                                 for o in trade.orders
                             ],
