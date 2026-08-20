@@ -100,10 +100,19 @@ risk:
   adapt_to_performance: true         # win/loss streak → preset
   high_confidence_threshold: 0.7     # ≥ this → aggressive
   low_confidence_threshold: 0.45     # < this → defensive
-  # position cap
-  position_cap: 2                    # 1 NIFTY + 1 BANKNIFTY max
+  # position cap (STRATEGY count, NOT leg count — e.g. 1 iron condor = 1
+  # strategy even though it has 4 legs). Bug fixed 2026-08-20; legacy
+  # code used `max(len(open_trades), len(open_pos))` which counted legs
+  # and blocked the bot after 1 multi-leg strategy.
+  position_cap: 2                    # 1 NIFTY + 1 BANKNIFTY max (strategy count)
   cooldown_per_symbol_sec: 600       # 10 min between trades on same symbol
   min_hold_before_smart_exit_sec: 300  # 5 min minimum hold before smart exit can fire
+  # Phantom 0DTE auto-purge (FIX 2026-08-20). When the bot restarts, the
+  # broker may still report positions in 0DTE contracts that expired at
+  # 15:30 of the previous session. These phantoms block new signals
+  # because the cap check sees 6 leftover "positions" instead of 0.
+  # Set to false ONLY for forensic debugging.
+  purge_phantom_0dte_on_startup: true
   # Hourly P&L snapshot to Telegram
   hourly_pnl_report: true
   hourly_pnl_report_minute: 0        # top of each hour

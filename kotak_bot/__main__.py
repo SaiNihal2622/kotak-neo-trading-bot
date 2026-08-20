@@ -439,12 +439,53 @@ def run_paper() -> None:
         # Filter out expired options — broker may still report positions from expired
         # contracts (e.g. 12AUG/13AUG) that haven't been auto-settled. These can't be
         # closed (force-fill fails) and shouldn't count against the cap.
+        # FIX 2026-08-20: ALSO drop 0DTE positions (expiry == today) that have no LTP
+        # OR are not held in any open trade. These are phantoms re-loaded by the
+        # broker from yesterday's session and block today's signals.
         _today_str_recon = date.today().strftime('%Y-%m-%d')
+        _now_ist_recon = now_ist()
+        _mkt_open_recon = is_market_open(_now_ist_recon)
+        # Symbols currently in any open trade (we'll preserve those)
+        _open_trade_syms = set()
+        try:
+            for _tr in order_mgr.open_trades():
+                for _o in _tr.orders:
+                    if getattr(_o, 'avg_fill_price', 0) > 0 and getattr(_o, 'symbol', None):
+                        _open_trade_syms.add(_o.symbol)
+        except Exception:
+            pass
+        def _is_phantom_0dte(p):
+            try:
+                exp_str = str(p.expiry)[:10] if p.expiry else None
+            except Exception:
+                exp_str = None
+            if exp_str != _today_str_recon:
+                return False  # only filter same-day expiry
+            if getattr(p, 'symbol', None) in _open_trade_syms:
+                return False  # actively held in a trade
+            ltp = getattr(p, 'ltp', 0) or 0
+            # If post-close (after 15:30) or LTP is 0, the contract is worthless — phantom.
+            try:
+                from kotak_bot.utils.clock import is_eod_time
+                if is_eod_time(_now_ist_recon):
+                    return True
+            except Exception:
+                pass
+            if ltp <= 0:
+                return True
+            return False
         broker_pos = [
             p for p in all_broker_pos
             if (not p.expiry or str(p.expiry)[:10] >= _today_str_recon)
+            and not _is_phantom_0dte(p)
         ]
+        n_phantoms = sum(1 for p in all_broker_pos if _is_phantom_0dte(p))
         n_expired_filtered = len(all_broker_pos) - len(broker_pos)
+        if n_phantoms:
+            logger.info(
+                f"STARTUP RECONCILE: filtered {n_phantoms} phantom 0DTE positions "
+                f"(expiry == {_today_str_recon}, no LTP or post-close) from cap check"
+            )
         if n_expired_filtered:
             logger.info(
                 f"STARTUP RECONCILE: filtered {n_expired_filtered} expired broker positions "
@@ -687,6 +728,49 @@ def run_paper() -> None:
                         )
                 except Exception as e:
                     logger.debug(f"alpha decay check failed: {e}")
+                # FIX 2026-08-20: Pre-market phantom audit at 08:55 IST.
+                # Catches stale 0DTE positions from yesterday that the broker
+                # may still report. Fires once per day. Logs + Telegrams a
+                # summary so the user sees the state before market open.
+                try:
+                    if (now.hour, now.minute) >= (8, 55) and (
+                        not getattr(_liveness_state, "_last_phantom_audit_date", None)
+                        or _liveness_state["_last_phantom_audit_date"] != now.date()
+                    ):
+                        _purge_flag = cfg.get("risk", {}).get("purge_phantom_0dte_on_startup", True)
+                        all_bp = broker.get_positions()
+                        today_s = now.date().strftime('%Y-%m-%d')
+                        phantoms = [
+                            p for p in all_bp
+                            if getattr(p, 'qty', 0) != 0
+                            and getattr(p, 'expiry', None)
+                            and str(p.expiry)[:10] == today_s
+                            and (getattr(p, 'ltp', 0) or 0) <= 0
+                        ]
+                        live = [
+                            p for p in all_bp
+                            if getattr(p, 'qty', 0) != 0
+                            and not (
+                                getattr(p, 'expiry', None)
+                                and str(p.expiry)[:10] == today_s
+                                and (getattr(p, 'ltp', 0) or 0) <= 0
+                            )
+                        ]
+                        msg = (
+                            f"🧹 PRE-MARKET PHANTOM AUDIT (08:55)\n"
+                            f"Total broker positions: {len(all_bp)}\n"
+                            f"  Phantoms (0DTE, no LTP): {len(phantoms)}\n"
+                            f"  Live / settled: {len(live)}\n"
+                            f"Auto-purge at startup: {_purge_flag}"
+                        )
+                        logger.info(msg.replace('\n', ' | '))
+                        try:
+                            alerter.send(msg)
+                        except Exception:
+                            pass
+                        _liveness_state["_last_phantom_audit_date"] = now.date()
+                except Exception as e:
+                    logger.debug(f"pre-market phantom audit failed: {e}")
                 # compliance PDF
                 try:
                     # collect trades from CSV
@@ -889,20 +973,39 @@ def run_paper() -> None:
                 if vix_mult < 1.0:
                     logger.info(f"[SCAN] cycle={cycle_counter} | VIX={current_vix:.2f} → lot multiplier {vix_mult}x")
                 # ----------------------------------------------------------------
-                # position cap check (count both order_mgr and broker positions for safety)
-                # Filter out expired options — broker may still report positions from
-                # expired contracts (e.g. 12AUG/13AUG) that haven't been auto-settled.
+                # position cap check — counts STRATEGIES (open_trades), not legs.
+                # FIX 2026-08-20: prior code used `max(len(open_trades), len(open_pos))`
+                # which counted leg positions from broker and blocked the bot after
+                # 1 multi-leg strategy. A 1 NIFTY + 1 BANKNIFTY cap of 2 strategies
+                # maps cleanly to `len(open_trades)`.
+                # We still cross-check broker positions for orphan phantom legs (no
+                # matching open trade) and warn if any are found.
                 # ----------------------------------------------------------------
                 _today_str = date.today().strftime('%Y-%m-%d')
+                open_trades = order_mgr.open_trades()
                 open_pos = [
                     p for p in broker.get_positions()
                     if p.qty != 0
                     and (not p.expiry or str(p.expiry)[:10] >= _today_str)
                 ]
-                open_trades = order_mgr.open_trades()
-                total_open = max(len(open_trades), len(open_pos))
-                if total_open >= MAX_OPEN_POSITIONS:
-                    logger.info(f"[SCAN] cycle={cycle_counter} | skip: {total_open} open positions >= max {MAX_OPEN_POSITIONS}")
+                # Phantoms = broker position with qty but no matching open trade
+                _ot_syms = set()
+                for _t in open_trades:
+                    for _o in _t.orders:
+                        if getattr(_o, 'avg_fill_price', 0) > 0 and getattr(_o, 'symbol', None):
+                            _ot_syms.add(_o.symbol)
+                orphan_pos = [p for p in open_pos if p.symbol not in _ot_syms]
+                if orphan_pos:
+                    logger.warning(
+                        f"[SCAN] {len(orphan_pos)} orphan broker position(s) with no open trade "
+                        f"(symbols: {[p.symbol for p in orphan_pos]}). These should be auto-settled."
+                    )
+                # Cap is on STRATEGIES (open_trades), not on legs.
+                # Use `len(open_trades)` as the authoritative count. If we have orphan
+                # legs from a bot restart, don't count them against the cap.
+                total_strategies = len(open_trades)
+                if total_strategies >= MAX_OPEN_POSITIONS:
+                    logger.info(f"[SCAN] cycle={cycle_counter} | skip: {total_strategies} open strategies >= max {MAX_OPEN_POSITIONS}")
                     last_scan = now
                     time.sleep(5)
                     continue
