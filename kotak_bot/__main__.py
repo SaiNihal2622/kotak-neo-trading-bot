@@ -35,7 +35,8 @@ from kotak_bot.alerts.telegram import TelegramAlerter
 from kotak_bot.alerts.telegram_commands import TelegramCommandHandler
 from kotak_bot.alerts.email import EmailAlerter
 from kotak_bot.utils.clock import (
-    now_ist, is_market_open, is_square_off_time, market_session, set_market_hours,
+    now_ist, is_market_open, is_square_off_time, is_past_market_close,
+    market_session, set_market_hours,
     set_intraday, get_intraday, is_past_no_new_trades_time, is_past_force_square_off_time,
     is_in_opening_buffer, is_allow_overnight, in_event_blackout,
     fetch_india_vix, get_india_vix, vix_position_size_multiplier, vix_should_skip,
@@ -465,12 +466,12 @@ def run_paper() -> None:
                 return False  # actively held in a trade
             ltp = getattr(p, 'ltp', 0) or 0
             # If post-close (after 15:30) or LTP is 0, the contract is worthless — phantom.
-            try:
-                from kotak_bot.utils.clock import is_eod_time
-                if is_eod_time(_now_ist_recon):
-                    return True
-            except Exception:
-                pass
+            # FIX 2026-08-20 (patch 2): is_past_market_close uses the configured close time
+            # from settings.yaml (default 15:30). This catches 0DTE phantoms that the broker
+            # still reports with cached LTP > 0 post-market — the LTP-only check missed
+            # them because the cached value is from earlier in the session.
+            if is_past_market_close(_now_ist_recon):
+                return True
             if ltp <= 0:
                 return True
             return False
@@ -740,26 +741,33 @@ def run_paper() -> None:
                         _purge_flag = cfg.get("risk", {}).get("purge_phantom_0dte_on_startup", True)
                         all_bp = broker.get_positions()
                         today_s = now.date().strftime('%Y-%m-%d')
-                        phantoms = [
-                            p for p in all_bp
-                            if getattr(p, 'qty', 0) != 0
-                            and getattr(p, 'expiry', None)
-                            and str(p.expiry)[:10] == today_s
-                            and (getattr(p, 'ltp', 0) or 0) <= 0
-                        ]
-                        live = [
-                            p for p in all_bp
-                            if getattr(p, 'qty', 0) != 0
-                            and not (
-                                getattr(p, 'expiry', None)
-                                and str(p.expiry)[:10] == today_s
-                                and (getattr(p, 'ltp', 0) or 0) <= 0
-                            )
-                        ]
+                        # FIX 2026-08-20 (patch 2): use the same phantom detection as
+                        # startup_reconcile — covers (a) expiry < today (yesterday's
+                        # 0DTE that the broker hasn't auto-settled), (b) expiry == today
+                        # AND ltp <= 0, (c) expiry == today AND is_past_market_close.
+                        # Without (c), positions reported post-15:30 with cached LTP
+                        # would be mis-classified as "live" until EOD settlement.
+                        def _is_phantom_audit(p):
+                            try:
+                                exp_str = str(p.expiry)[:10] if p.expiry else None
+                            except Exception:
+                                return False
+                            if exp_str and exp_str < today_s:
+                                return True  # expired (yesterday's 0DTE, unsettled)
+                            if exp_str != today_s:
+                                return False
+                            ltp = getattr(p, 'ltp', 0) or 0
+                            if is_past_market_close(now):
+                                return True
+                            if ltp <= 0:
+                                return True
+                            return False
+                        phantoms = [p for p in all_bp if getattr(p, 'qty', 0) != 0 and _is_phantom_audit(p)]
+                        live = [p for p in all_bp if getattr(p, 'qty', 0) != 0 and not _is_phantom_audit(p)]
                         msg = (
                             f"🧹 PRE-MARKET PHANTOM AUDIT (08:55)\n"
                             f"Total broker positions: {len(all_bp)}\n"
-                            f"  Phantoms (0DTE, no LTP): {len(phantoms)}\n"
+                            f"  Phantoms (0DTE / expired / post-close): {len(phantoms)}\n"
                             f"  Live / settled: {len(live)}\n"
                             f"Auto-purge at startup: {_purge_flag}"
                         )

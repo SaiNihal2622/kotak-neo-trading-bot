@@ -92,6 +92,25 @@ def is_square_off_time(now: Optional[datetime] = None, threshold: Optional[time]
     return now.time() >= t
 
 
+def is_past_market_close(now: Optional[datetime] = None) -> bool:
+    """True if current time is at or past the configured market close (default 15:30 IST).
+
+    Used by the phantom-0DTE filter: if `expiry == today` and time >= close,
+    the contract has technically expired on the exchange. Any position the broker
+    still reports with cached LTP is a stale record and should be excluded from
+    the position cap (it'll be auto-settled at end-of-day, but in the meantime
+    it would block today's signals).
+
+    Pre-market (before 09:00) the same-day check is also useful: positions from
+    yesterday that are still reported by the broker are caught by the
+    `expiry < today` filter; positions reported with `expiry == today` before
+    open are typically stale records from the previous session that haven't
+    been settled yet.
+    """
+    now = now or now_ist()
+    return now.time() >= _MARKET_HOURS["close"]
+
+
 # Intraday mode configuration (separate from market_hours to make intent explicit)
 _INTRADAY = {
     "allow_overnight": False,    # master switch — when False, no positions held past close
