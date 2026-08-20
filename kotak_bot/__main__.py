@@ -69,9 +69,43 @@ logger.info(f"Liveness monitor started (interval={_LIVENESS_INTERVAL}s, pid={os.
 
 
 def init_csv(path: Path, header: list[str]) -> None:
+    """Create CSV with header if missing, or migrate to current schema.
+
+    Migration: if file exists but its header is a prefix of the target header,
+    rewrite it with the target header and pad old rows with empty strings for
+    the new columns. If header already matches, no-op.
+    """
     if not path.exists():
         with open(path, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(header)
+        return
+    # Existing file — check schema
+    try:
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            r = csv.reader(f)
+            existing_header = next(r, None)
+            old_rows = list(r)
+    except Exception:
+        return
+    if existing_header == header:
+        return  # already on current schema
+    if not existing_header:
+        return
+    # Migrate: rewrite with new header, pad old rows for added columns
+    if all(h in header for h in existing_header):
+        new_rows = []
+        added = [h for h in header if h not in existing_header]
+        for row in old_rows:
+            # pad with empty strings for new columns (preserve existing order)
+            new_rows.append(row + [""] * (len(header) - len(existing_header)))
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(header)
+            w.writerows(new_rows)
+        try:
+            logger.info(f"init_csv: migrated {path.name} from {len(existing_header)} -> {len(header)} columns, padded {len(old_rows)} rows")
+        except Exception:
+            pass
 
 
 def log_trade(trade: dict) -> None:
