@@ -256,10 +256,6 @@ def run_paper() -> None:
     resilient_cfg = ResilientConfig.from_dict(cfg.get("risk", {}).get("execution", {}))
     resilient = ResilientExecutor(broker, config=resilient_cfg)
     order_mgr.set_resilient_executor(resilient)
-    # Phase 1.3: wrap broker with retry + cancel-replace + fallback data
-    from kotak_bot.execution.resilient import ResilientExecutor, ResilientConfig
-    resilient_cfg = ResilientConfig.from_dict(cfg.get("risk", {}).get("execution", {}))
-    resilient = ResilientExecutor(broker, config=resilient_cfg)
     # Register yfinance fallback (always available)
     try:
         import yfinance as yf
@@ -608,7 +604,12 @@ def run_paper() -> None:
         try:
             _liveness_state["ts"] = now_ist().isoformat()
             _liveness_state["capital"] = float(risk.state.capital)
-            _liveness_state["realized_pnl"] = float(risk.state.realized_pnl or 0)
+            # Realized P&L: prefer broker's authoritative number; fall back to risk state's daily_pnl
+            try:
+                _margins = broker.get_margins() or {}
+                _liveness_state["realized_pnl"] = float(_margins.get("realized_pnl", 0.0) or 0.0)
+            except Exception:
+                _liveness_state["realized_pnl"] = float(risk.state.daily_pnl or 0.0)
             _liveness_state["trades_today"] = int(risk.state.trades_today or 0)
             try:
                 _liveness_state["open_positions"] = len(broker.get_positions())
