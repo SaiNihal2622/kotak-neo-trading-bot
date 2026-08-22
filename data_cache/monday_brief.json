@@ -1,0 +1,50 @@
+{
+  "as_of": "2026-08-22T15:41:52.472450",
+  "next_session_open_ist": "2026-08-24T09:15:00",
+  "weekend_summary": "Regime: risk_off, Gap: gap_up · NIFTY: 24252 · Posture: conservative (max risk 1.0%)",
+  "key_risks": [
+    "Oil +3.9% this week — India import bill widens, INR pressure",
+    "News: F&amp;O Talk: Nifty to consolidate further, says Sudeep Shah; picks 3 stocks for next week",
+    "News: Luxury Sales Plunge in China as Tax Push Hits Rich Shoppers"
+  ],
+  "key_catalysts": [
+    "Dollar index -0.84% — weaker USD = EM tailwind",
+    "India VIX 11.2 — calm, premium-selling favorable",
+    "News: Bitcoin surges 23% in 1 week to trade nearly $78K as liquidity hopes, ETF inflows boost cr",
+    "News: Bank stocks to buy: Goldman Sachs remains bullish on 6 private bank stocks. Do you own any"
+  ],
+  "regime_hint": "risk_off",
+  "india_open_gap_signal": "gap_up",
+  "macro_blackout_soon": false,
+  "macro_blackout_event": null,
+  "macro_events_next_7d": [
+    {
+      "name": "monthly_expiry_NIFTY",
+      "datetime_ist": "2026-08-28T15:30:00",
+      "importance": 2,
+      "direction_hint": "neutral"
+    },
+    {
+      "name": "india_gdp",
+      "datetime_ist": "2026-08-29T17:30:00",
+      "importance": 2,
+      "direction_hint": "neutral"
+    }
+  ],
+  "recommended_posture": "conservative",
+  "max_risk_per_trade_pct": 1.0,
+  "skip_first_30min": true,
+  "preferred_strategies": [
+    "short_strangle",
+    "iron_condor"
+  ],
+  "rationale": "regime_hint=risk_off → conservative | gap_signal=gap_up → skip 30min | crude +3% → India import bill risk",
+  "nifty_last_close": 24252.0,
+  "banknifty_last_close": 57761.9492,
+  "india_vix": 11.2,
+  "usdinr": 95.71,
+  "wti_crude_5d_pct": 3.03,
+  "sp500_5d_pct": -0.91,
+  "intel_source_as_of": "2026-08-22T15:40:52.739373+05:30",
+  "news_count": 32
+}

@@ -1,0 +1,42 @@
+{
+  "ts": "2026-08-22T23:00:10.411775+05:30",
+  "epoch": 1787419810,
+  "liveness": {
+    "available": true,
+    "age_sec": 14.8,
+    "fresh": true,
+    "pid": 15204,
+    "tick": 35,
+    "uptime_sec": 1054.2,
+    "main_thread_alive": true,
+    "state": "running"
+  },
+  "log": {
+    "available": true,
+    "path": "C:\\Users\\saini\\.minimax-agent\\projects\\kotak-neo-bot\\Logs\\bot_stderr.log",
+    "age_sec": 33.6,
+    "fresh": true,
+    "size_bytes": 169621
+  },
+  "crash_history": {
+    "count": 12,
+    "latest": {
+      "ts": "2026-08-22T09:20:23.642815+00:00",
+      "pid": 9980,
+      "reason": "signal",
+      "cycle": 1032,
+      "last_cycle_ts": "2026-08-22T09:20:23.421906+00:00",
+      "loop_uptime_sec": 5160.418722,
+      "signal_name": "SIGINT"
+    }
+  },
+  "paper_state": {
+    "available": true,
+    "cash": 100000.0,
+    "realized_pnl": 0.0,
+    "open_positions": 0,
+    "open_orders": 288
+  },
+  "anomalies": [],
+  "telegram_sent": false
+}

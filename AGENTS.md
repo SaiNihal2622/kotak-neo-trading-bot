@@ -244,3 +244,66 @@ In our setup, the live NSSM bot is parented by powershell from
 Anything parented by `kite-mcp.exe` or a stray `powershell.exe` is
 an orphan.
 
+### 2026-08-22: Kotak PROD API throws ~1-4 URLErrors per 24h on quiet weekends; the bot self-recovers
+**Rule**: The Kotak Neo PROD endpoint `e22.kotaksecurities.com` returns
+two flavours of transient error ~1-4 times per 24h on quiet (weekend)
+days: (a) `urllib.error.URLError: <urlopen error timed out>` after 15s,
+(b) `urllib.error.URLError: <urlopen error [WinError 10054] An
+existing connection was forcibly closed by the remote host>`. Both
+originate at `kotak_bot/data/kotak_prod_feed.py::_fetch_spot_quotes:606`
+→ `_poll_loop:547` (one loguru ERROR per failed poll). The
+`_poll_loop` exception handler catches these and the next 60s poll
+cycle succeeds — **no operator action is required**.
+**Evidence**: On 2026-08-22, stderr logged exactly 4 of these in 24h
+(19:09:20 timeout, 19:52:44 WinError 10054, 19:53:52 timeout,
+22:25:56 timeout). All 4 self-recovered; subsequent INFO heartbeats
+(22:28:01 onwards) show `tick_count 25326→...` advancing at +56/min.
+Telegram was sent ONCE for the 22:25:56 cluster (22:30, message_id
+1269); the earlier 19:09/19:52/19:53 cluster did NOT alert, indicating
+the alert policy is throttled to ~1 per N-hour cluster.
+**Apply when**:
+- Reading `Logs\bot_stderr.log` and seeing a `kotak_prod_feed:
+  _poll_loop:547` URLError — check whether the next 60s line is a
+  fresh `LiveKotak heartbeat: tick_count=...`. If yes, the bot
+  recovered and no action is needed. Do NOT restart, do NOT Telegram.
+- The error is upstream (E22 load balancer), not a client bug.
+  Do NOT bump the 15s timeout or add a retry without a separate
+  decision — the current back-off-via-next-poll pattern is correct.
+- If you see >5 of these within a single hour (vs the usual 1-3
+  per day), the upstream may be having an outage worth investigating.
+- WinError 10054 specifically = remote-side TCP RST. Correlates with
+  brief outage clusters, not a single bad request.
+
+### 2026-08-22: kotak-bot-heartbeat cron checks the VESTIGIAL log, not the active one
+**Rule**: The `kotak-bot-heartbeat` cron prompt (cronId
+`3fc44c8d-b1e2-4606-9812-d7b9cec0f78e`, every 5 min) tells the LLM
+to run `Select-String -Path 'bot_stderr.log' -Pattern
+'Traceback|FATAL|Killed|Exception' | Select-Object -Last 3`. The
+relative path resolves to `C:\Users\saini\.minimax-agent\projects
+\kotak-neo-bot\bot_stderr.log` (lowercase, no `Logs\` prefix) — the
+**vestigial** file frozen at 2026-08-20 02:27:15. The canonical
+active log is `Logs\bot_stderr.log` (capital L, NSSM-managed,
+currently ~169 KB and growing). The cron's "new error" detection
+therefore reads a dead file and can **never** find a new Traceback
+in the active log.
+**Evidence**: The heartbeat prompt itself contains a comment
+"ROOT, NOT `Logs\bot_stderr.log` which is stale" — but this is
+inverted. `Logs\bot_stderr.log` is the canonical NSSM-managed
+log (see "Things to never do #5" above), and the ROOT lowercase
+file is the stale one. The 22:25:56 URLError was logged to
+`Logs\bot_stderr.log` and the 23:00 self-audit found it correctly;
+the 23:00 kotak-bot-watchdog session, following the spec verbatim,
+found nothing because it read the wrong file.
+**Apply when**:
+- Investigating "did the bot have a new error?" — read
+  `Logs\bot_stderr.log` (capital L), NOT `bot_stderr.log`. The
+  self-monitor cron (which uses `data_cache\self_audit.jsonl` and
+  `self_monitor.py`) reads the right file and is the more reliable
+  signal.
+- The fix (rewrite the cron prompt's Select-String path) is a
+  small but running-behavior change. Do not change in a hurry.
+  When you do, ALSO add a "lines newer than the bot's start
+  time" filter so the dead-file pattern doesn't fire
+  post-fix on historical 8/14 noise (the prompt already has this
+  filter written; just the path needs to point at `Logs\`).
+

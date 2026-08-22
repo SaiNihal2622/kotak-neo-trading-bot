@@ -1,0 +1,15 @@
+timestamp,trade_id,underlying,strategy,entry_chart,exit_chart,pnl,hold_minutes,tags
+2026-08-10T09:26:43.534939,T-D36700F0A3,NIFTY,iron_condor,data_cache\journal\entry_T-D36700F0A3_092643.png,,0.00,0,conf=0.60|preset=base
+2026-08-10T09:26:50.479703,T-53C2F700D9,BANKNIFTY,iron_condor,data_cache\journal\entry_T-53C2F700D9_092650.png,,0.00,0,conf=0.65|preset=base
+2026-08-11T04:16:29.862902,T-21DCA377EC,NIFTY,iron_condor,data_cache\journal\entry_T-21DCA377EC_041629.png,,0.00,0,conf=0.60|preset=base
+2026-08-11T04:16:38.512837,T-86376B389F,BANKNIFTY,iron_condor,data_cache\journal\entry_T-86376B389F_041637.png,,0.00,0,conf=0.60|preset=base
+2026-08-12T05:17:54.911768,T-20C3BC24E6,NIFTY,iron_condor,data_cache\journal\entry_T-20C3BC24E6_051754.png,,0.00,0,conf=0.60|preset=base
+2026-08-12T05:18:02.288472,T-F42AC3F310,BANKNIFTY,iron_condor,data_cache\journal\entry_T-F42AC3F310_051802.png,,0.00,0,conf=0.60|preset=base
+2026-08-13T08:48:01.019555,T-7958FF19D1,NIFTY,iron_condor,data_cache\journal\entry_T-7958FF19D1_084800.png,,0.00,0,conf=0.60|preset=base
+2026-08-13T08:48:10.504629,T-CF87462E20,BANKNIFTY,iron_condor,data_cache\journal\entry_T-CF87462E20_084810.png,,0.00,0,conf=0.60|preset=base
+2026-08-20T03:30:37.842318,T-5582552C4F,NIFTY,directional_debit,data_cache\journal\entry_T-5582552C4F_033037.png,,0.00,0,conf=0.90|preset=aggressive
+2026-08-20T03:30:45.280279,T-E741BDEE88,BANKNIFTY,iron_condor,data_cache\journal\entry_T-E741BDEE88_033045.png,,0.00,0,conf=0.60|preset=base
+2026-08-21T03:30:47.296192,T-F17FFA1566,NIFTY,directional_debit,data_cache\journal\entry_T-F17FFA1566_033046.png,,0.00,0,conf=0.74|preset=aggressive
+2026-08-21T03:30:48.416061,T-9AD1565A8D,NIFTY,iron_condor,data_cache\journal\entry_T-9AD1565A8D_033048.png,,0.00,0,conf=0.65|preset=base
+2026-08-21T03:31:01.269482,T-FB543EF5F8,BANKNIFTY,iron_condor,data_cache\journal\entry_T-FB543EF5F8_033100.png,,0.00,0,conf=0.60|preset=base
+2026-08-21T03:31:06.858381,T-DF6B7887C7,BANKNIFTY,iron_condor,data_cache\journal\entry_T-DF6B7887C7_033106.png,,0.00,0,conf=0.60|preset=base

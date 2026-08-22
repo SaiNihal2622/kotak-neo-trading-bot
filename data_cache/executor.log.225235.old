@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\kotak_executor.py", line 343, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\kotak_executor.py", line 311, in main
+    logger.add(str(EXECUTOR_LOG), rotation="1 day", retention="14 days", level="INFO")
+  File "C:\Users\saini\AppData\Roaming\Python\Python312\site-packages\loguru\_logger.py", line 802, in add
+    wrapped_sink = FileSink(path, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\saini\AppData\Roaming\Python\Python312\site-packages\loguru\_file_sink.py", line 192, in __init__
+    self._create_file(path)
+  File "C:\Users\saini\AppData\Roaming\Python\Python312\site-packages\loguru\_file_sink.py", line 226, in _create_file
+    self._file = open(path, **self._kwargs)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: 'C:\\Users\\saini\\.minimax-agent\\projects\\kotak-neo-bot\\data_cache\\executor.log'

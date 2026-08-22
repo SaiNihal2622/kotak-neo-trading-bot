@@ -1,0 +1,25 @@
+{
+  "last_tick": "2026-08-22T14:52:49.737240+00:00",
+  "tick_count": 3,
+  "restarts": {
+    "orchestrator": 0,
+    "executor": 0,
+    "bot": 0,
+    "dashboard": 3
+  },
+  "last_attempt": {
+    "dashboard": 1787390572.0001252
+  },
+  "alive": {
+    "orchestrator": true,
+    "executor": true,
+    "bot": true,
+    "dashboard": false
+  },
+  "pid": {
+    "orchestrator": 12932,
+    "executor": 8680,
+    "bot": 6764,
+    "dashboard": null
+  }
+}

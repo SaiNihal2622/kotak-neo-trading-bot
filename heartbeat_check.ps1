@@ -1,73 +1,64 @@
 $ErrorActionPreference = 'Stop'
-$py = ".\.venv\Scripts\python.exe"
+Set-Location "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot"
+
+# Step 1: Bot alive check (path filter + 4h window)
+$alive = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' -and $_.StartTime -gt (Get-Date).AddHours(-4) } | Measure-Object | Select-Object -ExpandProperty Count
+Write-Host "ALIVE_4H=$alive"
+$aliveAll = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' } | Measure-Object | Select-Object -ExpandProperty Count
+Write-Host "ALIVE_ALL=$aliveAll"
+$procs = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' }
+foreach ($p in $procs) {
+  $uptime = (Get-Date) - $p.StartTime
+  Write-Host "PID=$($p.Id) Started=$($p.StartTime) Uptime=$([int]$uptime.TotalMinutes)m"
+}
+Write-Host "---"
 
 # Market hours check
-$now = Get-Date
-$hour = $now.Hour
-$minute = $now.Minute
-$dow = $now.DayOfWeek
-$isMarketHours = $false
-if ($dow -ge 'Monday' -and $dow -le 'Friday') {
-    if (($hour -eq 9 -and $minute -ge 0) -or ($hour -ge 10 -and $hour -lt 15) -or ($hour -eq 15 -and $minute -le 30)) {
-        $isMarketHours = $true
-    }
-}
-Write-Host "MARKET_HOURS=$isMarketHours (Hour=$hour Min=$minute DoW=$dow)"
+$h = (Get-Date).Hour
+$m = (Get-Date).Minute
+$dayOfWeek = (Get-Date).DayOfWeek
+$minsSinceMidnight = $h * 60 + $m
+$mktOpen = 9 * 60
+$mktClose = 15 * 60 + 30
+$isWeekday = ($dayOfWeek -ne 'Saturday' -and $dayOfWeek -ne 'Sunday')
+$isMktHours = $isWeekday -and ($minsSinceMidnight -ge $mktOpen) -and ($minsSinceMidnight -le $mktClose)
+Write-Host "MKT_HOURS=$isMktHours (weekday=$isWeekday, $h`:$m)"
 
-# Step 1: Check alive with 4h window
-$alive4h = Get-Process python -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like '*kotak-neo-bot*' -and $_.StartTime -gt (Get-Date).AddHours(-4) } |
-    Measure-Object | Select-Object -ExpandProperty Count
-Write-Host "ALIVE_4H=$alive4h"
-
-# Get full count for diagnostic
-$aliveFull = Get-Process python -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like '*kotak-neo-bot*' } |
-    Measure-Object | Select-Object -ExpandProperty Count
-Write-Host "ALIVE_FULL=$aliveFull"
-
-# List processes if any
-$procs = Get-Process python -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like '*kotak-neo-bot*' }
-foreach ($p in $procs) {
-    $ageMin = [math]::Round(((Get-Date) - $p.StartTime).TotalMinutes, 1)
-    Write-Host "  PID=$($p.Id) StartTime=$($p.StartTime) AgeMin=$ageMin Path=$($p.Path)"
-}
-
-# Step 2: Check stderr log for errors
-$errMatches = Select-String -Path 'bot_stderr.log' -Pattern 'Traceback|FATAL|Killed|Exception' -ErrorAction SilentlyContinue | Select-Object -Last 3
-if ($errMatches) {
-    Write-Host "ERRORS_FOUND:"
-    foreach ($m in $errMatches) { Write-Host "  $($m.LineNumber): $($m.Line)" }
+# Step 2: stderr error scan (canonical = logs\bot_stderr.log)
+Write-Host "---"
+Write-Host "STDERR SCAN:"
+if (Test-Path 'logs\bot_stderr.log') {
+  $logStderr = Get-Item 'logs\bot_stderr.log'
+  Write-Host "logs\bot_stderr.log: age=$(([int]((Get-Date) - $logStderr.LastWriteTime).TotalMinutes))m, size=$([int]($logStderr.Length/1024))KB"
+  $errors2 = Select-String -Path 'logs\bot_stderr.log' -Pattern 'Traceback|FATAL|Killed|Exception' | Select-Object -Last 3
+  if ($errors2) {
+    Write-Host "LAST 3 ERROR LINES (logs\bot_stderr.log):"
+    $errors2 | ForEach-Object { Write-Host "L$($_.LineNumber): $($_.Line)" }
+  } else {
+    Write-Host "NO_RECENT_ERRORS"
+  }
 } else {
-    Write-Host "ERRORS=none"
+  Write-Host "NO_LOGS_STDERR"
 }
 
 # Step 3: Dashboard health
+Write-Host "---"
+Write-Host "DASHBOARD CHECK:"
 try {
-    $resp = Invoke-WebRequest -Uri 'http://localhost:8501/_stcore/health' -UseBasicParsing -TimeoutSec 5
-    Write-Host "DASH=$($resp.StatusCode)"
+  $resp = Invoke-WebRequest -Uri 'http://localhost:8501/_stcore/health' -UseBasicParsing -TimeoutSec 5
+  Write-Host "DASHBOARD_HTTP=$($resp.StatusCode)"
 } catch {
-    Write-Host "DASH=DOWN ($($_.Exception.Message))"
+  Write-Host "DASHBOARD_DOWN: $($_.Exception.Message)"
 }
 
-# Step 4 & 5: Restart decision (only echo, do not auto-restart in this script - controlled by cron host)
-$needRestart = $false
-if ($isMarketHours -and $alive4h -eq 0) {
-    if ($aliveFull -eq 0) {
-        $needRestart = $true
-        Write-Host "DECISION=RESTART_BOTH_ZERO"
-    } else {
-        Write-Host "DECISION=NO_RESTART (4h=0 but full=$aliveFull - 4h filter false-zero)"
-    }
+# bot.log freshness + last heartbeats
+Write-Host "---"
+Write-Host "BOT LOG:"
+if (Test-Path 'logs\bot.log') {
+  $log = Get-Item 'logs\bot.log'
+  Write-Host "logs\bot.log: age=$(([int]((Get-Date) - $log.LastWriteTime).TotalMinutes))m, size=$([int]($log.Length/1024))KB"
+  Write-Host "LAST 5 HEARTBEATS:"
+  Get-Content 'logs\bot.log' -Tail 100 | Select-String -Pattern 'tick_count|heartbeat' | Select-Object -Last 5 | ForEach-Object { Write-Host $_.Line }
 } else {
-    Write-Host "DECISION=NO_RESTART (alive4h=$alive4h, market=$isMarketHours)"
-}
-
-# Last few log lines for context
-Write-Host "---LAST_LOG_LINES---"
-if (Test-Path 'bot_stderr.log') {
-    Get-Content 'bot_stderr.log' -Tail 5 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
-} else {
-    Write-Host "(no bot_stderr.log)"
+  Write-Host "NO_BOT_LOG"
 }

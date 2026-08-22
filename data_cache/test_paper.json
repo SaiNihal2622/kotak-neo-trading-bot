@@ -1,0 +1,45 @@
+{
+  "cash": 295786.5,
+  "realized_pnl": 0.0,
+  "orders": {
+    "PAPER-BB86C82454": {
+      "symbol": "NIFTY24500CE",
+      "side": "BUY",
+      "qty": 75,
+      "order_type": "MARKET",
+      "product": "MIS",
+      "price": 0.0,
+      "trigger_price": 0.0,
+      "tag": "",
+      "exchange": "NFO",
+      "strike": 24500,
+      "option_type": "CE",
+      "expiry": null,
+      "underlying": "NIFTY",
+      "order_id": "PAPER-BB86C82454",
+      "status": "complete",
+      "filled_qty": 75,
+      "avg_fill_price": 56.18,
+      "placed_at": "2026-08-06T16:35:03.725674",
+      "filled_at": "2026-08-06T16:35:03.725674",
+      "rejection_reason": "",
+      "expected_fill_price": 56.15
+    }
+  },
+  "positions": {
+    "NIFTY24500CE": {
+      "symbol": "NIFTY24500CE",
+      "exchange": "NFO",
+      "qty": 75,
+      "avg_price": 56.18,
+      "ltp": 74.24,
+      "pnl": 1354.4999999999995,
+      "product": "MIS",
+      "strike": 24500,
+      "option_type": "CE",
+      "expiry": null,
+      "underlying": "NIFTY",
+      "entry_time": "2026-08-06T16:35:03.725674"
+    }
+  }
+}

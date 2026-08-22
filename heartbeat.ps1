@@ -1,73 +1,70 @@
 $ErrorActionPreference = 'Stop'
+Set-Location "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot"
 $py = ".\.venv\Scripts\python.exe"
 
-# Step 1: First check (4h window) — only counts processes started in last 4 hours
-$alive = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' -and $_.StartTime -gt (Get-Date).AddHours(-4) } | Measure-Object | Select-Object -ExpandProperty Count
-Write-Output "FIRST_CHECK_4H: $alive"
-
-# Compute IST market hours (9:00-15:30 Mon-Fri, no DST in IST).
-# System is in IST (UTC+05:30), so Get-Date returns local IST directly — no +5:30 conversion.
 $now = Get-Date
-$hour = $now.Hour
-$minute = $now.Minute
-$dayOfWeek = $now.DayOfWeek
-$isMarketHours = ($dayOfWeek -ne 'Saturday' -and $dayOfWeek -ne 'Sunday') -and (
-    ($hour -gt 9 -or ($hour -eq 9 -and $minute -ge 0)) -and
-    ($hour -lt 15 -or ($hour -eq 15 -and $minute -le 30))
-)
-Write-Output ("LOCAL_TIME: {0} | Day: {1} | MarketHours: {2}" -f $now.ToString('yyyy-MM-dd HH:mm:ss'), $dayOfWeek, $isMarketHours)
+$isMarketHours = $false
+$dayOfWeek = (Get-Date).DayOfWeek
+if ($dayOfWeek -ge 'Monday' -and $dayOfWeek -le 'Friday') {
+  $hour = (Get-Date).Hour
+  $min = (Get-Date).Minute
+  $minutes = $hour * 60 + $min
+  if ($minutes -ge 540 -and $minutes -le 930) { $isMarketHours = $true }
+}
+Write-Host "=== Heartbeat $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') IST | isMarketHours=$isMarketHours ==="
 
-$needsSecondCheck = ($alive -eq 0) -and $isMarketHours
-$restarted = $false
-$restartPid = $null
+# Step 1: alive check (path + 4h window)
+$alive = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' -and $_.StartTime -gt (Get-Date).AddHours(-4) } | Measure-Object | Select-Object -ExpandProperty Count
+$allBot = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' } | Measure-Object | Select-Object -ExpandProperty Count
+Write-Host "alive4=$alive allBot=$allBot"
 
-if ($needsSecondCheck) {
-    $fullCount = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' } | Measure-Object | Select-Object -ExpandProperty Count
-    Write-Output "SECOND_CHECK_FULL: $fullCount"
-    if ($fullCount -eq 0) {
-        Write-Output "RESTARTING_BOT"
-        $proc = Start-Process -FilePath $py -ArgumentList "-u", "-m", "kotak_bot", "paper" -RedirectStandardOutput "bot_stdout.log" -RedirectStandardError "bot_stderr.log" -WindowStyle Hidden -PassThru
-        $restarted = $true
-        $restartPid = $proc.Id
-        Write-Output "RESTARTED_PID: $restartPid"
-    } else {
-        Write-Output "BOT_ALIVE_VIA_SECOND_CHECK: $fullCount"
-    }
-} else {
-    Write-Output "NO_RESTART_NEEDED"
+$procs = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' } | Select-Object Id, StartTime, @{N='AgeMin';E={[math]::Round(((Get-Date) - $_.StartTime).TotalMinutes,1)}}
+$procs | Format-Table -AutoSize | Out-String | Write-Host
+
+# Step 2: log error scan
+Write-Host "--- ERROR SCAN ---"
+$rootLog = ".\bot_stderr.log"
+$botLog = ".\logs\bot_stderr.log"
+
+if (Test-Path $rootLog) {
+  $errs = Select-String -Path $rootLog -Pattern 'Traceback|FATAL|Killed|Exception' -ErrorAction SilentlyContinue | Select-Object -Last 3
+  if ($errs) { $errs | ForEach-Object { Write-Host "  [root] $($_.LineNumber): $($_.Line.Substring(0, [Math]::Min(200, $_.Line.Length)))" } } else { Write-Host "  [root] no errors" }
+}
+if (Test-Path $botLog) {
+  $errs2 = Select-String -Path $botLog -Pattern 'Traceback|FATAL|Killed|Exception' -ErrorAction SilentlyContinue | Select-Object -Last 3
+  if ($errs2) { $errs2 | ForEach-Object { Write-Host "  [logs] $($_.LineNumber): $($_.Line.Substring(0, [Math]::Min(200, $_.Line.Length)))" } } else { Write-Host "  [logs] no errors" }
 }
 
-# Step 2: Check bot stderr log for errors
-$logPath = "Logs\bot_stderr.log"
-if (Test-Path $logPath) {
-    $errors = Select-String -Path $logPath -Pattern 'Traceback|FATAL|Killed|Exception' | Select-Object -Last 3
-    Write-Output "---LAST_3_ERRORS---"
-    if ($errors) {
-        $errors | ForEach-Object { Write-Output $_.Line }
-    } else {
-        Write-Output "NO_ERRORS"
-    }
-} else {
-    Write-Output "LOG_NOT_FOUND: $logPath"
+# Log growth
+if (Test-Path $botLog) {
+  $sz = (Get-Item $botLog).Length
+  $lw = (Get-Item $botLog).LastWriteTime
+  Write-Host "  logs/bot_stderr.log size=$sz lastWrite=$lw"
+}
+if (Test-Path $rootLog) {
+  $sz2 = (Get-Item $rootLog).Length
+  $lw2 = (Get-Item $rootLog).LastWriteTime
+  Write-Host "  ./bot_stderr.log size=$sz2 lastWrite=$lw2 (spec reads)"
 }
 
-# Step 3: Check dashboard health
-$dashboardRestarted = $false
+# Step 3: dashboard
+Write-Host "--- DASHBOARD HEALTH ---"
 try {
-    $dashResp = Invoke-WebRequest -Uri "http://localhost:8501/_stcore/health" -UseBasicParsing -TimeoutSec 5
-    Write-Output ("DASHBOARD: {0} ({1})" -f $dashResp.StatusCode, $dashResp.StatusDescription)
+  $r = Invoke-WebRequest -Uri 'http://localhost:8501/_stcore/health' -TimeoutSec 5 -UseBasicParsing
+  Write-Host "  HTTP $($r.StatusCode)"
 } catch {
-    Write-Output ("DASHBOARD_DOWN: {0}" -f $_.Exception.Message)
-    Write-Output "RESTARTING_DASHBOARD"
-    $dashProc = Start-Process -FilePath $py -ArgumentList "-u", "-m", "streamlit", "run", "dashboard\app.py", "--server.port=8501", "--server.headless=true" -WindowStyle Hidden -PassThru
-    $dashboardRestarted = $true
-    Write-Output "DASHBOARD_RESTARTED_PID: $($dashProc.Id)"
+  Write-Host "  HTTP error: $($_.Exception.Message)"
 }
 
-# Step 5: Telegram if any restart happened
-if ($restarted) {
-    Write-Output "TELEGRAM: Bot was down, restarted. PID: $restartPid"
+# Step 4: decision
+Write-Host "--- DECISION ---"
+$restart = $false
+if ($isMarketHours -and $alive -eq 0 -and $allBot -eq 0) {
+  $restart = $true
+  Write-Host "  market hours + double-check zero -> RESTART"
+} elseif ($isMarketHours -and $alive -eq 0 -and $allBot -gt 0) {
+  Write-Host "  alive4=0 but allBot=$allBot -> path/4h filter quirk, NO restart"
+} else {
+  Write-Host "  bot alive (alive4=$alive allBot=$allBot) -> no restart"
 }
-if ($dashboardRestarted) {
-    Write-Output "TELEGRAM: Dashboard was down, restarted."
-}
+Write-Host "=== END HEARTBEAT ==="

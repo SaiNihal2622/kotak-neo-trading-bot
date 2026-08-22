@@ -1,0 +1,97 @@
+{
+  "ts": "2026-08-22T14:22:22.859257",
+  "days_requested": 180,
+  "data_source": "yfinance",
+  "data_rows": 176,
+  "data_start": "2025-12-04",
+  "data_end": "2026-08-21",
+  "strategies": [
+    {
+      "strategy": "EMACross",
+      "fold_index": null,
+      "total_return": 0.6109837846582034,
+      "annualized_return": 0.0,
+      "sharpe": 22.811193859585067,
+      "sortino": 822.63086491804,
+      "max_drawdown": -0.0043609910887866254,
+      "win_rate": 0.0,
+      "n_trades": 5,
+      "is_profitable": true
+    },
+    {
+      "strategy": "EMACross",
+      "fold_index": null,
+      "total_return": 0.12123574799999992,
+      "annualized_return": 0.0,
+      "sharpe": 10.476080736290845,
+      "sortino": 192.4521900726692,
+      "max_drawdown": -0.003096439395344208,
+      "win_rate": 1.0,
+      "n_trades": 1,
+      "is_profitable": true
+    },
+    {
+      "strategy": "RSIMeanReversion",
+      "fold_index": null,
+      "total_return": 0.11996275069726559,
+      "annualized_return": 0.0,
+      "sharpe": 10.357103586981818,
+      "sortino": 124.46599515037857,
+      "max_drawdown": -0.008606909172645172,
+      "win_rate": 0.0,
+      "n_trades": 1,
+      "is_profitable": true
+    },
+    {
+      "strategy": "RSIMeanReversion",
+      "fold_index": null,
+      "total_return": 0.12113227260546866,
+      "annualized_return": 0.0,
+      "sharpe": 10.803479967974743,
+      "sortino": 96.33937951467178,
+      "max_drawdown": -0.0064635561953658716,
+      "win_rate": 1.0,
+      "n_trades": 1,
+      "is_profitable": true
+    },
+    {
+      "strategy": "BollingerBreakout",
+      "fold_index": null,
+      "total_return": 0.0,
+      "annualized_return": 0.0,
+      "sharpe": 0.0,
+      "sortino": 0.0,
+      "max_drawdown": 0.0,
+      "win_rate": 0.0,
+      "n_trades": 0,
+      "is_profitable": false
+    }
+  ],
+  "walk_forward": [
+    {
+      "strategy": "EMACross",
+      "fold_index": 0,
+      "total_return": 0.11687437435546877,
+      "annualized_return": 0.0,
+      "sharpe": 17.615904547079566,
+      "sortino": 473.8616920686286,
+      "max_drawdown": -0.005351068367637213,
+      "win_rate": 0.0,
+      "n_trades": 1,
+      "is_profitable": true
+    },
+    {
+      "strategy": "EMACross",
+      "fold_index": 1,
+      "total_return": 0.0,
+      "annualized_return": 0.0,
+      "sharpe": 0.0,
+      "sortino": 0.0,
+      "max_drawdown": 0.0,
+      "win_rate": 0.0,
+      "n_trades": 0,
+      "is_profitable": false
+    }
+  ],
+  "errors": []
+}
