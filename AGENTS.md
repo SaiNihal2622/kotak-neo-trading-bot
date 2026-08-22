@@ -172,3 +172,48 @@ when it applies. Don't add one-off trivia. Don't add stuff that's
 already in code or git history.
 
 Last reviewed: 2026-08-22 (Mavis operator-mode activation)
+
+## Known-issues register (durable findings)
+
+### 2026-08-22: Orphan bot processes may exist and resist non-admin kill
+**Rule**: If `kotak_bot` shows multiple python.exe processes, some of
+them may be orphans from previous bot launches. They are typically
+in a SYSTEM-owned job object and **cannot be killed without admin**.
+**Evidence**: On 2026-08-22 around 18:55 IST, after a manual kill of
+the running bot to deploy a liveness fix, NSSM auto-restarted a new
+bot (PID 15640) — but TWO additional bot instances (PIDs 12892, 8736,
+6908, 10964) from earlier launches survived. `Stop-Process -Force`,
+`taskkill /F /T`, all returned `Access is denied`. The orphan 8736
+keeps writing the OLD provider code to `data_cache/liveness.json`,
+making it look like the liveness fix didn't take effect.
+**Apply when**: After any bot restart, verify only ONE pair of
+(venv wrapper + system python) is running for the bot. If multiple
+pairs, the extras need admin kill (`taskkill /F /T /PID <pid>` from
+an elevated shell). The watchdog's `4h window` filter and the
+self-monitor's checks still see the new bot as healthy — the
+orphan is a *cosmetic* issue for monitoring, not a *functional*
+one. **Safe to defer** if the bot is ticking and the dashboard
+is up.
+
+### 2026-08-22: Liveness provider mutates a module-level dict
+**Rule**: The `_liveness_state` dict in `kotak_bot/__main__.py` is
+initialized once with `boot_time` and `phase`, then mutated in place
+by the provider on every ping. A previous provider error (e.g.
+`RiskState.realized_pnl` AttributeError) is **never cleared** by
+successful subsequent calls, so the `provider_error` field stays
+stuck in the JSON until the process restarts.
+**Apply when**: Adding new fields to the liveness provider — either
+clear all error fields at the top of the function, or use a fresh
+dict per call. Both work; the per-call-fresh approach is cleaner.
+
+### 2026-08-22: PowerShell 5.1 chokes on em-dash in inline strings
+**Rule**: `powershell -Command "...em-dash..."` throws a parser
+error. Em-dash and other non-ASCII characters are fine in script
+files (UTF-8) but break in inline `powershell -Command` strings.
+**Apply when**: Writing PowerShell from bash. Use the temp-script
+pattern: write to `%TEMP%\foo.ps1` with UTF-8, then
+`powershell -NoProfile -ExecutionPolicy Bypass -File foo.ps1`.
+**Gotcha within the gotcha**: bash strips `$` from inline PowerShell,
+so any `$variable` becomes `variable`. Use single-quoted strings
+inside the temp script, or escape with backtick.
+
