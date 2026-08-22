@@ -198,8 +198,8 @@ _VIX_LAST_FETCH = None  # datetime of last successful fetch
 def fetch_india_vix(force: bool = False) -> float:
     """Fetch India VIX from yfinance. Cached for 15 min. Falls back to last value."""
     global _INDIA_VIX, _VIX_LAST_FETCH
-    from datetime import datetime, timedelta
-    if not force and _VIX_LAST_FETCH and (datetime.utcnow() - _VIX_LAST_FETCH) < timedelta(minutes=15):
+    from datetime import datetime, timedelta, timezone
+    if not force and _VIX_LAST_FETCH and (datetime.now(timezone.utc) - _VIX_LAST_FETCH) < timedelta(minutes=15):
         return _INDIA_VIX
     try:
         import yfinance as yf
@@ -208,7 +208,7 @@ def fetch_india_vix(force: bool = False) -> float:
         hist = vix_ticker.history(period="5d")
         if not hist.empty:
             _INDIA_VIX = float(hist["Close"].iloc[-1])
-            _VIX_LAST_FETCH = datetime.utcnow()
+            _VIX_LAST_FETCH = datetime.now(timezone.utc)
     except Exception:
         pass  # keep last value
     return _INDIA_VIX
