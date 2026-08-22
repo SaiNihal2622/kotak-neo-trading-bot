@@ -120,7 +120,15 @@ class PaperClient(BrokerClient):
     def _force_fill_market_like(self, order: Order) -> None:
         """Force-fill a still-open order in market_like mode. Uses the cached tick
         (any latest LTP for the symbol) or the strategy's expected_price as a fallback.
-        Adds slippage in the direction of the trade."""
+        Adds slippage in the direction of the trade.
+
+        Fallback chain (in order):
+          1. Cached tick for the option symbol
+          2. Order's limit price (if set)
+          3. Order's expected_fill_price (if set)
+          4. Underlying's last-known LTP (NIFTY/BANKNIFTY spot) — ATM option ≈ 0.5% of underlying
+          5. Synthetic minimal price (Rs.1.00) — last resort, never skip a fill in paper mode
+        """
         tick = self._ticks.get(order.symbol)
         if tick is not None and tick.ltp > 0:
             ref_price = tick.ltp
@@ -129,14 +137,40 @@ class PaperClient(BrokerClient):
         elif order.expected_fill_price and order.expected_fill_price > 0:
             ref_price = order.expected_fill_price
         else:
-            # Rate-limit warnings to once per order to avoid log flooding
-            if not getattr(self, "_fill_skip_warned", None):
-                self._fill_skip_warned = set()
-            if order.order_id not in self._fill_skip_warned:
-                self._fill_skip_warned.add(order.order_id)
-                logger.warning(f"[PAPER] FORCE_FILL skipped for {order.order_id} {order.symbol}: "
-                               f"no tick, no price, no expected_fill_price")
-            return
+            # Fallback 4: derive from underlying's spot LTP. Most NIFTY/BANKNIFTY
+            # weekly options trade in a Rs.5-200 band; ATM ≈ 0.5% of spot is a
+            # reasonable mid-market estimate. This is a paper fill, not a quote.
+            underlying = (order.underlying or "").upper()
+            underlying_ltp = 0.0
+            if underlying:
+                # Convention: NIFTY = NIFTY*, BANKNIFTY = BANKNIFTY*
+                for sym, t in self._ticks.items():
+                    if sym.upper().startswith(underlying):
+                        if t.ltp and t.ltp > 0:
+                            underlying_ltp = t.ltp
+                            break
+            if underlying_ltp > 0:
+                # ATM-ish estimate: ~0.5% of underlying. Caller can adjust later
+                # via the per-tick force-fill pass.
+                if underlying == "NIFTY":
+                    ref_price = round(underlying_ltp * 0.005, 2)  # ~Rs.125 on 25k NIFTY
+                elif underlying == "BANKNIFTY":
+                    ref_price = round(underlying_ltp * 0.005, 2)  # ~Rs.260 on 52k BN
+                else:
+                    ref_price = round(underlying_ltp * 0.005, 2)
+                logger.debug(
+                    f"[PAPER] FORCE_FILL underlying-derived ref for {order.order_id} "
+                    f"{order.symbol}: underlying={underlying} ltp={underlying_ltp} -> ref={ref_price}"
+                )
+            else:
+                # Fallback 5: last-resort synthetic. Rs.1.00 keeps the fill book-true
+                # so PnL accounting downstream works. Never skip a fill in paper mode.
+                ref_price = 1.0
+                logger.warning(
+                    f"[PAPER] FORCE_FILL last-resort ref for {order.order_id} {order.symbol}: "
+                    f"no tick, no price, no expected_fill_price, no underlying — using Rs.1.00 "
+                    f"(this should be rare; check that {order.underlying} spot feed is alive)"
+                )
         slip = ref_price * (self.slippage_bps / 10_000)
         fill_price = ref_price + (slip if order.side == OrderSide.BUY else -slip)
         fill_price = round(fill_price, 2)
