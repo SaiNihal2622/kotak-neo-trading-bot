@@ -217,3 +217,30 @@ pattern: write to `%TEMP%\foo.ps1` with UTF-8, then
 so any `$variable` becomes `variable`. Use single-quoted strings
 inside the temp script, or escape with backtick.
 
+### 2026-08-22: How to kill orphan bot processes that survive Stop-Process /F
+**Rule**: When `Stop-Process -Force` and `taskkill /F /T` both return
+`Access is denied`, the target process is in a SYSTEM-owned job
+object. The fix is to elevate to admin and re-run taskkill.
+**Pattern** (works, verified at 22:42 IST 2026-08-22):
+1. Write a script that runs `taskkill /F /T /PID <pid>` for each target
+   plus verification `Get-Process -Id <pid>` afterwards.
+2. From a non-elevated shell, launch it via:
+   ```powershell
+   Start-Process -FilePath 'powershell.exe' `
+       -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script `
+       -Verb RunAs -WindowStyle Hidden -PassThru
+   ```
+3. UAC prompt appears; user clicks Yes. Elevated script runs.
+4. Read the result JSON file the script wrote for verification.
+**Apply when**: Multiple bot instances are running and you can't kill
+them without admin. The NSSM service itself does NOT need to be killed —
+NSSM will auto-restart the bot if the underlying process dies, so
+killing the orphan (not NSSM's bot) is safe.
+**Tree awareness**: before killing, walk the parent chain
+(`Get-CimInstance Win32_Process | Where-Object {$_.ProcessId -eq X}`)
+to make sure you're not killing an ancestor of the live NSSM bot.
+In our setup, the live NSSM bot is parented by powershell from
+`nssm.exe` (PID 16708 for KotakBotPaper, 6400 for KotakDashboard).
+Anything parented by `kite-mcp.exe` or a stray `powershell.exe` is
+an orphan.
+
