@@ -377,3 +377,52 @@ existing re-auth and Telegram summary.
   it runs with the FIXED liveness code (`realized_pnl` from broker margins,
   not `risk.state.realized_pnl`).
 
+## Uncommitted second-batch utilities (2026-08-23 14:00 IST)
+- At 13:48-14:03 IST, between the orphan cleanup (13:11-13:54) and the
+  compliance-PDF generation (15:30), 9 production files were added but
+  never committed. They form a coherent "second batch" of utilities
+  parallel to the morning's first batch (structured_log / circuit_breaker
+  / metrics + pre_market_smoke_test, which IS committed as `4188b8d`):
+  - `kotak_bot/http_server.py` (227 lines) — stdlib HTTP server exposing
+    `/health`, `/metrics`, `/status` on :8502
+  - `kotak_bot/utils/audit.py` (193 lines) — JSONL audit log for
+    trading decisions (open/close/hold/skip with rationale + fields)
+  - `kotak_bot/utils/retry.py` (172 lines) — exponential backoff +
+    jitter retry helper with `NonRetriableError` short-circuit
+  - `kotak_bot/utils/shutdown.py` (184 lines) — graceful SIGTERM/SIGINT
+    handler with LIFO callbacks and `wait_for_drain(timeout)`
+  - `system/run_http_server.ps1` (70 lines) — NSSM entry point for
+    `KotakHttpServer` Windows service
+  - `tests/test_audit.py`, `test_http_server.py`, `test_retry.py`,
+    `test_shutdown.py` (513 lines total) — unit tests for each
+  - Status: `git status` shows them as untracked, `git log` returns empty
+    for these paths — they've NEVER been committed. They look complete
+    and self-consistent (docstrings + tests + NSSM wiring), but the
+    user has not yet reviewed them.
+- **Apply when**:
+  - The nightly-improvement cron's spec says `git add -A && git commit
+    -m "docs: nightly improvement - ..."` — running that command today
+    would commit ALL of these untracked production files together with
+    any AGENTS.md change. That mixes a docs-only nightly improvement
+    with a ~1,400-line feature drop. **DO NOT use `git add -A` on days
+    when these files are untracked.** Use a targeted `git add AGENTS.md`
+    (or whatever single docs path you changed) instead. Then surface the
+    uncommitted-batch state to the user.
+  - If the user asks "what's in the working tree that's not committed?",
+    these 9 files are the answer. Suggest the user review + commit
+    them as one or more logical commits (probably split utils vs.
+    http_server+service since they have different blast radius).
+  - The `system/run_http_server.ps1` will need a matching NSSM
+    `KotakHttpServer` service registration step (see its header comment
+    — `sc.exe create ... binPath=`) before it can be used.
+- **Related secondary finding (same window)**: the self-monitor's
+  anomaly detector fired `telegram_sent=True` at 13:15:28 IST for
+  "new crash within last hour: atexit_normal pid=16872". That PID was
+  one of the intentional orphan kills from the 13:11-13:54 cleanup —
+  the atexit was expected, the Telegram was a false alert. A second
+  similar anomaly fired at 13:30:12 IST (pid=20316) but Telegram was
+  throttled. **Future improvement**: have the self-monitor skip
+  `atexit_normal` events for PIDs that died during the
+  orphan-cleanup window (would need a known-cleanup PIDs allowlist
+  sourced from the cleanup script). Not done in this nightly pass.
+
