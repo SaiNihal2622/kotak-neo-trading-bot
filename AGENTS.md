@@ -307,7 +307,15 @@ found nothing because it read the wrong file.
   post-fix on historical 8/14 noise (the prompt already has this
   filter written; just the path needs to point at `Logs\`).
 
-## Production-level utilities (added 2026-08-23)
+## Production-level utilities (added 2026-08-23 + 2026-08-24)
+
+### Round 1 (commit 4188b8d, 2026-08-23 13:32 IST)
+
+Three new utilities in `kotak_bot/utils/` plus their unit tests and a
+pre-market smoke test in `scripts/`. They are wired into the existing
+8:25 daily-maintenance cron (`kotak-bot-daily-maintenance`) as a new
+**smoke test step** that gates "ready for market open" before the
+existing re-auth and Telegram summary.
 
 Three new utilities in `kotak_bot/utils/` plus their unit tests and a
 pre-market smoke test in `scripts/`. They are wired into the existing
@@ -356,14 +364,10 @@ existing re-auth and Telegram summary.
   the 8-check self_test and before Kotak re-auth, so we fail FAST and
   cleanly before issuing any re-auth requests.
 
-## Test suite state (2026-08-23 13:30 IST)
-- **260 tests pass, 0 fail, 9.75s** (`pytest tests/`)
-- 5 previously-failing tests in `test_kotak_prod_feed_helpers.py` fixed
-  (root cause: `_load_scrip_master` was filtering by real `date.today()`
-  at load time, dropping test rows with past dates; now filters at query
-  time in `get_nearest_expiry`).
-- 7 new tests added: `test_structured_log` (7), `test_circuit_breaker`
-  (11), `test_metrics` (10).
+## Test suite state (2026-08-24 01:25 IST)
+- **297 tests pass, 0 fail, 16.90s** (`pytest tests/`)
+- Round 1 (commit 4188b8d): 260 tests, 7 new (structured_log, circuit_breaker, metrics).
+- Round 2 (this commit): 297 tests, +37 new (shutdown, retry, audit, http_server, http_watchdog).
 
 ## Orphan-process hygiene (2026-08-23 13:10 IST)
 - 9 processes >2h old killed: 2 kite-mcp.exe orphans (10484, 11676) +
@@ -425,4 +429,82 @@ existing re-auth and Telegram summary.
   `atexit_normal` events for PIDs that died during the
   orphan-cleanup window (would need a known-cleanup PIDs allowlist
   sourced from the cleanup script). Not done in this nightly pass.
+
+### Round 2 (2026-08-24 01:25 IST) — graceful shutdown, retry, audit, HTTP server
+
+Four new utilities + a production HTTP server + a watchdog. Total
++37 tests, **297 tests pass, 0 fail**.
+
+#### `kotak_bot/utils/shutdown.py` — GracefulShutdown
+- Process-wide singleton that catches SIGTERM/SIGINT/SIGBREAK and runs
+  drain callbacks in LIFO order (like a Go `defer` stack).
+- `register_drain_callback(fn, name="...")` — returns an unregister handle.
+- `request_shutdown(reason)` is idempotent.
+- `run_with_shutdown(main_fn)` — runs main_fn in a thread; signal handlers
+  in main thread; on signal, request_shutdown and wait for main_fn to
+  finish (bounded by `drain_timeout_sec`).
+- A failing callback does NOT block subsequent callbacks.
+- Test: `tests/test_shutdown.py` — 7 tests.
+
+#### `kotak_bot/utils/retry.py` — exponential backoff with jitter
+- `retry_with_backoff(fn, *args, max_attempts=3, base_sec=1.0, max_sec=30.0, factor=2.0, retriable=None, on_retry=None)`
+- Decorator form: `@retry(max_attempts=3, retriable=(ConnectionError,))`.
+- `RetriableError` / `NonRetriableError` base classes for "is this worth retrying?"
+- Jitter: ±25% of the computed delay. Capped at `max_sec`.
+- `retriable=` accepts either a tuple of exception types OR a predicate.
+- Test: `tests/test_retry.py` — 9 tests.
+
+#### `kotak_bot/utils/audit.py` — AuditLog
+- Append-only JSONL with structured fields. Auto-rotation at `max_bytes`.
+- `record(event, **fields)`, `tail(n)`, `query(event=, since=, until=, **filters)`, `summary()`.
+- Thread-safe under concurrent writers (verified by test).
+- `summary()` returns `{total, by_event, by_symbol, first_ts, last_ts, size_bytes}`.
+- Test: `tests/test_audit.py` — 8 tests.
+
+#### `kotak_bot/http_server.py` — stdlib HTTP server
+- Exposes `/health` (200 ok / 503 degraded), `/metrics` (Prometheus text),
+  `/status` (JSON dump: liveness, paper_state, audit, metrics, circuit_breakers).
+- Uses stdlib only (`http.server.ThreadingHTTPServer`) — no new dependency.
+- `python -m kotak_bot.http_server --port 8502` to run as a sidecar.
+- BUG FIX DURING TEST: `_read_liveness()` was returning the raw data dict
+  without setting `available: True` on the success path. Now returns
+  `{"available": True, "age_sec": ..., **data}`. Caught by live probe.
+- Test: `tests/test_http_server.py` — 6 tests.
+
+#### `scripts/http_server_watchdog.py` + `system/run_http_server.ps1`
+- Watchdog checks if HTTP server is responding on :8502 every 5 min
+  during market hours (cron `kotak-http-watchdog`, `*/5 9-15 * * 1-5`).
+- If not, restarts via `Start-Process -WindowStyle Hidden`. Appends a
+  one-line record to `data_cache/http_watchdog.jsonl` for history.
+- Run: `python scripts/http_server_watchdog.py --port 8502`
+- Test: `tests/test_http_watchdog.py` — 7 tests.
+
+#### Why the HTTP server isn't a Windows service (NSSM/sc.exe)
+- We tried both NSSM and sc.exe to register KotakHttpServer as a Windows
+  service. Both failed because the powershell-script-as-service pattern
+  doesn't register a proper ServiceMain callback within 30s, so Windows
+  kills the service with Event 7000/7009 timeout.
+- **Chosen production approach**: run the python process detached via
+  `Start-Process` (Start-Process -WindowStyle Hidden -PassThru), and
+  rely on the `kotak-http-watchdog` cron to keep it alive. This is a
+  standard "supervisor" pattern (systemd's `Restart=always` analog).
+- Trade-off: if the whole host reboots, the HTTP server doesn't auto-start.
+  Fix for production: add a Windows Task Scheduler entry on User Logon
+  that launches `system/run_http_server.ps1`. Not done in this pass.
+
+#### Bug fixed: stale `_test_*.jsonl` files were being committed
+- Tests for `structured_log` and `metrics` write to `data_cache/_test_*.jsonl`.
+- Added `data_cache/_test_*.jsonl` and `data_cache/_test_*.json` to .gitignore.
+- Also added: `data_cache/compliance/`, `data_cache/http_watchdog.jsonl`,
+  `Logs/http_server_*.log`, `Logs/http_server.heartbeat`.
+
+## Monday 2026-08-24 readiness — verified 01:25 IST
+- NSSM `KotakBotPaper` (PID 15204) + `KotakDashboard` (PID 15780): both Running, Automatic.
+- Dashboard :8501: HTTP 200.
+- HTTP :8502 /health: HTTP 200, liveness 10.8s old, `state=running`, `provider_error=''`.
+- Pre-market smoke test: 6/7 CRITICAL pass + 1 WARNING (log_clean with 2 historical tracebacks, scrip_master not loaded — both expected for fresh week). `market.open_today` correctly identifies Monday.
+- Self-monitor: OK, 0 anomalies, liveness 19.9s old.
+- Paper state: cash=Rs.100,000, realized=Rs.0, preserved across weekend.
+- 297 tests pass in 16.9s.
+- All Monday-relevant crons scheduled and will fire: 08:15 morning-brief, 08:25 daily-maintenance (with new smoke test step), 09:00 daily-status + trader-desk first tick, 09:00-15:30 trader-desk every 5 min, 09:00-15:30 http-watchdog every 5 min, 15:35 eod-report, 15:45 state-backup.
 

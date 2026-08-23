@@ -59,6 +59,18 @@ neo_api_src-*.tar.gz
 data_cache/_test_*.jsonl
 data_cache/_test_*.json
 
+# Runtime-generated PDFs (compliance reports, etc.)
+data_cache/compliance/
+
+# HTTP server watchdog audit (appended on every run)
+data_cache/http_watchdog.jsonl
+
+# system/run_http_server.ps1 logs (NSSM-managed)
+Logs/http_server_stderr.log
+Logs/http_server_stdout.log
+Logs/http_server.heartbeat
+Logs/http_server.prev
+
 # ONE-OFF heartbeat scratch (Mavis used these 12:25-13:05 IST on 2026-08-21
 # while debugging an NSSM issue. Don't commit. Cron generates fresh ones
 # from the heartbeat template at runtime.)

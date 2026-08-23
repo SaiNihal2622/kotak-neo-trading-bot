@@ -256,3 +256,63 @@
 2026-08-23T08:00:42.588282+00:00	cancel	0	O-CAP	1	0	
 2026-08-23T08:00:42.588282+00:00	replace	0	O-PLACED	1	0	
 2026-08-23T08:00:42.596816+00:00	place	1	O-PLACED	1	0	
+2026-08-23T08:02:47.733815+00:00	place	1	O-PLACED	1	0	
+2026-08-23T08:02:47.734802+00:00	place	1	None	0	0	TimeoutError: kotak api timeout
+2026-08-23T08:02:47.745901+00:00	place	2	O-2	1	0	
+2026-08-23T08:02:47.748916+00:00	place	1	None	0	0	TimeoutError: persistent timeout
+2026-08-23T08:02:47.759787+00:00	place	2	None	0	0	TimeoutError: persistent timeout
+2026-08-23T08:02:47.770737+00:00	place	3	None	0	0	TimeoutError: persistent timeout
+2026-08-23T08:02:47.772741+00:00	place	1	None	0	0	ValueError: invalid order params
+2026-08-23T08:02:47.774781+00:00	place	1	None	0	1	TimeoutError: timeout
+2026-08-23T08:02:47.777744+00:00	cancel	0	O-OLD	1	0	
+2026-08-23T08:02:47.777744+00:00	replace	0	O-NEW	1	0	
+2026-08-23T08:02:47.779250+00:00	cancel	0	O-SELL	1	0	
+2026-08-23T08:02:47.779250+00:00	replace	0	O-NEW-SELL	1	0	
+2026-08-23T08:02:47.782264+00:00	cancel	0	O-CAP	1	0	
+2026-08-23T08:02:47.782264+00:00	replace	0	O-PLACED	1	0	
+2026-08-23T08:02:47.792789+00:00	place	1	O-PLACED	1	0	
+2026-08-23T08:21:10.069584+00:00	place	1	O-PLACED	1	0	
+2026-08-23T08:21:10.078124+00:00	place	1	None	0	0	TimeoutError: kotak api timeout
+2026-08-23T08:21:10.089710+00:00	place	2	O-2	1	0	
+2026-08-23T08:21:10.101448+00:00	place	1	None	0	1	TimeoutError: persistent timeout
+2026-08-23T08:21:10.113140+00:00	place	2	None	0	0	TimeoutError: persistent timeout
+2026-08-23T08:21:10.124684+00:00	place	3	None	0	0	TimeoutError: persistent timeout
+2026-08-23T08:21:10.137795+00:00	place	1	None	0	0	ValueError: invalid order params
+2026-08-23T08:21:10.152539+00:00	place	1	None	0	0	TimeoutError: timeout
+2026-08-23T08:21:10.182160+00:00	cancel	0	O-OLD	1	0	
+2026-08-23T08:21:10.183156+00:00	replace	0	O-NEW	1	0	
+2026-08-23T08:21:10.195708+00:00	cancel	0	O-SELL	1	0	
+2026-08-23T08:21:10.195708+00:00	replace	0	O-NEW-SELL	1	0	
+2026-08-23T08:21:10.205263+00:00	cancel	0	O-CAP	1	0	
+2026-08-23T08:21:10.205263+00:00	replace	0	O-PLACED	1	0	
+2026-08-23T08:21:10.263607+00:00	place	1	O-PLACED	1	0	
+2026-08-23T08:24:45.203331+00:00	place	1	O-PLACED	1	0	
+2026-08-23T08:24:45.209325+00:00	place	1	None	0	0	TimeoutError: kotak api timeout
+2026-08-23T08:24:45.220386+00:00	place	2	O-2	1	0	
+2026-08-23T08:24:45.225416+00:00	place	1	None	0	0	TimeoutError: persistent timeout
+2026-08-23T08:24:45.237448+00:00	place	2	None	0	0	TimeoutError: persistent timeout
+2026-08-23T08:24:45.248533+00:00	place	3	None	0	0	TimeoutError: persistent timeout
+2026-08-23T08:24:45.257095+00:00	place	1	None	0	1	ValueError: invalid order params
+2026-08-23T08:24:45.268140+00:00	place	1	None	0	0	TimeoutError: timeout
+2026-08-23T08:24:45.283226+00:00	cancel	0	O-OLD	1	0	
+2026-08-23T08:24:45.283226+00:00	replace	0	O-NEW	1	0	
+2026-08-23T08:24:45.289225+00:00	cancel	0	O-SELL	1	0	
+2026-08-23T08:24:45.290227+00:00	replace	0	O-NEW-SELL	1	0	
+2026-08-23T08:24:45.297755+00:00	cancel	0	O-CAP	1	0	
+2026-08-23T08:24:45.297755+00:00	replace	0	O-PLACED	1	0	
+2026-08-23T08:24:45.340431+00:00	place	1	O-PLACED	1	0	
+2026-08-23T19:53:06.150653+00:00	place	1	O-PLACED	1	0	
+2026-08-23T19:53:06.153651+00:00	place	1	None	0	0	TimeoutError: kotak api timeout
+2026-08-23T19:53:06.164232+00:00	place	2	O-2	1	0	
+2026-08-23T19:53:06.167760+00:00	place	1	None	0	0	TimeoutError: persistent timeout
+2026-08-23T19:53:06.179256+00:00	place	2	None	0	0	TimeoutError: persistent timeout
+2026-08-23T19:53:06.190008+00:00	place	3	None	0	0	TimeoutError: persistent timeout
+2026-08-23T19:53:06.192521+00:00	place	1	None	0	0	ValueError: invalid order params
+2026-08-23T19:53:06.194520+00:00	place	1	None	0	0	TimeoutError: timeout
+2026-08-23T19:53:06.200521+00:00	cancel	0	O-OLD	1	0	
+2026-08-23T19:53:06.200521+00:00	replace	0	O-NEW	1	0	
+2026-08-23T19:53:06.203520+00:00	cancel	0	O-SELL	1	0	
+2026-08-23T19:53:06.203520+00:00	replace	0	O-NEW-SELL	1	0	
+2026-08-23T19:53:06.206521+00:00	cancel	0	O-CAP	1	0	
+2026-08-23T19:53:06.206521+00:00	replace	0	O-PLACED	1	0	
+2026-08-23T19:53:06.219545+00:00	place	1	O-PLACED	1	0	
