@@ -307,3 +307,73 @@ found nothing because it read the wrong file.
   post-fix on historical 8/14 noise (the prompt already has this
   filter written; just the path needs to point at `Logs\`).
 
+## Production-level utilities (added 2026-08-23)
+
+Three new utilities in `kotak_bot/utils/` plus their unit tests and a
+pre-market smoke test in `scripts/`. They are wired into the existing
+8:25 daily-maintenance cron (`kotak-bot-daily-maintenance`) as a new
+**smoke test step** that gates "ready for market open" before the
+existing re-auth and Telegram summary.
+
+### `kotak_bot/utils/structured_log.py` — JSON logger
+- Replaces the verbose human-readable loguru output for in-process events
+  with a structured JSON stream at `data_cache/runtime.jsonl` (rotated 10MB×5).
+- Every line is one JSON object with envelope: `ts`, `level`, `logger`,
+  `msg`, `module`, `func`, `line`, `pid`, `thread`. Custom fields attached
+  via `logger.info("...", extra={"k": v})` are FLATTENED into the top-level
+  JSON (queryable, not nested).
+- Public API: `configure()`, `get_logger()`, `log_event(level, event, **fields)`,
+  `@log_call("name")` decorator.
+- Test: `tests/test_structured_log.py` — 7 tests, all pass.
+
+### `kotak_bot/utils/circuit_breaker.py` — circuit breaker
+- Three states: CLOSED (normal) → OPEN (fail-fast) → HALF_OPEN (one probe)
+  → CLOSED. Trips on EITHER consecutive-failure threshold OR error-rate
+  threshold within a sliding window.
+- Public API: `CircuitBreaker(name, fail_threshold, error_rate_threshold,
+  cooldown_sec, window_sec)`, `cb.call(fn, *args)`, `cb.snapshot()`,
+  `cb.reset()`. `get_or_create("name")` returns a process-wide singleton.
+- Test: `tests/test_circuit_breaker.py` — 11 tests, all pass.
+
+### `kotak_bot/utils/metrics.py` — in-process metrics
+- Counters, gauges, timings with optional tag dimensions. Sliding cap
+  per key (2000) to bound memory in long-running processes.
+- Public API: `metric_inc()`, `metric_gauge()`, `metric_timing()`,
+  `snapshot()` → dict, `to_prometheus_text()` for sidecar scraping,
+  `write_jsonl(path)` for time-series persistence.
+- **CRITICAL BUG FIX**: original `_LOCK = threading.Lock()` caused deadlock
+  when `write_jsonl()` (holds the lock) called `snapshot()` (also acquires
+  the lock). FIXED by using `threading.RLock()`. See commit history.
+- Test: `tests/test_metrics.py` — 10 tests, all pass.
+
+### `scripts/pre_market_smoke_test.py` — readiness gate
+- 11 checks: 7 CRITICAL (liveness, NSSM bot, NSSM dashboard, dashboard HTTP,
+  market-open-today, paper state capital, credentials) + 4 WARNING
+  (self_audit anomalies, log_clean, scrip_master age, orphan python procs).
+- Exit codes: 0 = OK, 1 = CRITICAL (do not trade), 2 = WARN only.
+- Run: `python scripts/pre_market_smoke_test.py [--json] [--tg]`.
+- Integrated into `scripts/daily_maintenance.py` as step 3.5 — runs after
+  the 8-check self_test and before Kotak re-auth, so we fail FAST and
+  cleanly before issuing any re-auth requests.
+
+## Test suite state (2026-08-23 13:30 IST)
+- **260 tests pass, 0 fail, 9.75s** (`pytest tests/`)
+- 5 previously-failing tests in `test_kotak_prod_feed_helpers.py` fixed
+  (root cause: `_load_scrip_master` was filtering by real `date.today()`
+  at load time, dropping test rows with past dates; now filters at query
+  time in `get_nearest_expiry`).
+- 7 new tests added: `test_structured_log` (7), `test_circuit_breaker`
+  (11), `test_metrics` (10).
+
+## Orphan-process hygiene (2026-08-23 13:10 IST)
+- 9 processes >2h old killed: 2 kite-mcp.exe orphans (10484, 11676) +
+  1 old powershell (7944). 7 career-pipeline workers (1716, 3628, etc.)
+  intentionally LEFT ALIVE — they have their own watchdog and are a
+  different project's responsibility.
+- Pattern: `Start-Process -Verb RunAs -FilePath powershell -ArgumentList
+  -NoProfile, -ExecutionPolicy, Bypass, -File, $script` then
+  `Stop-Process -Id $pid -Force` for each target.
+- NSSM auto-restarted the bot (PID 15204) after the orphan cleanup —
+  it runs with the FIXED liveness code (`realized_pnl` from broker margins,
+  not `risk.state.realized_pnl`).
+

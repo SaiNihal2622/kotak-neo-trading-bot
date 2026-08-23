@@ -152,6 +152,17 @@ def _run_self_test() -> dict:
     return self_test.run_all()
 
 
+def _run_smoke_test() -> dict:
+    """Run the pre-market smoke test (read-only, exits with code 0/1/2)."""
+    try:
+        from scripts import pre_market_smoke_test  # noqa: F401
+    except Exception:
+        sys.path.insert(0, str(ROOT))
+        from scripts import pre_market_smoke_test  # type: ignore
+    result = pre_market_smoke_test.run_checks()
+    return result
+
+
 def main() -> int:
     quiet = "--quiet" in sys.argv
     print("=" * 60)
@@ -196,6 +207,25 @@ def main() -> int:
             lines.append(f"   • `{r['name']}`: {r['detail']}")
             if r["name"] in ("yfinance", "telegram", "kotak_creds", "dashboard", "bot_process"):
                 critical_failures.append(r["name"])
+
+    # 3.5) Pre-market smoke test (production-level readiness gate)
+    print("\n  [..] running pre-market smoke test (11 checks)...")
+    smoke = _run_smoke_test()
+    summary = smoke["summary"]
+    print(f"    [SMOKE] status={summary['status']} critical_failures={summary['critical_failures']} warnings={summary['warnings']}")
+    if summary["critical_failures"]:
+        lines.append(f"🚫 Smoke test FAILED ({len(summary['critical_failures'])} critical)")
+        for name in summary["critical_failures"]:
+            r = smoke["results"].get(name, {})
+            lines.append(f"   • `{name}`: {r.get('reason', 'see logs')}")
+            critical_failures.append(f"smoke.{name}")
+    elif summary["warnings"]:
+        lines.append(f"⚠️ Smoke test: {len(summary['warnings'])} warning(s)")
+        for name in summary["warnings"]:
+            r = smoke["results"].get(name, {})
+            lines.append(f"   • `{name}`: {r.get('reason', 'see logs')}")
+    else:
+        lines.append("✅ Smoke test: all 11 checks pass")
 
     # 4) Kotak re-auth (only if creds OK)
     if not [r for r in report["results"] if r["name"] == "kotak_creds" and not r["ok"]]:

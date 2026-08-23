@@ -1,33 +1,36 @@
 {
-  "ts": "2026-08-22T23:00:10.411775+05:30",
-  "epoch": 1787419810,
+  "ts": "2026-08-23T13:30:20.044228+05:30",
+  "epoch": 1787472020,
   "liveness": {
     "available": true,
-    "age_sec": 14.8,
+    "age_sec": 9.2,
     "fresh": true,
     "pid": 15204,
-    "tick": 35,
-    "uptime_sec": 1054.2,
+    "tick": 1773,
+    "uptime_sec": 53269.44,
     "main_thread_alive": true,
     "state": "running"
   },
   "log": {
     "available": true,
     "path": "C:\\Users\\saini\\.minimax-agent\\projects\\kotak-neo-bot\\Logs\\bot_stderr.log",
-    "age_sec": 33.6,
+    "age_sec": 35.8,
     "fresh": true,
-    "size_bytes": 169621
+    "size_bytes": 400761
   },
   "crash_history": {
-    "count": 12,
+    "count": 14,
     "latest": {
-      "ts": "2026-08-22T09:20:23.642815+00:00",
-      "pid": 9980,
-      "reason": "signal",
-      "cycle": 1032,
-      "last_cycle_ts": "2026-08-22T09:20:23.421906+00:00",
-      "loop_uptime_sec": 5160.418722,
-      "signal_name": "SIGINT"
+      "ts": "2026-08-23T13:27:23.688816+05:30",
+      "event": "atexit",
+      "reason": "atexit_normal",
+      "uptime_sec": 8.45,
+      "last_ping_age_sec": 8.45,
+      "main_thread_alive": false,
+      "python_version": "3.12.10",
+      "pid": 20316,
+      "ppid": 17332,
+      "platform": "Windows-11-10.0.26200-SP0"
     }
   },
   "paper_state": {

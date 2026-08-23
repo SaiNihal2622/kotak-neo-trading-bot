@@ -192,14 +192,20 @@ def main() -> int:
         anomalies.append(f"bot log stale ({audit['log'].get('age_sec', '?')}s old)")
     if not audit["liveness"].get("main_thread_alive"):
         anomalies.append("liveness main_thread_alive=False — bot may be hung")
-    # crash_history.anomaly: if a new crash within last hour that we haven't seen
+    # crash_history.anomaly: if a new crash within last hour that we haven't seen.
+    # FILTER OUT: short-lived atexit_normal events (these are normal exits of
+    # our own test/smoke processes, not real crashes). Real bot crashes have
+    # uptime_sec > 60s OR reason != 'atexit_normal'.
     latest = audit["crash_history"].get("latest") or {}
     if latest.get("ts"):
         try:
             crash_ts = datetime.fromisoformat(latest["ts"].replace("Z", "+00:00"))
             age_h = (datetime.now(crash_ts.tzinfo) - crash_ts).total_seconds() / 3600
-            if age_h < 1.0:
-                anomalies.append(f"new crash within last hour: {latest.get('reason', '?')} pid={latest.get('pid')}")
+            uptime = float(latest.get("uptime_sec") or 0)
+            reason = latest.get("reason", "")
+            is_short_lived_normal_exit = (reason == "atexit_normal" and uptime < 60)
+            if age_h < 1.0 and not is_short_lived_normal_exit:
+                anomalies.append(f"new crash within last hour: {reason} pid={latest.get('pid')} uptime={uptime:.1f}s")
         except Exception:
             pass
 

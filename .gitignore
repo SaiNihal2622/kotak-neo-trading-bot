@@ -55,6 +55,10 @@ neo_api_src-*.tar.gz
 *.prev
 *.tmp
 
+# Test scratch logs (created by pytest runs of structured_log/metrics)
+data_cache/_test_*.jsonl
+data_cache/_test_*.json
+
 # ONE-OFF heartbeat scratch (Mavis used these 12:25-13:05 IST on 2026-08-21
 # while debugging an NSSM issue. Don't commit. Cron generates fresh ones
 # from the heartbeat template at runtime.)

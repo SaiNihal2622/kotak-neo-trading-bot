@@ -455,16 +455,16 @@ class KotakProdFeed:
             return
         with open(csv_path, 'r', encoding='utf-8', errors='ignore') as f:
             self._scrip_rows = list(csv.DictReader(f))
-        # Build pSymbol maps
-        today = date.today()
+        # Build pSymbol maps.
+        # We keep historical rows in the map; the today-filter happens in
+        # get_nearest_expiry() (and other query methods) so tests can drive
+        # time without reloading the scrip master.
         for r in self._scrip_rows:
             ref = r.get('pScripRefKey', '').strip()
             p = _parse_scrip_ref(ref)
             if not p:
                 continue
             if p['sym'] not in ('NIFTY', 'BANKNIFTY'):
-                continue
-            if p['date'] < today:
                 continue
             ps = r.get('pSymbol', '').strip()
             trd = r.get('pTrdSymbol', '').strip()

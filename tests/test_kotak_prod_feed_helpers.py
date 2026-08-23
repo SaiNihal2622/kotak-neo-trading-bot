@@ -114,15 +114,18 @@ class TestExpiryHelpers(unittest.TestCase):
         self.assertEqual(sym, "NIFTY11AUG2624500CE")
 
     def test_get_strategy_sym_uses_nearest_expiry(self):
+        # Use a future date (relative to "today" = 2026-08-23) so the
+        # un-annotated `get_strategy_sym` call finds a non-None exp.
         f = _make_feed_with_scrip([
-            _scrip_row("NIFTY", "NIFTY18AUG2624500.00CE", "41100"),
+            _scrip_row("NIFTY", "NIFTY26AUG2624500.00CE", "41100"),
+            _scrip_row("NIFTY", "NIFTY02SEP2624500.00CE", "41200"),
         ])
         # We control the test environment by passing exp explicitly
-        sym = f.get_strategy_sym("NIFTY", 24500, "CE", exp=date(2026, 8, 18))
-        self.assertEqual(sym, "NIFTY18AUG2624500CE")
+        sym = f.get_strategy_sym("NIFTY", 24500, "CE", exp=date(2026, 8, 26))
+        self.assertEqual(sym, "NIFTY26AUG2624500CE")
         # And without exp, it should use the nearest one in the scrip master
         sym2 = f.get_strategy_sym("NIFTY", 24500, "CE")
-        self.assertEqual(sym2, "NIFTY18AUG2624500CE")
+        self.assertEqual(sym2, "NIFTY26AUG2624500CE")
 
 
 class TestOIParsing(unittest.TestCase):
