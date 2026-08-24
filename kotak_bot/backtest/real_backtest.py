@@ -21,7 +21,7 @@ loguru.logger.add("backtest_run.log", level="INFO")
 from loguru import logger
 
 from kotak_bot.data.dhan import DhanDataFeed
-from kotak_bot.backtest.engine import BacktestEngine
+from kotak_bot.backtest.engine import BacktestEngine, BacktestConfig
 
 
 def run_dhan_backtest(underlying: str = "NIFTY", days: int = 180, interval: int = 5) -> int:
@@ -62,7 +62,6 @@ def run_backtest(df, underlying: str) -> int:
         return 0
     # try to use the full backtest engine if available
     try:
-        from kotak_bot.backtest.engine import BacktestEngine, BacktestConfig
         cfg = BacktestConfig(
             initial_capital=300_000.0,
             commission_per_order=20.0,

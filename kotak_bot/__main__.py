@@ -128,7 +128,7 @@ def log_trade(trade: dict) -> None:
         w = csv.writer(f)
         for o in trade.get("orders", []):
             w.writerow([
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 trade.get("trade_id", ""),
                 o.get("order_id", ""),
                 o.get("symbol", ""),
@@ -148,7 +148,7 @@ def log_signal(signal: dict) -> None:
     ])
     with open(SIGNALS_CSV, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow([
-            datetime.utcnow().isoformat(),
+            datetime.now(timezone.utc).isoformat(),
             signal.get("symbol", ""),
             signal.get("regime", ""),
             signal.get("side", ""),
@@ -384,8 +384,8 @@ def run_paper() -> None:
                 if spot_n > 0:
                     mom = feed.get_momentum("NIFTY", window=20)
                     regime_state = regime.detect(df=None, vix=14.0, iv_rank=55.0, momentum=mom, spot=spot_n, atm=round(spot_n/50)*50)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"regime detect failed: {e}")
             base = risk.status()
             if regime_state:
                 base.update({
@@ -632,12 +632,12 @@ def run_paper() -> None:
                 _liveness_state["positions_error"] = str(e)
             try:
                 _liveness_state["open_orders"] = len(broker.get_open_orders())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"liveness: get_open_orders failed: {e}")
             try:
                 _liveness_state["vix"] = float(get_india_vix())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"liveness: india_vix fetch failed: {e}")
             _liveness_state["data_source"] = feed_mode
             _liveness_state["risk_preset"] = risk.state.current_preset
             _liveness_state["is_paused"] = bool(risk.state.paused)
@@ -1062,8 +1062,8 @@ def run_paper() -> None:
                 ]
                 # Phantoms = broker position with qty but no matching open trade
                 _ot_syms = set()
-                for _t in open_trades:
-                    for _o in _t.orders:
+                for _trd in open_trades:
+                    for _o in _trd.orders:
                         if getattr(_o, 'avg_fill_price', 0) > 0 and getattr(_o, 'symbol', None):
                             _ot_syms.add(_o.symbol)
                 orphan_pos = [p for p in open_pos if p.symbol not in _ot_syms]
@@ -1146,8 +1146,8 @@ def run_paper() -> None:
                             relevant = news.get_relevant(symbol, lookback_hours=2)
                             if relevant:
                                 news_urgency = max((getattr(n, 'urgency', 0.0) for n in relevant[:3]), default=0.0)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"news fetch failed: {e}")
                     from kotak_bot.strategy.base import SignalContext
                     # Get event info from macro calendar
                     upcoming_event = None
@@ -1157,8 +1157,8 @@ def run_paper() -> None:
                         if ev:
                             upcoming_event = ev["name"]
                             minutes_to_event = ev["minutes_to_event"]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"macro calendar fetch failed: {e}")
                     # Use LLM judge for news if available (overrides FinBERT)
                     if llm_judge and news:
                         try:
@@ -1220,7 +1220,7 @@ def run_paper() -> None:
                         risk.state.trades_today += 1
                         last_trade_at[symbol] = now
                         log_trade({
-                            "trade_id": getattr(trade, 'trade_id', None) or f"T-{int(datetime.utcnow().timestamp()*1000)}",
+                            "trade_id": getattr(trade, 'trade_id', None) or f"T-{int(datetime.now(timezone.utc).timestamp()*1000)}",
                             "orders": [
                                 {
                                     "order_id": getattr(o, 'order_id', ''),
@@ -1300,8 +1300,8 @@ def run_paper() -> None:
                             expiry_dt = datetime.strptime(trade.orders[0].expiry, "%Y-%m-%d")
                             now_naive = now.replace(tzinfo=None) if now.tzinfo else now
                             minutes_to_expiry = max(0, int((expiry_dt - now_naive).total_seconds() / 60))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"expiry parse failed for {trade.trade_id}: {e}")
                         es = evaluate_exit(
                             plan=trade.plan,
                             current_pnl=current_pnl,

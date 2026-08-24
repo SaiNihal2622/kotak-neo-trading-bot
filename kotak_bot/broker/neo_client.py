@@ -29,7 +29,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Callable, Optional
@@ -159,7 +159,7 @@ class NeoClient(BrokerClient):
                 logger.exception(f"MPIN validate failed: {e}")
                 raise
             self._connected = True
-            self._heartbeat = datetime.utcnow()
+            self._heartbeat = datetime.now(timezone.utc)
             logger.success(f"Kotak Neo connected (env={env}, base={self._base_url})")
 
     def disconnect(self) -> None:
@@ -257,7 +257,7 @@ class NeoClient(BrokerClient):
         # cache
         cache_path.write_text(json.dumps(all_data, default=str), encoding="utf-8")
         self._scrip_master = all_data
-        self._scrip_master_loaded_at = datetime.utcnow()
+        self._scrip_master_loaded_at = datetime.now(timezone.utc)
         # build token index — note: prod CSV uses 'pSymbol' not 'token'
         for seg, rows in all_data.items():
             for row in rows:
@@ -406,7 +406,7 @@ class NeoClient(BrokerClient):
                 resp = self._client.placeorder(**params)
                 order_id = str(resp.get("nOrdNo", ""))
                 order.order_id = order_id
-                order.placed_at = datetime.utcnow()
+                order.placed_at = datetime.now(timezone.utc)
                 order.status = OrderStatus.OPEN
                 self._orders[order_id] = order
                 self._audit("place_order", {"order_id": order_id, "symbol": order.symbol, "side": order.side.value, "qty": order.qty, "bracket": bool(bracket), "cover": bool(cover_sl), "response": resp})
@@ -570,7 +570,7 @@ class NeoClient(BrokerClient):
                 raise RuntimeError("Not connected")
             try:
                 resp = self._client.positions()
-                self._heartbeat = datetime.utcnow()
+                self._heartbeat = datetime.now(timezone.utc)
                 return self._parse_positions(resp)
             except Exception as e:
                 logger.warning(f"positions failed: {e}")
@@ -601,7 +601,7 @@ class NeoClient(BrokerClient):
             except Exception as e:
                 logger.warning(f"limits() SDK call failed: {e}")
                 return empty
-            self._heartbeat = datetime.utcnow()
+            self._heartbeat = datetime.now(timezone.utc)
             if resp is None or not isinstance(resp, dict):
                 return empty
             if self._is_status_no_data(resp):
@@ -748,14 +748,14 @@ class NeoClient(BrokerClient):
             ask=float(d.get("sp1", 0) or 0),
             volume=int(d.get("v", d.get("volume", 0)) or 0),
             oi=int(d.get("oi", 0) or 0),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             exchange=info.get("exchange_segment", "nse_fo"),
             strike=float(info.get("pStrikePrice", 0) or 0),
             option_type=info.get("pOptionType"),
             expiry=str(info.get("pExpiryDate", "")),
             underlying=info.get("pSymbol", "").split("2")[0] if info.get("pSymbol") else None,
         )
-        self._heartbeat = datetime.utcnow()
+        self._heartbeat = datetime.now(timezone.utc)
         for cb in self._tick_callbacks:
             try:
                 cb(tick)
@@ -769,7 +769,7 @@ class NeoClient(BrokerClient):
         """Append to audit log (SEBI compliance)."""
         try:
             entry = {
-                "ts": datetime.utcnow().isoformat(),
+                "ts": datetime.now(timezone.utc).isoformat(),
                 "algo_id": self._algo_id,
                 "event": event,
                 **data,

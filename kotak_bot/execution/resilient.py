@@ -236,7 +236,7 @@ class ResilientExecutor:
         if placed_at is None:
             return None
         try:
-            age_sec = (datetime.now(timezone.utc) - placed_at).total_seconds() if placed_at.tzinfo else (datetime.utcnow() - placed_at).total_seconds()
+            age_sec = (datetime.now(timezone.utc) - placed_at).total_seconds() if placed_at.tzinfo else (datetime.now(timezone.utc) - placed_at).total_seconds()
         except Exception:
             return None
         if age_sec < self.config.cr_stale_after_sec:

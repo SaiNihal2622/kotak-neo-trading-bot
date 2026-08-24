@@ -365,8 +365,7 @@ class KotakProdFeed:
                     return None
             exp_str = self.format_expiry_str(underlying, exp)
             # pScripRefKey format: NIFTY{DD}{MMM}{YY}{STRIKE}.00{CE|PE}
-            ref = f"{underlying}{exp.strftime('%d%b%y').upper()}{int(strike)}.00{opt_type}"
-            ps = self._trdSym_to_pSymbol.get(ref)  # probably not — pTrdSymbol doesn't have day name
+            # (pTrdSymbol doesn't have day name, so direct lookup skipped)
             # Try via meta lookup
             for s, p in self._strategySym_to_pSymbol.items():
                 m = self._pSymbol_to_meta[p]

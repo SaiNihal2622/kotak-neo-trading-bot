@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -95,7 +95,7 @@ class Tick:
     ask: float = 0.0
     volume: int = 0
     oi: int = 0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     exchange: str = "NFO"
     strike: float = 0.0
     option_type: Optional[str] = None

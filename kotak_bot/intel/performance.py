@@ -10,7 +10,7 @@ import csv
 import math
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -84,7 +84,7 @@ class PerformanceTracker:
     def add_trade(self, strategy: str, underlying: str, pnl: float, pnl_pct: float = 0.0,
                   hold_minutes: int = 0, exit_reason: str = "") -> None:
         rec = TradeRecord(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             strategy=strategy,
             underlying=underlying,
             pnl=pnl,

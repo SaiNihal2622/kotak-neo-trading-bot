@@ -4,7 +4,7 @@ Runs every 5 min; alerts on any mismatch (orphan order, missed fill, etc).
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -22,7 +22,7 @@ def reconcile_positions(broker_positions: dict, internal_positions: dict) -> dic
         "broker_only": [],
         "internal_only": [],
         "qty_mismatch": [],
-        "as_of": datetime.utcnow().isoformat(),
+        "as_of": datetime.now(timezone.utc).isoformat(),
     }
     for s in all_syms:
         b = broker_positions.get(s)

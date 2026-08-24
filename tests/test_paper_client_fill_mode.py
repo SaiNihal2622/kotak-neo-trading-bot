@@ -2,7 +2,7 @@
 import sys
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 # add project to path so we can import kotak_bot
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -29,7 +29,7 @@ def _make_order(symbol="NIFTY12AUG2624350CE", side=OrderSide.BUY, qty=65, price=
 
 
 def _make_tick(symbol="NIFTY12AUG2624350CE", ltp=100.0):
-    return Tick(symbol=symbol, ltp=ltp, bid=ltp - 0.10, ask=ltp + 0.10, volume=100, timestamp=datetime.utcnow())
+    return Tick(symbol=symbol, ltp=ltp, bid=ltp - 0.10, ask=ltp + 0.10, volume=100, timestamp=datetime.now(timezone.utc))
 
 
 def test_market_like_fills_immediately_no_tick(tmp_path):

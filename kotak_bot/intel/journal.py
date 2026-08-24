@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -37,7 +37,7 @@ class TradeJournal:
     def capture_entry(self, trade_id: str, underlying: str, strategy: str,
                       plan, feed) -> Path:
         """Capture chart at trade entry. Returns path to PNG."""
-        ts = datetime.utcnow()
+        ts = datetime.now(timezone.utc)
         chart_path = self.journal_dir / f"entry_{trade_id}_{ts.strftime('%H%M%S')}.png"
         try:
             # build chart: spot price + key strikes
@@ -82,7 +82,7 @@ class TradeJournal:
         """Record a trade event in the journal."""
         with open(self.index_csv, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 trade_id,
                 underlying,
                 strategy,

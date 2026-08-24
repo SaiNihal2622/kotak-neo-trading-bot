@@ -165,9 +165,6 @@ class MarginTracker:
                 f"(available=₹{snap.available:,.0f}, total=₹{snap.total:,.0f})"
             )
         # Pre-trade buffer: require headroom on top of the cost
-        required_pct = self.config.pre_trade_buffer_pct + (
-            (trade_cost / snap.total) * 100.0
-        )
         free_pct_after = snap.free_pct - ((trade_cost / snap.total) * 100.0)
         if free_pct_after < self.config.pre_trade_buffer_pct:
             self._blocks += 1

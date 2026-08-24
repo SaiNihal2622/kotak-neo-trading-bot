@@ -16,10 +16,10 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from loguru import logger
 
@@ -266,7 +266,7 @@ class OrderManager:
         lot_sizes = lot_sizes or {}
         lot_size = lot_sizes.get(plan.underlying, 1)
         trade_id = f"T-{uuid.uuid4().hex[:10].upper()}"
-        trade = ManagedTrade(trade_id=trade_id, plan=plan, opened_at=datetime.utcnow())
+        trade = ManagedTrade(trade_id=trade_id, plan=plan, opened_at=datetime.now(timezone.utc))
         is_single_leg = len(plan.legs) == 1
         # If single-leg directional and bracket enabled, use bracket
         use_bracket_for_this = use_bracket and is_single_leg and plan.strategy == StrategyName.DIRECTIONAL_DEBIT
@@ -374,7 +374,7 @@ class OrderManager:
         for s, tid in list(self._symbol_to_trade.items()):
             if tid == trade_id:
                 del self._symbol_to_trade[s]
-        trade.closed_at = datetime.utcnow()
+        trade.closed_at = datetime.now(timezone.utc)
         trade.exit_reason = reason
         trade.realized_pnl = round(realized_pnl_total, 2)
         if pending_closes:

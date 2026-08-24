@@ -81,7 +81,6 @@ class TechnicalAnalyzer:
             atr_s = ta.atr(high, low, close, length=self.atr_period)
             ema_f = ta.ema(close, length=self.ema_fast)
             ema_s_l = ta.ema(close, length=self.ema_slow)
-            bbands = ta.bbands(close, length=20, std=2)
 
             # candle patterns (lightweight subset)
             try:

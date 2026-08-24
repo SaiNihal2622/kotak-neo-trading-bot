@@ -10,7 +10,7 @@ import json
 import time
 import uuid
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Callable, Optional
@@ -96,7 +96,7 @@ class PaperClient(BrokerClient):
             if not self._connected:
                 raise RuntimeError("PaperClient not connected — call connect() first")
             order.order_id = f"PAPER-{uuid.uuid4().hex[:10].upper()}"
-            order.placed_at = datetime.utcnow()
+            order.placed_at = datetime.now(timezone.utc)
             order.status = OrderStatus.OPEN
             self._orders[order.order_id] = order
             tag = order.tag or ""
@@ -178,7 +178,7 @@ class PaperClient(BrokerClient):
         order.avg_fill_price = fill_price
         order.filled_qty = order.qty
         order.status = OrderStatus.COMPLETE
-        order.filled_at = datetime.utcnow()
+        order.filled_at = datetime.now(timezone.utc)
         self._apply_fill(order)
         logger.info(
             f"[PAPER] FORCE_FILL (market_like) {order.order_id} {order.qty}×{order.symbol} "
@@ -325,7 +325,7 @@ class PaperClient(BrokerClient):
             order.avg_fill_price = round(fill_price, 2)
             order.filled_qty = order.qty
             order.status = OrderStatus.COMPLETE
-            order.filled_at = datetime.utcnow()
+            order.filled_at = datetime.now(timezone.utc)
             self._apply_fill(order)
             logger.info(
                 f"[PAPER] FILL {order.order_id} {order.qty}×{order.symbol} @ {order.avg_fill_price} "
@@ -366,7 +366,7 @@ class PaperClient(BrokerClient):
                     option_type=order.option_type,
                     expiry=order.expiry,
                     underlying=order.underlying,
-                    entry_time=datetime.utcnow(),
+                    entry_time=datetime.now(timezone.utc),
                 )
         else:  # SELL
             self._cash += fill_value
@@ -408,7 +408,7 @@ class PaperClient(BrokerClient):
                     option_type=order.option_type,
                     expiry=order.expiry,
                     underlying=order.underlying,
-                    entry_time=datetime.utcnow(),
+                    entry_time=datetime.now(timezone.utc),
                 )
 
     # ------- persistence -------

@@ -19,7 +19,7 @@ from kotak_bot.strategy.base import SignalContext, StrategyName, TradePlan
 def _ctx(spot: float, regime: str, adx: float, trend: float, iv: float = 50.0, vix: float = 14.0,
          news_sent: float = 0.0, news_urgency: float = 0.0,
          strikes: Optional[list] = None, opt_ltps: Optional[dict] = None) -> SignalContext:
-    from datetime import datetime
+    from datetime import datetime, timezone
     if strikes is None:
         step = 50
         atm = round(spot / step) * step
@@ -34,7 +34,7 @@ def _ctx(spot: float, regime: str, adx: float, trend: float, iv: float = 50.0, v
                 opt_ltps[(k, ot)] = round(intrinsic + tv, 2)
     return SignalContext(
         symbol="NIFTY", spot=spot, vix=vix, iv_rank=iv, adx=adx,
-        trend_strength=trend, regime=regime, timestamp=datetime.utcnow(),
+        trend_strength=trend, regime=regime, timestamp=datetime.now(timezone.utc),
         strikes=strikes, option_ltps=opt_ltps,
         news_sentiment=news_sent, news_urgency=news_urgency,
     )
@@ -116,10 +116,10 @@ class TestNoPlan(unittest.TestCase):
     def test_no_strategy_when_no_data(self):
         s = StrategySelector(_config())
         # all option ltps are 0 — no plan possible
-        from datetime import datetime
+        from datetime import datetime, timezone
         ctx = SignalContext(
             symbol="NIFTY", spot=24500, vix=14, iv_rank=50, adx=20,
-            trend_strength=0.0, regime="range", timestamp=datetime.utcnow(),
+            trend_strength=0.0, regime="range", timestamp=datetime.now(timezone.utc),
             strikes=[], option_ltps={},
         )
         plan = s.select(ctx, {})
@@ -162,11 +162,11 @@ class TestEventPlay(unittest.TestCase):
         ctx1 = _ctx(24500, "range", adx=15, trend=0.0, iv=55)
         plan1 = s.select(ctx1, {})
         # With event imminent — should pick event_straddle
-        from datetime import datetime
+        from datetime import datetime, timezone
         from kotak_bot.strategy.base import SignalContext
         ctx2 = SignalContext(
             symbol="NIFTY", spot=24500, vix=14, iv_rank=55, adx=15,
-            trend_strength=0.0, regime="range", timestamp=datetime.utcnow(),
+            trend_strength=0.0, regime="range", timestamp=datetime.now(timezone.utc),
             strikes=ctx1.strikes, option_ltps=ctx1.option_ltps,
             news_sentiment=0.0, news_urgency=0.0,
             upcoming_event="RBI Policy", minutes_to_event=20,

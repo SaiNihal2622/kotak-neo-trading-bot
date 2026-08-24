@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -107,8 +107,8 @@ class AnomalyDetector:
         # compare to 5 cycles ago
         prev = list(self.pnl_history)[-5]
         delta = current_pnl - prev
-        if abs(delta) > 500 and (datetime.utcnow().timestamp() - self.last_pnl_alert) > 60:
-            self.last_pnl_alert = datetime.utcnow().timestamp()
+        if abs(delta) > 500 and (datetime.now(timezone.utc).timestamp() - self.last_pnl_alert) > 60:
+            self.last_pnl_alert = datetime.now(timezone.utc).timestamp()
             return {
                 "type": "pnl_swing",
                 "current": current_pnl,
@@ -120,9 +120,9 @@ class AnomalyDetector:
     def should_alert(self, key: str) -> bool:
         """Check cooldown for a key."""
         last = self.last_alert_at.get(key)
-        if last and (datetime.utcnow() - last).total_seconds() < self.cooldown_sec:
+        if last and (datetime.now(timezone.utc) - last).total_seconds() < self.cooldown_sec:
             return False
-        self.last_alert_at[key] = datetime.utcnow()
+        self.last_alert_at[key] = datetime.now(timezone.utc)
         return True
 
 

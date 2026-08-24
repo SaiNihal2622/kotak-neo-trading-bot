@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,7 +33,7 @@ from kotak_bot.strategy.base import StrategyName, TradePlan
 def _inject_tick(pc: PaperClient, symbol: str, ltp: float) -> None:
     pc.inject_tick(Tick(
         symbol=symbol, exchange="NFO", ltp=ltp, bid=ltp - 0.05, ask=ltp + 0.05,
-        volume=0, timestamp=datetime.utcnow(), underlying="NIFTY",
+        volume=0, timestamp=datetime.now(timezone.utc), underlying="NIFTY",
     ))
 
 
