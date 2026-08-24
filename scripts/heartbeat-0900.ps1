@@ -28,12 +28,23 @@ if ($logsDirLog) {
     $ageMin = [math]::Round(((Get-Date) - $logsDirLog.LastWriteTime).TotalMinutes, 2)
     Write-Host "Logs\bot_stderr.log: size=$($logsDirLog.Length)B lastWrite=$($logsDirLog.LastWriteTime.ToString('HH:mm:ss')) age_min=$ageMin"
 } else { Write-Host 'Logs\bot_stderr.log: NOT FOUND' }
+# FIX 2026-08-25: pick the NEWEST of the two — bot actually writes to Logs\bot_stderr.log
+# but the cwd-relative copy has been FROZEN at 2026-08-20 02:27 (5 days stale).
+# Use whichever was modified more recently.
+if ($logsDirLog -and $cwdLog) {
+    $activeLog = if ($logsDirLog.LastWriteTime -gt $cwdLog.LastWriteTime) { $logsDirLog } else { $cwdLog }
+} elseif ($logsDirLog) {
+    $activeLog = $logsDirLog
+} else {
+    $activeLog = $cwdLog
+}
+$activePath = if ($activeLog) { $activeLog.FullName } else { $null }
 
-# 3. Last 5 log lines (cwd-relative per memory clarification 08:55)
+# 3. Last 5 log lines (active = whichever was most recently written)
 Write-Host ''
-Write-Host '=== 3. LAST 5 LOG LINES (cwd-relative) ==='
-if ($cwdLog) {
-    Get-Content $cwdLog.FullName -Tail 5 | ForEach-Object { Write-Host $_ }
+Write-Host '=== 3. LAST 5 LOG LINES (active log) ==='
+if ($activePath) {
+    Get-Content $activePath -Tail 5 | ForEach-Object { Write-Host $_ }
 } else {
     Write-Host 'no log to read'
 }
@@ -41,8 +52,8 @@ if ($cwdLog) {
 # 4. Error scan (Traceback/FATAL/Killed/Exception)
 Write-Host ''
 Write-Host '=== 4. ERROR SCAN (last 5) ==='
-if ($cwdLog) {
-    $errs = Select-String -Path $cwdLog.FullName -Pattern 'Traceback|FATAL|Killed|Exception' -ErrorAction SilentlyContinue | Select-Object -Last 5
+if ($activePath) {
+    $errs = Select-String -Path $activePath -Pattern 'Traceback|FATAL|Killed|Exception' -ErrorAction SilentlyContinue | Select-Object -Last 5
     if ($errs) {
         foreach ($e in $errs) {
             Write-Host ("L{0}: {1}" -f $e.LineNumber, $e.Line.Substring(0, [math]::Min(160, $e.Line.Length)))
@@ -55,8 +66,8 @@ if ($cwdLog) {
 # 5. Scan cycle / regime / fill activity (last 20 lines)
 Write-Host ''
 Write-Host '=== 5. ACTIVITY SIGNALS (last 20 lines, grep) ==='
-if ($cwdLog) {
-    $sigs = Select-String -Path $cwdLog.FullName -Pattern 'cycle=|FILLED|REJECTED|smart-exit|EOD|regime|FILL|order|position|tick_count' -ErrorAction SilentlyContinue | Select-Object -Last 10
+if ($activePath) {
+    $sigs = Select-String -Path $activePath -Pattern 'cycle=|FILLED|REJECTED|smart-exit|EOD|regime|FILL|order|position|tick_count' -ErrorAction SilentlyContinue | Select-Object -Last 10
     if ($sigs) {
         foreach ($s in $sigs) {
             Write-Host ("L{0}: {1}" -f $s.LineNumber, $s.Line.Substring(0, [math]::Min(140, $s.Line.Length)))

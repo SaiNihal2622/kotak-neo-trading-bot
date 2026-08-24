@@ -47,6 +47,15 @@ import subprocess
 import sys
 import time
 from datetime import datetime, date, timedelta
+
+# Force UTF-8 stdout/stderr so emoji and non-ASCII characters don't blow up
+# on Windows consoles that default to cp1252. Safe no-op on POSIX.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 from pathlib import Path
 from typing import Any, Callable
 

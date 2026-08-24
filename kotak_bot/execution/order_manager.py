@@ -330,8 +330,17 @@ class OrderManager:
         trade = self._trades.get(trade_id)
         if not trade:
             raise KeyError(trade_id)
+        realized_pnl_total = 0.0
+        pending_closes = 0
         for order in trade.orders:
+            # Only place close orders for ENTRY legs. We detect entry legs by tag:
+            # close_* orders are placed by us in the same loop, so we skip them on
+            # the second pass. To keep the loop safe in either ordering, we match
+            # by checking that the order's tag does NOT start with 'close_'.
             if order.status != OrderStatus.COMPLETE:
+                continue
+            if order.tag and order.tag.startswith("close_"):
+                # already a close order (defensive — shouldn't happen in normal flow)
                 continue
             close_side = OrderSide.SELL if order.side == OrderSide.BUY else OrderSide.BUY
             close_order = Order(
@@ -347,12 +356,32 @@ class OrderManager:
                 expiry=order.expiry,
                 underlying=order.underlying,
             )
-            self.broker.place_order(close_order)
+            if self._resilient is not None:
+                placed = self._resilient.place_order(close_order)
+            else:
+                placed = self.broker.place_order(close_order)
+            trade.orders.append(placed)
+
+            # P&L attribution: compute per-leg realized P&L if the close filled.
+            # In paper mode, market orders against cached ticks fill synchronously,
+            # so avg_fill_price is set on return. In live mode this is async — the
+            # leg is recorded as 0 here and will be backfilled on next settle pass.
+            leg_pnl = self._leg_pnl(order, placed)
+            if leg_pnl is not None:
+                realized_pnl_total += leg_pnl
+            else:
+                pending_closes += 1
         for s, tid in list(self._symbol_to_trade.items()):
             if tid == trade_id:
                 del self._symbol_to_trade[s]
         trade.closed_at = datetime.utcnow()
         trade.exit_reason = reason
+        trade.realized_pnl = round(realized_pnl_total, 2)
+        if pending_closes:
+            logger.warning(
+                f"[{trade_id}] {pending_closes} close order(s) not yet filled at close_trade time; "
+                f"realized_pnl={trade.realized_pnl} is partial. Will be backfilled by settle."
+            )
         if self._on_trade_event:
             try:
                 self._on_trade_event("closed", trade)
@@ -360,6 +389,78 @@ class OrderManager:
                 logger.exception(f"trade event cb: {e}")
         self._save_state()
         return trade
+
+    @staticmethod
+    def _leg_pnl(entry_order: Order, close_order: Order) -> Optional[float]:
+        """Compute realized P&L for a single (entry, close) order pair.
+
+        Returns None if the close order is not yet filled (avg_fill_price == 0 or
+        status != COMPLETE). Returns 0.0 if entry_order or close_order is malformed.
+        For options: BUY leg P&L = (exit - entry) * qty; SELL leg = (entry - exit) * qty.
+        """
+        try:
+            if entry_order.avg_fill_price <= 0:
+                return 0.0
+            if close_order.status != OrderStatus.COMPLETE or close_order.avg_fill_price <= 0:
+                return None
+            entry_px = entry_order.avg_fill_price
+            exit_px = close_order.avg_fill_price
+            qty = entry_order.filled_qty or close_order.filled_qty
+            if entry_order.side == OrderSide.BUY:
+                return round((exit_px - entry_px) * qty, 2)
+            else:  # SELL (short)
+                return round((entry_px - exit_px) * qty, 2)
+        except Exception:
+            return 0.0
+
+    def backfill_realized_pnl(self) -> int:
+        """Recompute realized_pnl for all closed trades from their order pairs.
+
+        Returns the number of trades that were backfilled (changed from 0 / stale).
+        Used to repair historical trades that closed before the attribution fix
+        landed (e.g. the 4 closed-but-0.0 trades from the 2026-08-21 / 2026-08-24
+        paper sessions).
+
+        Algorithm: for each closed trade, pair entry orders (tag does NOT start
+        with 'close_') with close orders (tag starts with 'close_') by symbol.
+        Sum the per-leg P&L and overwrite trade.realized_pnl if it differs.
+        """
+        n_fixed = 0
+        with self._lock:
+            for tid, t in list(self._trades.items()):
+                if t.closed_at is None:
+                    continue
+                # Build close-order lookup keyed by entry order_id encoded in tag
+                # close_<entry_order_id> -> close order
+                close_by_entry = {}
+                for o in t.orders:
+                    if o.tag and o.tag.startswith("close_"):
+                        entry_oid = o.tag[len("close_"):]
+                        close_by_entry[entry_oid] = o
+                # Walk entry orders, find matching close, accumulate
+                total = 0.0
+                for entry in t.orders:
+                    if entry.tag and entry.tag.startswith("close_"):
+                        continue
+                    if entry.status != OrderStatus.COMPLETE:
+                        continue
+                    close = close_by_entry.get(entry.order_id)
+                    if close is None:
+                        continue
+                    leg = self._leg_pnl(entry, close)
+                    if leg is not None:
+                        total += leg
+                total = round(total, 2)
+                if abs(total - (t.realized_pnl or 0.0)) > 0.01:
+                    logger.info(
+                        f"[backfill] {tid} realized_pnl {t.realized_pnl} -> {total} "
+                        f"({len([o for o in t.orders if not (o.tag or '').startswith('close_')])} legs)"
+                    )
+                    t.realized_pnl = total
+                    n_fixed += 1
+            if n_fixed > 0:
+                self._save_state()
+        return n_fixed
 
     def square_off_all(self, reason: str = "eod") -> int:
         closed = 0

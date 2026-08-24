@@ -31,8 +31,18 @@ def set_market_hours(cfg: dict) -> None:
 
     Expected keys (all optional): pre_open_start, pre_open_end, opening_end,
     regular_end, close, square_off. Values are 'HH:MM' strings.
+
+    Empty / None dict RESETS to the NSE standard defaults defined at module
+    load time. Useful for tests that need to undo an override.
     """
     if not cfg:
+        # Reset to module defaults
+        _MARKET_HOURS["pre_open_start"] = time(9, 0)
+        _MARKET_HOURS["pre_open_end"] = time(9, 15)
+        _MARKET_HOURS["opening_end"] = time(9, 30)
+        _MARKET_HOURS["regular_end"] = time(15, 0)
+        _MARKET_HOURS["close"] = time(15, 30)
+        _MARKET_HOURS["square_off"] = time(15, 15)
         return
     for k, v in cfg.items():
         if k in _MARKET_HOURS and isinstance(v, str):
@@ -40,7 +50,7 @@ def set_market_hours(cfg: dict) -> None:
                 h, m = v.split(":")
                 _MARKET_HOURS[k] = time(int(h), int(m))
             except (ValueError, AttributeError):
-                pass  # keep default on bad input
+                pass  # keep current value on bad input
 
 
 def get_market_hours() -> dict:
@@ -71,8 +81,23 @@ def market_session(now: Optional[datetime] = None) -> str:
 
 
 def is_market_open(now: Optional[datetime] = None) -> bool:
+    """Return True if the regular trading session is open (excludes pre_open).
+
+    FIX 2026-08-25: pre_open (9:00-9:15 IST) is the NSE pre-open auction window.
+    The bot was treating this as "open" and placing MARKET orders at 09:00:32 IST
+    on 2026-08-24 — paper fills at pre-open indicative prices, not real auction
+    prices. pre_open is now excluded; if you need it for some reason, call
+    market_session(now) == "pre_open" explicitly.
+
+    Regular session: 9:15 (opening) → 15:30 (close).
+    """
     s = market_session(now)
-    return s in ("pre_open", "opening", "regular", "closing")
+    return s in ("opening", "regular", "closing")
+
+
+def is_pre_open(now: Optional[datetime] = None) -> bool:
+    """True if currently in the NSE pre-open auction (9:00-9:15 IST)."""
+    return market_session(now) == "pre_open"
 
 
 def time_to_close(now: Optional[datetime] = None) -> timedelta:

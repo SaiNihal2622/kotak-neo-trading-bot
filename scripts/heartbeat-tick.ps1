@@ -1,7 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -match 'kotak_bot' -and $_.CommandLine -notmatch 'powershell' } | Select-Object ProcessId, @{N='uptime_min';E={[math]::Round(((Get-Date) - $_.CreationDate).TotalMinutes,1)}}, @{N='cmd';E={ if ($_.CommandLine.Length -gt 80) { $_.CommandLine.Substring(0,80) } else { $_.CommandLine } }}
 $dash = Test-NetConnection 127.0.0.1 -Port 8501 -InformationLevel Quiet
-$log = Get-Item 'C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\bot_stderr.log' -ErrorAction SilentlyContinue
+# FIX 2026-08-25: read Logs\bot_stderr.log (the active one the bot writes to), not the
+# cwd-relative bot_stderr.log (which has been frozen at 2026-08-20 02:27 for 5 days).
+$log = Get-Item 'C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\Logs\bot_stderr.log' -ErrorAction SilentlyContinue
 $age = if ($log) { [math]::Round(((Get-Date) - $log.LastWriteTime).TotalMinutes,1) } else { 'NA' }
 Write-Output "BOT_PROCS_COUNT=$(($procs|Measure-Object).Count)"
 foreach ($p in $procs) {

@@ -5,8 +5,28 @@ from dataclasses import dataclass
 from typing import Optional
 
 import pandas as pd
-import pandas_ta as ta
 from loguru import logger
+
+# pandas_ta is an optional heavy dependency. Import lazily inside analyze() so
+# that modules importing this file (e.g. via kotak_bot.__main__ -> build_broker
+# in test_live_safety) don't fail at import time if the package is missing.
+# The user gets a clear error only when technical analysis is actually invoked.
+_ta = None
+
+
+def _get_ta():
+    """Lazy import of pandas_ta. Cached on first successful import."""
+    global _ta
+    if _ta is None:
+        try:
+            import pandas_ta as ta  # type: ignore
+            _ta = ta
+        except ImportError as e:
+            raise ImportError(
+                "pandas_ta is required for TechnicalAnalyzer.analyze(). "
+                "Install it with: pip install pandas_ta"
+            ) from e
+    return _ta
 
 
 @dataclass
@@ -49,6 +69,9 @@ class TechnicalAnalyzer:
             high = df["high"]
             low = df["low"]
             vol = df["volume"] if "volume" in df.columns else None
+
+            # Lazy import pandas_ta — fail with a clear error if it's not installed.
+            ta = _get_ta()
 
             # core indicators
             rsi_s = ta.rsi(close, length=self.rsi_period)
