@@ -289,12 +289,15 @@ data:
   truedata_api_key: ""
   nselib_cache: data_cache/nselib
   # Feed modes:
-  #   'live_kotak'  — REAL NSE option prices from Kotak Neo PROD via REST polling.
-  #                   Real bid/ask depth, ltp, oi. ~2s latency. Recommended for paper trading.
-  #   'live_india'  — REAL NIFTY/BANKNIFTY spot from yfinance + Black-Scholes option pricing
-  #                   using real India VIX. Option prices are theoretical (no bid/ask depth).
-  #   'synthetic'   — random walk (kept for unit tests / offline)
-  #   'live_uat'    — Kotak Neo UAT websocket (UAT has no real market data — limited)
+  #   'live_kotak'   — REAL NSE option prices from Kotak Neo PROD via REST polling.
+  #                    Real bid/ask depth, ltp, oi. ~2s latency. Recommended for paper trading.
+  #   'live_deribit' — REAL BTC/ETH option chain from Deribit public REST (testnet or prod).
+  #                    No auth required for paper trading. ~2s latency. Extends the bot to
+  #                    crypto paper trading. Use config DERIBIT_ENV / DERIBIT_CURRENCIES.
+  #   'live_india'   — REAL NIFTY/BANKNIFTY spot from yfinance + Black-Scholes option pricing
+  #                    using real India VIX. Option prices are theoretical (no bid/ask depth).
+  #   'synthetic'    — random walk (kept for unit tests / offline)
+  #   'live_uat'     — Kotak Neo UAT websocket (UAT has no real market data — limited)
   live_feed: live_kotak
   live_uat_fallback_sec: 30
   resample_intervals: [1, 5, 15, 60]

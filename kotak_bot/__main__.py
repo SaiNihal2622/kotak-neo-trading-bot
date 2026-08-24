@@ -235,9 +235,24 @@ def run_paper() -> None:
         except Exception as e:
             logger.warning(f"NeoClient feed init failed ({e}) — falling back to synthetic")
             feed_mode = "synthetic"
-    feed = LiveFeed(mode=feed_mode, broker=broker, neo_client=neo_client_for_feed)
-    feed.start()
-    feed.subscribe(["NIFTY", "BANKNIFTY"])
+    if feed_mode == "live_deribit":
+        # No neo_client needed — DeribitFeed is self-contained (public REST, no auth
+        # required for paper trading). Falls back to live_india if start fails.
+        logger.info("Data feed: LIVE DERIBIT TESTNET (real BTC/ETH option chain)")
+        from kotak_bot.data.deribit_feed import DeribitFeed
+        deribit_feed = DeribitFeed(
+            env=os.environ.get("DERIBIT_ENV", "testnet"),
+            currencies=os.environ.get("DERIBIT_CURRENCIES", "BTC,ETH").split(","),
+            poll_interval_sec=float(os.environ.get("DERIBIT_POLL_SEC", "2.0")),
+        )
+        feed = LiveFeed(mode=feed_mode, broker=broker, neo_client=None, deribit_feed=deribit_feed)
+        feed.start()
+        # Deribit doesn't use NIFTY/BANKNIFTY — subscribe to crypto spot instead.
+        feed.subscribe(["BTC", "ETH"])
+    else:
+        feed = LiveFeed(mode=feed_mode, broker=broker, neo_client=neo_client_for_feed)
+        feed.start()
+        feed.subscribe(["NIFTY", "BANKNIFTY"])
     # FIX 2026-08-12: pin strikes for any open orders that survived a bot restart,
     # so live_kotak feed keeps polling them and the paper fill sim can fill them.
     # Run AFTER order_mgr is created below, so we can read open_trades() leg symbols.

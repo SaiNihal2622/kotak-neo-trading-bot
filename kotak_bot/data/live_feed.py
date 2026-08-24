@@ -1,4 +1,4 @@
-"""Live tick feed — five modes:
+"""Live tick feed — six modes:
 - 'synthetic': generates realistic OHLCV for paper testing (no creds needed)
 - 'live_india': REAL NIFTY/BANKNIFTY spot via yfinance + Black-Scholes option pricing
                (best for paper trading with no broker creds; option prices are theoretical)
@@ -6,6 +6,8 @@
 - 'live_ws': reserved for prod
 - 'live_kotak': REAL NSE option prices from Kotak Neo PROD via polling (recommended)
                 (real bid/ask depth, real LTP, real OI; ~2s latency)
+- 'live_deribit': REAL BTC/ETH option chain from Deribit public REST (paper trading,
+                no auth needed). ~2s latency. Extends the bot to crypto paper trading.
 
 Public surface:
     feed = LiveFeed(mode="live_kotak", broker=PaperClient(...))
@@ -79,7 +81,7 @@ class LiveFeed:
     """Unified live + synthetic tick feed."""
 
     def __init__(self, mode: str = "synthetic", broker=None, persist_path: str = "data_cache/ticks.csv",
-                 neo_client=None):
+                 neo_client=None, deribit_feed=None):
         self.mode = mode
         self.broker = broker
         self.persist_path = Path(persist_path)
@@ -102,6 +104,8 @@ class LiveFeed:
         self._token_map: dict[str, dict] = {}  # symbol -> {token, exchange_segment, ...}
         # for live_kotak (KotakProdFeed adapter)
         self._kotak_feed = None  # initialized in start() for live_kotak mode
+        # for live_deribit (DeribitFeed adapter); accept pre-built instance or build in start()
+        self._deribit_feed = deribit_feed
 
     def start(self) -> None:
         with self._lock:
@@ -145,6 +149,32 @@ class LiveFeed:
                 # Heartbeat thread for log visibility
                 self._thread = threading.Thread(target=self._live_kotak_loop, name="live-kotak-feed", daemon=True)
                 self._thread.start()
+            elif self.mode == "live_deribit":
+                # Real BTC/ETH option chain from Deribit public REST (no auth for paper).
+                # Config via env: DERIBIT_ENV (testnet|prod), DERIBIT_CURRENCIES (BTC,ETH),
+                # DERIBIT_POLL_SEC (default 2.0).
+                from kotak_bot.data.deribit_feed import DeribitFeed
+                if self._deribit_feed is None:
+                    self._deribit_feed = DeribitFeed(
+                        env=os.environ.get("DERIBIT_ENV", "testnet"),
+                        currencies=os.environ.get("DERIBIT_CURRENCIES", "BTC,ETH").split(","),
+                        poll_interval_sec=float(os.environ.get("DERIBIT_POLL_SEC", "2.0")),
+                    )
+                self._deribit_feed.on_tick(self._on_deribit_tick)
+                # Pre-subscribe to spot (BTC/ETH); any option subs are added by caller.
+                self._deribit_feed.subscribe(["BTC", "ETH"])
+                for s in self._subscribed:
+                    self._deribit_feed.subscribe([s])
+                try:
+                    self._deribit_feed.start()
+                except Exception as e:
+                    logger.error(f"DeribitFeed start failed: {e} — falling back to live_india")
+                    self._running = False
+                    self.mode = "live_india"
+                    return self.start()
+                # Heartbeat thread for log visibility
+                self._thread = threading.Thread(target=self._live_deribit_loop, name="live-deribit-feed", daemon=True)
+                self._thread.start()
             elif self.mode in ("live_uat", "live_ws"):
                 # discover tokens for our symbols
                 self._discover_tokens()
@@ -175,6 +205,11 @@ class LiveFeed:
                 self._kotak_feed.stop()
             except Exception:
                 pass
+        if self._deribit_feed is not None:
+            try:
+                self._deribit_feed.stop()
+            except Exception:
+                pass
         logger.info("LiveFeed stopped")
 
     def keep_alive_subscribe(self, symbols: list[str]) -> None:
@@ -190,6 +225,11 @@ class LiveFeed:
                     self._kotak_feed.keep_alive_subscribe(list(symbols))
                 except Exception as e:
                     logger.warning(f"kotak keep_alive: {e}")
+            elif self.mode == "live_deribit" and self._deribit_feed is not None:
+                try:
+                    self._deribit_feed.keep_alive_subscribe(list(symbols))
+                except Exception as e:
+                    logger.warning(f"deribit keep_alive: {e}")
 
     def subscribe(self, symbols: list[str]) -> None:
         with self._lock:
@@ -216,6 +256,11 @@ class LiveFeed:
                             self._kotak_feed.subscribe([s])
                         except Exception as e:
                             logger.warning(f"kotak subscribe {s}: {e}")
+                    elif self.mode == "live_deribit" and self._deribit_feed is not None:
+                        try:
+                            self._deribit_feed.subscribe([s])
+                        except Exception as e:
+                            logger.warning(f"deribit subscribe {s}: {e}")
         if self.mode == "synthetic":
             pass  # synthetic loop emits on demand
 
@@ -395,6 +440,67 @@ class LiveFeed:
                     )
             except Exception as e:
                 logger.debug(f"kotak heartbeat: {e}")
+            time.sleep(5)
+
+    # ------- live_deribit: Deribit public REST adapter -------
+    def _on_deribit_tick(self, t: dict) -> None:
+        """Convert a DeribitFeed tick (dict) to our Tick dataclass and dispatch.
+
+        Deribit produces two flavours of tick:
+          - Spot:    symbol = 'BTC' or 'ETH' (no option_type)
+          - Option:  symbol = 'BTC26DEC25100000CE' (NSE-style) — fed already
+                     converted from Deribit's 'BTC-26DEC25-100000-C' format.
+        """
+        try:
+            sym = t.get('symbol', '')
+            ltp = float(t.get('ltp', 0) or 0)
+            if ltp <= 0:
+                return
+            bid = float(t.get('bid', 0) or 0)
+            ask = float(t.get('ask', 0) or 0)
+            oi = int(t.get('oi', 0) or 0)
+            vol = int(t.get('volume', 0) or 0)
+            iv = float(t.get('iv', 0) or 0)
+            # Deribit ticks arrive with strike/option_type/expiry/underlying already set
+            # for options; spot ticks have them as None / 0.
+            underlying = t.get('underlying') or (sym if sym in ('BTC', 'ETH') else None)
+            strike = float(t.get('strike', 0) or 0)
+            option_type = t.get('option_type')
+            expiry = t.get('expiry')
+            exchange = t.get('exchange', 'DERIBIT')
+            tick = Tick(
+                symbol=sym, ltp=ltp, bid=bid, ask=ask,
+                volume=vol, oi=oi, iv=iv,
+                timestamp=now_ist(), exchange=exchange,
+                strike=strike, option_type=option_type, expiry=expiry,
+                underlying=underlying,
+            )
+            self._dispatch(tick)
+        except Exception as e:
+            logger.debug(f"deribit tick parse: {e}")
+
+    def _live_deribit_loop(self) -> None:
+        """Heartbeat / health log for live_deribit mode. DeribitFeed does the actual work."""
+        if not hasattr(self, '_deribit_feed') or self._deribit_feed is None:
+            return
+        f = self._deribit_feed
+        last_heartbeat = 0.0
+        while self._running:
+            try:
+                now = time.time()
+                if now - last_heartbeat > 60:
+                    last_heartbeat = now
+                    # Deribit public market data needs no auth → always 'N/A'.
+                    subscribed = len(f._subscribed) if hasattr(f, '_subscribed') else 0
+                    latest_count = len(f._latest) if hasattr(f, '_latest') else 0
+                    spot_count = sum(1 for s in ('BTC', 'ETH') if f._latest.get(s))
+                    logger.info(
+                        f"LiveDeribit heartbeat: env={getattr(f, 'env', '?')} "
+                        f"authed=N/A subscribed={subscribed} latest={latest_count} "
+                        f"spot_seen={spot_count} tick_count={self._tick_count}"
+                    )
+            except Exception as e:
+                logger.debug(f"deribit heartbeat: {e}")
             time.sleep(5)
 
     def _ws_loop(self) -> None:

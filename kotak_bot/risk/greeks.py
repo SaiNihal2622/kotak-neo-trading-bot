@@ -142,6 +142,11 @@ def portfolio_greeks(legs: list[dict], spot: float, r: float = 0.065, q: float =
     Each leg dict must have:
       strike, opt_type ('CE'/'PE'), qty, avg_fill_price (for IV estimation)
     Optional: days_to_expiry (default 7), iv_override (default = computed from market)
+
+    IV resolution order (first non-zero wins):
+      1. leg['iv_override']  (explicit override, e.g. from risk config)
+      2. leg['iv']            (live IV from a feed — e.g. Deribit's mark_iv)
+      3. bisection from fill price vs BS theoretical (fallback)
     """
     total = Greeks()
     for leg in legs:
@@ -152,7 +157,10 @@ def portfolio_greeks(legs: list[dict], spot: float, r: float = 0.065, q: float =
         t = max(1e-6, days / 365.0)
         # Estimate IV from fill price vs BS price (a simple bisection)
         fill = float(leg.get("avg_fill_price", 0) or 0)
+        # IV resolution: explicit override > live feed IV (e.g. Deribit mark_iv) > bisect
         iv = float(leg.get("iv_override", 0) or 0)
+        if iv <= 0:
+            iv = float(leg.get("iv", 0) or 0)
         if iv <= 0 and fill > 0 and spot > 0 and strike > 0:
             iv = _implied_vol(spot, strike, t, fill, r, q, opt)
         iv = max(0.05, min(2.0, iv or 0.20))  # clamp 5%–200%
@@ -218,9 +226,13 @@ def mark_to_market(
     fill = float(leg.get("avg_fill_price", 0) or 0)
     days = float(leg.get("days_to_expiry", 7))
     t = max(1e-6, days / 365.0)
-    if fill > 0 and spot > 0 and strike > 0:
+    # IV resolution: explicit override > live feed IV (e.g. Deribit mark_iv) > bisect
+    iv = float(leg.get("iv_override", 0) or 0)
+    if iv <= 0:
+        iv = float(leg.get("iv", 0) or 0)
+    if iv <= 0 and fill > 0 and spot > 0 and strike > 0:
         iv = _implied_vol(spot, strike, t, fill, r, q, opt)
-    else:
+    if iv <= 0:
         iv = 0.20
     g = bs_greeks(spot, strike, t, iv, r, q, opt)
     # Use the broker's bid/ask if both > 0; otherwise fall back to theoretical

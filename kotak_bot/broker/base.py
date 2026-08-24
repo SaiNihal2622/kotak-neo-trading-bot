@@ -101,6 +101,9 @@ class Tick:
     option_type: Optional[str] = None
     expiry: Optional[str] = None
     underlying: Optional[str] = None
+    # Implied volatility as a decimal (0.65 = 65%). 0.0 means "unknown — use bisection".
+    # Populated by feeds that have a direct IV source (e.g. DeribitFeed's mark_iv).
+    iv: float = 0.0
 
 
 class BrokerClient(ABC):
