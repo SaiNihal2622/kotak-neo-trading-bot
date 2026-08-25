@@ -165,6 +165,26 @@ def _build_prompt(paper: dict, market_ctx: dict) -> str:
     news_sent = market_ctx.get("news_sentiment", 0.0)
     upcoming_event = market_ctx.get("upcoming_event", "")
 
+    # ---- THESIS BLOCK (if thesis_engine ran recently) ----
+    thesis_block = ""
+    if market_ctx.get("thesis_source") == "thesis_engine":
+        thesis_block = f"""
+THESIS (from thesis_engine, refreshed every 90 min):
+- Bias (proposed): {market_ctx.get('thesis_bias','?')} (confidence {market_ctx.get('thesis_confidence',0):.0%})
+- Risk budget (proposed): {market_ctx.get('thesis_risk_budget',0):.0f}% of capital
+- Max positions (proposed): see below
+- OI walls: support {market_ctx.get('oi_support','-')} / resistance {market_ctx.get('oi_resistance','-')}
+- Max pain: {market_ctx.get('max_pain','-')}
+- PCR: {market_ctx.get('pcr','-')}
+- GEX total: {market_ctx.get('gex_total','-')}
+- Narrative: {market_ctx.get('thesis_narrative','')}
+- Triggers: {market_ctx.get('thesis_triggers',{})}
+- Specific strikes (OI-aware): {market_ctx.get('thesis_specific_strikes')}
+
+You may agree, refine, or override the thesis bias — but if you disagree, your
+rationale MUST explain the data conflict (OI vs news vs cross-market).
+"""
+
     return f"""You are a senior Indian options day-trader. Decide today's trading bias and risk budget.
 
 CURRENT STATE (IST {market_ctx.get('ist_time', '?')}, NSE paper-trading):
@@ -175,7 +195,7 @@ CURRENT STATE (IST {market_ctx.get('ist_time', '?')}, NSE paper-trading):
 - IV rank: {iv_rank:.0f}/100, India VIX: {vix:.1f}
 - News sentiment (last 4h): {news_sent:+.2f} (-1 bearish, +1 bullish)
 - Upcoming event: {upcoming_event or 'none'}
-
+{thesis_block}
 STRATEGY LIBRARY: iron_condor, iron_butterfly, jade_lizard, short_strangle, calendar,
 bull_call_vertical, bear_put_vertical, long_call, long_put, long_straddle, event_straddle.
 
@@ -323,6 +343,52 @@ def _gather_market_context() -> dict:
         "news_sentiment": 0.0,
         "upcoming_event": "",
     }
+
+    # ---- THESIS INJECTION (preferred over raw regime detection) ----
+    # If the thesis_engine has run recently (< 90 min), use its regime +
+    # bias as the primary input. LLM still gets the final say, but
+    # it's now grounded in OI + macro + cross-market + news + research.
+    try:
+        thesis_path = ROOT / "data_cache" / "thesis" / "latest.json"
+        if thesis_path.exists():
+            import json as _json
+            from datetime import datetime as _dt
+            t = _json.loads(thesis_path.read_text(encoding="utf-8"))
+            ts = t.get("ts") or ""
+            try:
+                age_min = (now_ist() - _dt.fromisoformat(ts)).total_seconds() / 60
+            except Exception:
+                age_min = 999
+            if age_min < 90 and t.get("regime"):
+                ctx["regime"] = t["regime"]
+                ctx["thesis_bias"] = t.get("bias", "neutral")
+                ctx["thesis_confidence"] = float(t.get("confidence", 0.0))
+                ctx["thesis_risk_budget"] = float(t.get("risk_budget_pct", 0))
+                ctx["thesis_narrative"] = t.get("narrative", "")
+                ctx["thesis_specific_strikes"] = t.get("specific_strikes")
+                ctx["thesis_triggers"] = t.get("triggers", {})
+                ctx["thesis_source"] = "thesis_engine"
+                # OI-derived context
+                oi = (t.get("data") or {}).get("oi") or {}
+                if oi.get("max_pain"):
+                    ctx["max_pain"] = oi["max_pain"]
+                if oi.get("resistance"):
+                    ctx["oi_resistance"] = oi["resistance"]
+                if oi.get("support"):
+                    ctx["oi_support"] = oi["support"]
+                if oi.get("pcr") is not None:
+                    ctx["pcr"] = oi["pcr"]
+                if oi.get("gex_total") is not None:
+                    ctx["gex_total"] = oi["gex_total"]
+                # news + macro
+                news = (t.get("data") or {}).get("news") or {}
+                ctx["news_sentiment"] = float(news.get("score", 0.0))
+                macro = (t.get("data") or {}).get("macro") or {}
+                evt = macro.get("next_event") or {}
+                if isinstance(evt, dict) and macro.get("window_min") is not None:
+                    ctx["upcoming_event"] = f"{evt.get('name','event')} in {int(macro['window_min'])}m"
+    except Exception as e:
+        logger.debug(f"brain: thesis injection best-effort failed: {e}")
     # try to read latest regime from kotak_bot's data cache (best-effort)
     try:
         from kotak_bot.signals.regime import RegimeDetector
