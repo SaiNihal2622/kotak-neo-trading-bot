@@ -712,6 +712,21 @@ HTML = r"""<!DOCTYPE html>
         <div id="mavisPlan" class="muted">fetching...</div>
       </div>
 
+      <!-- Mavis real-time live presence -->
+      <div style="background: linear-gradient(90deg, rgba(155,107,255,0.12) 0%, rgba(155,107,255,0.02) 100%); border: 1px solid #9b6bff; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+        <div style="font-size: 14px; font-weight: 700; color: #9b6bff; margin-bottom: 8px;">🧠 Mavis live (event-driven, real-time)</div>
+        <div id="mavisLive" class="muted">fetching...</div>
+      </div>
+
+      <!-- Mavis event ticker -->
+      <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <div style="font-size: 13px; font-weight: 700; color: var(--accent);">📡 Mavis Event Ticker (last 10)</div>
+          <div style="font-size: 10px; color: var(--muted);">— auto-refresh 2.5s —</div>
+        </div>
+        <div id="mavisEvents" class="muted">fetching...</div>
+      </div>
+
       <!-- Intraday decision tree -->
       <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
         <div style="font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 10px;">🌳 Mavis's Intraday Decision Tree</div>
@@ -748,6 +763,17 @@ async function poll() {
     $('botPill').className = 'pill dead';
     $('botPill').innerHTML = '<span class="dot red pulse"></span>FETCH ERROR';
   }
+  // Mavis real-time (event-driven, fresh data)
+  try {
+    const mst = await fetch('/api/mavis_state', { cache: 'no-store' });
+    const st = await mst.json();
+    renderMavisLive(st);
+  } catch (e) {}
+  try {
+    const me = await fetch('/api/mavis_events', { cache: 'no-store' });
+    const ev = await me.json();
+    renderMavisEvents(ev);
+  } catch (e) {}
 }
 
 function render(s) {
@@ -934,6 +960,63 @@ function render(s) {
   // Mavis Brain (quant trader AI)
   fetch('/api/quant_brain').then(r => r.json()).then(renderBrain);
   fetch('/api/mavis_trades').then(r => r.json()).then(renderMavisPlan);
+  // Mavis real-time (event ticker + current state of mind)
+  fetch('/api/mavis_state').then(r => r.json()).then(renderMavisLive);
+  fetch('/api/mavis_events').then(r => r.json()).then(renderMavisEvents);
+}
+
+function renderMavisLive(st) {
+  const el = $('mavisLive');
+  if (!el) return;
+  if (!st || !st.current || Object.keys(st.current).length === 0) {
+    el.innerHTML = '<span class="muted">Mavis monitor not running (start scripts/mavis_realtime.py)</span>';
+    return;
+  }
+  const c = st.current;
+  const m = st.mavis_state || {};
+  const ts = (c.ts || '').substring(11, 19);
+  const lastThought = m.last_thought || 'Standing by';
+  const minsToForce = m.mins_to_force_square;
+  const mktOpen = m.mkt_open ? '🟢 MARKET OPEN' : '⚪ market closed';
+  const forceLine = minsToForce != null ? `<span class="muted"> · </span><span class="yellow">${minsToForce}m to force-square</span>` : '';
+  const mtmLine = c.open_positions > 0 ? `<span class="muted"> · MTM </span><span class="${c.mtm_total >= 0 ? 'green' : 'red'}">Rs.${c.mtm_total.toFixed(0)}</span>` : '';
+  el.innerHTML =
+    `<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px;">` +
+    `<span style="color: var(--accent); font-weight: 700;">🧠 Mavis live</span>` +
+    `<span class="muted">${ts}</span>` +
+    `<span class="muted">·</span><span class="${m.mkt_open ? 'green' : 'muted'}">${mktOpen}</span>` +
+    `<span class="muted">·</span><span>NIFTY <b>${(c.nifty || 0).toFixed(2)}</b></span>` +
+    `<span class="muted">·</span><span>BNF <b>${(c.banknifty || 0).toFixed(2)}</b></span>` +
+    `<span class="muted">·</span><span>VIX <b>${(c.vix || 0).toFixed(2)}</b></span>` +
+    `<span class="muted">·</span><span>pos <b>${c.open_positions || 0}</b></span>` +
+    mtmLine + forceLine +
+    `</div>` +
+    `<div style="margin-top: 6px; font-size: 13px; padding: 8px 10px; background: rgba(155,107,255,0.10); border-left: 3px solid #9b6bff; border-radius: 3px;">` +
+    `<b style="color: #9b6bff;">Mavis thinks:</b> ${lastThought}` +
+    `</div>`;
+}
+
+function renderMavisEvents(d) {
+  const el = $('mavisEvents');
+  if (!el) return;
+  if (!d || !d.available || d.events.length === 0) {
+    el.innerHTML = '<span class="muted">no events yet — monitor just started, events will appear as NIFTY crosses levels / MTM hits thresholds / VIX spikes</span>';
+    return;
+  }
+  // Show last 10 events, newest first
+  const events = d.events.slice().reverse().slice(0, 10);
+  let html = `<div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">${d.total_in_log} total events · showing last ${events.length}</div>`;
+  events.forEach(e => {
+    const ts = (e.ts || '').substring(11, 19);
+    const typeColor =
+      e.type === 'nifty_breakdown' || e.type === 'mtm_loss' || e.type === 'vix_above_threshold' ? 'red' :
+      e.type === 'nifty_breakout' || e.type === 'mtm_profit' ? 'green' :
+      e.type === 'vix_spike' ? 'yellow' : 'muted';
+    const ctx = e.context ? JSON.stringify(e.context).substring(0, 80) : '';
+    html += `<div style="font-size: 11px; padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,0.05);">` +
+      `<span class="muted">${ts}</span> <span class="${typeColor}">${e.type}</span> <span>${e.level}</span>=<b>${e.value}</b> <span class="muted">${ctx}</span></div>`;
+  });
+  el.innerHTML = html;
 }
 
 function renderBrain(b) {
@@ -1310,7 +1393,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(err)))
                 self.end_headers()
                 self.wfile.write(err)
-        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades"):
+        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades") or self.path.startswith("/api/mavis_events") or self.path.startswith("/api/mavis_state"):
             try:
                 body = handle_api(self.path).encode("utf-8")
                 self.send_response(200)
@@ -1352,6 +1435,10 @@ def handle_api(path):
         return json.dumps(get_quant_brain(), default=str)
     if u.path == "/api/mavis_trades":
         return json.dumps(get_mavis_trades(), default=str)
+    if u.path == "/api/mavis_events":
+        return json.dumps(get_mavis_events(), default=str)
+    if u.path == "/api/mavis_state":
+        return json.dumps(get_mavis_realtime_state(), default=str)
     return json.dumps({"error": "unknown api"})
 
 
@@ -1461,6 +1548,39 @@ def get_mavis_trades():
         "what_makes_this_different": raw.get("what_makes_this_different_from_template", {}),
         "data_snapshot": raw.get("data_snapshot", {}),
     }
+
+
+def get_mavis_events(limit: int = 20) -> dict:
+    """Read the last N events from mavis_events.jsonl (real-time event stream)."""
+    p = os.path.join(DCACHE, "mavis_events.jsonl")
+    out = {"available": False, "events": [], "count": 0}
+    if not os.path.exists(p):
+        return out
+    try:
+        with open(p, "r", encoding="utf-8-sig") as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        # Last N
+        recent = lines[-limit:] if len(lines) > limit else lines
+        events = []
+        for ln in recent:
+            try:
+                events.append(json.loads(ln))
+            except Exception:
+                pass
+        out["available"] = True
+        out["events"] = events
+        out["count"] = len(events)
+        out["total_in_log"] = len(lines)
+        return out
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+
+def get_mavis_realtime_state() -> dict:
+    """Read mavis_realtime_state.json — current snapshot + Mavis's last thought."""
+    p = os.path.join(DCACHE, "mavis_realtime_state.json")
+    return _read_json(p, {"available": False, "current": {}, "mavis_state": {}})
 
 
 def get_candles(symbol, interval, period):

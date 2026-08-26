@@ -835,6 +835,49 @@ def run_paper() -> None:
         try:
             now = now_ist()
             session = market_session(now)
+            # FIX 2026-08-27: Mavis force-action channel — Mavis can write
+            # data_cache/mavis_force_action.json with action=CLOSE_ALL /
+            # CLOSE_UNDERLYING=X / PAUSE_BOT / RESUME_BOT. The bot reads it
+            # EVERY cycle (every 5-30s) and acts immediately, regardless of
+            # scan timing. This is the channel for real-time, event-driven
+            # Mavis decisions (e.g. NIFTY broke 24,000 → Mavis decides
+            # close-now → bot does it within 5-30 sec).
+            try:
+                _fa_path = Path("data_cache/mavis_force_action.json")
+                if _fa_path.exists():
+                    _fa = _read_json(_fa_path, {})
+                    if isinstance(_fa, dict) and _fa.get("action") and not _fa.get("consumed"):
+                        _fa_action = str(_fa.get("action", "")).upper()
+                        _fa_reason = str(_fa.get("reason", "mavis_force_action"))[:200]
+                        if _fa_action == "CLOSE_ALL":
+                            n = order_mgr.square_off_all(reason=f"mavis_force:{_fa_reason[:80]}")
+                            logger.info(f"[MAVIS-FORCE] CLOSE_ALL executed: closed {n} trades. reason={_fa_reason[:120]}")
+                            alerter.send(f"[Mavis force] CLOSE_ALL executed. {n} trades closed. Reason: {_fa_reason[:120]}")
+                        elif _fa_action.startswith("CLOSE_UNDERLYING="):
+                            u = _fa_action.split("=", 1)[1].strip().upper()
+                            # square_off_all is the safe path; log which underlying was targeted
+                            n = order_mgr.square_off_all(reason=f"mavis_force_close_{u}:{_fa_reason[:60]}")
+                            logger.info(f"[MAVIS-FORCE] CLOSE_UNDERLYING={u} (via close-all) executed: {n} trades. reason={_fa_reason[:120]}")
+                            alerter.send(f"[Mavis force] CLOSE_UNDERLYING={u}. {n} trades. Reason: {_fa_reason[:120]}")
+                        elif _fa_action == "PAUSE_BOT":
+                            risk._pause(f"mavis_force:{_fa_reason[:80]}")
+                            logger.info(f"[MAVIS-FORCE] PAUSE_BOT. reason={_fa_reason[:120]}")
+                            alerter.send(f"[Mavis force] BOT PAUSED. Reason: {_fa_reason[:120]}")
+                        elif _fa_action == "RESUME_BOT":
+                            risk.resume()
+                            logger.info(f"[MAVIS-FORCE] RESUME_BOT")
+                            alerter.send(f"[Mavis force] BOT RESUMED")
+                        # Mark consumed so we don't repeat
+                        _fa["consumed"] = True
+                        _fa["consumed_at"] = now.isoformat()
+                        _fa["consumed_cycle"] = cycle_counter
+                        try:
+                            with open(_fa_path, "w", encoding="utf-8") as _fw:
+                                json.dump(_fa, _fw, ensure_ascii=False)
+                        except Exception:
+                            pass
+            except Exception as _fa_err:
+                logger.debug(f"force-action check failed: {_fa_err}")
             # 1) EOD report
             if (now.hour, now.minute) >= (15, 30) and (last_eod_report is None or last_eod_report.date() != now.date()):
                 positions = broker.get_positions()
