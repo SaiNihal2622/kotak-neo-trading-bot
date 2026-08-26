@@ -685,6 +685,40 @@ HTML = r"""<!DOCTYPE html>
       <div style="font-size: 11px; color: var(--muted); margin-top: 8px;" id="ocNote">—</div>
     </div>
 
+    <!-- ========== 🧠 MAVIS BRAIN (quant trader AI, not template) ========== -->
+    <div style="border-top: 3px solid #9b6bff; margin-top: 24px; padding-top: 16px;">
+      <div style="background: linear-gradient(90deg, rgba(155,107,255,0.15) 0%, rgba(155,107,255,0.03) 100%); border: 1px solid #9b6bff; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+        <div style="display: flex; align-items: baseline; gap: 14px;">
+          <div style="font-size: 20px; font-weight: 700; color: #9b6bff;">🧠 MAVIS BRAIN</div>
+          <div style="font-size: 12px; color: var(--muted);">quant trader AI · not template · data-driven decisions</div>
+        </div>
+      </div>
+
+      <!-- Brain state: regime, trend, key levels -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+        <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
+          <div style="font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 10px;">📊 Market Regime</div>
+          <div id="brainRegime" class="muted">fetching...</div>
+        </div>
+        <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
+          <div style="font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 10px;">🎯 Key Levels & Expected Move</div>
+          <div id="brainLevels" class="muted">fetching...</div>
+        </div>
+      </div>
+
+      <!-- Mavis trade plan -->
+      <div style="background: linear-gradient(90deg, rgba(31,191,117,0.10) 0%, rgba(31,191,117,0.02) 100%); border: 1px solid #1fbf75; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+        <div style="font-size: 14px; font-weight: 700; color: #1fbf75; margin-bottom: 8px;">💡 Mavis's Trade Plan (data-driven, dynamic)</div>
+        <div id="mavisPlan" class="muted">fetching...</div>
+      </div>
+
+      <!-- Intraday decision tree -->
+      <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
+        <div style="font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 10px;">🌳 Mavis's Intraday Decision Tree</div>
+        <div id="mavisTree" class="muted">fetching...</div>
+      </div>
+    </div>
+
   </div>
 
 </div>
@@ -896,6 +930,101 @@ function render(s) {
   fetch('/api/candles?symbol=BANKNIFTY&interval=5m&period=1d').then(r => r.json()).then(d => renderCandles(d, 'bnf'));
   // Option chain
   fetch('/api/option_chain?symbol=NIFTY&expiry=2026-08-26&spot=' + (s.market_thesis && s.market_thesis.nifty_spot || 24260)).then(r => r.json()).then(d => renderOC(d));
+
+  // Mavis Brain (quant trader AI)
+  fetch('/api/quant_brain').then(r => r.json()).then(renderBrain);
+  fetch('/api/mavis_trades').then(r => r.json()).then(renderMavisPlan);
+}
+
+function renderBrain(b) {
+  if (!b || !b.available) {
+    $('brainRegime').innerHTML = '<span class="muted">brain not generated yet — run scripts/quant_brain.py</span>';
+    $('brainLevels').innerHTML = '<span class="muted">—</span>';
+    return;
+  }
+  // Regime card
+  const n = b.nifty || {};
+  const bn = b.banknifty || {};
+  const v = b.vix || {};
+  const g = b.global_cues || {};
+  const sq = b.setup_quality || {};
+  const trendCls = n.trend === 'BULL' ? 'green' : (n.trend === 'BEAR' ? 'red' : 'yellow');
+  const vixCls = v.regime === 'low' ? 'green' : (v.regime === 'normal' ? 'accent' : (v.regime === 'elevated' ? 'yellow' : 'red'));
+
+  $('brainRegime').innerHTML =
+    '<div class="kv"><span class="k">NIFTY spot</span><span class="v accent">' + (n.spot || 0).toFixed(2) + '</span></div>' +
+    '<div class="kv"><span class="k">Trend (EMA stack)</span><span class="v ' + trendCls + '"><b>' + (n.trend || '?') + ' ' + (n.trend_strength || '') + '</b></span></div>' +
+    '<div class="kv"><span class="k">RSI(14)</span><span class="v">' + (n.rsi || 0).toFixed(1) + ' <span class="muted" style="font-size:10px">(' + (n.rsi_state || '') + ')</span></span></div>' +
+    '<div class="kv"><span class="k">ADX(14)</span><span class="v">' + (n.adx || 0).toFixed(1) + ' <span class="muted" style="font-size:10px">(strength)</span></span></div>' +
+    '<div class="kv"><span class="k">India VIX</span><span class="v ' + vixCls + '"><b>' + (v.current || 0).toFixed(2) + ' ' + (v.regime || '') + '</b> ' + (v.vs_avg_pct ? ' <span class="muted" style="font-size:10px">(' + v.vs_avg_pct + '% vs avg)</span>' : '') + '</span></div>' +
+    '<div class="kv"><span class="k">BANKNIFTY</span><span class="v">' + (bn.spot || 0).toFixed(2) + ' <span class="muted" style="font-size:10px">(' + (bn.trend || '?') + ' ' + (bn.trend_strength || '') + ')</span></span></div>' +
+    '<div class="kv"><span class="k">Setup quality</span><span class="v ' + (sq.score >= 60 ? 'green' : (sq.score >= 40 ? 'yellow' : 'red')) + '"><b>' + (sq.score || 0) + '/100</b></span></div>' +
+    (sq.notes || []).map(n => '<div style="font-size: 11px; color: var(--muted); margin-top: 3px;">· ' + n + '</div>').join('') +
+    '<div style="border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; font-size: 11px; color: var(--muted);">' +
+      '<b>Global cues:</b><br>' +
+      'S&P ' + (g.spx_fut ? g.spx_fut['1d_pct'] + '%' : '?') +
+      ' · Nasdaq ' + (g.nasdaq_fut ? g.nasdaq_fut['1d_pct'] + '%' : '?') +
+      ' · Crude ' + (g.crude_oil ? g.crude_oil['1d_pct'] + '%' : '?') +
+      ' · DXY ' + (g.dxy ? g.dxy['1d_pct'] + '%' : '?') +
+      ' · US VIX ' + (g.us_vix ? g.us_vix['spot'] : '?') +
+    '</div>';
+
+  // Levels card
+  $('brainLevels').innerHTML =
+    '<div class="kv"><span class="k">ATR(14) daily</span><span class="v">' + (n.atr_14 || 0).toFixed(0) + ' pts (' + (n.atr_14_pct || 0).toFixed(2) + '%)</span></div>' +
+    '<div class="kv"><span class="k">Expected 1d move</span><span class="v yellow"><b>±' + (n.expected_move_1d || 0).toFixed(0) + ' pts</b></span></div>' +
+    '<div class="kv"><span class="k">5d range</span><span class="v">' + (n['5d_low'] || 0).toFixed(0) + ' — ' + (n['5d_high'] || 0).toFixed(0) + '</span></div>' +
+    '<div class="kv"><span class="k">BB(20,2)</span><span class="v">' + (n.bb_lower || 0).toFixed(0) + ' <span class="muted">/</span> ' + (n.bb_mid || 0).toFixed(0) + ' <span class="muted">/</span> ' + (n.bb_upper || 0).toFixed(0) + '</span></div>' +
+    '<div class="kv"><span class="k">Classic Pivot</span><span class="v accent">' + (n.pivot || 0).toFixed(0) + '</span></div>' +
+    '<div class="kv"><span class="k">R1 / S1</span><span class="v green">' + (n.r1 || 0).toFixed(0) + '</span> <span class="muted">/</span> <span class="v red">' + (n.s1 || 0).toFixed(0) + '</span></div>' +
+    '<div class="kv"><span class="k">EMA 9 / 21 / 50</span><span class="v mono">' + (n.ema9 || 0).toFixed(0) + ' / ' + (n.ema21 || 0).toFixed(0) + ' / ' + (n.ema50 || 0).toFixed(0) + '</span></div>' +
+    '<div class="kv"><span class="k">24h change</span><span class="v">' + ((n['24h_change_pct'] || 0) >= 0 ? '+' : '') + (n['24h_change_pct'] || 0).toFixed(2) + '%</span></div>' +
+    '<div class="kv"><span class="k">BANKNIFTY ATR</span><span class="v">' + (bn.atr_14 || 0).toFixed(0) + ' pts</span></div>';
+}
+
+function renderMavisPlan(d) {
+  if (!d || !d.available || !d.trades) {
+    $('mavisPlan').innerHTML = '<span class="muted">no Mavis trade plan yet — Mavis writes to data_cache/mavis_trades.json</span>';
+    $('mavisTree').innerHTML = '<span class="muted">—</span>';
+    return;
+  }
+  // Render trade plan
+  let planHtml = '';
+  d.trades.forEach((t, i) => {
+    const badge = t.type === 'primary' ? '<span class="green" style="background:rgba(31,191,117,0.15); padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700;">PRIMARY</span>' :
+                  t.type === 'alternative' ? '<span class="yellow" style="background:rgba(245,179,66,0.15); padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700;">ALT</span>' :
+                  t.type === 'no_trade' ? '<span class="red" style="background:rgba(231,76,60,0.15); padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700;">NO TRADE</span>' : '';
+    planHtml += '<div style="background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 10px; margin-bottom: 8px;">' +
+      '<div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px;">' +
+      '<b style="color: var(--accent);">' + (t.name || 'unnamed') + '</b> ' + badge +
+      '</div>' +
+      '<div style="font-size: 12px; margin-bottom: 4px;"><b>Logic:</b> ' + (t.logic || '—') + '</div>' +
+      '<div style="font-size: 12px; margin-bottom: 4px;"><b>Entry:</b> ' + (t.entry_trigger || '—') + '</div>' +
+      '<div style="font-size: 12px; margin-bottom: 4px;"><b>Target:</b> ' + (t.target_premium || t.target || '—') + '</div>' +
+      '<div style="font-size: 12px;"><b>Stop:</b> ' + (t.stop_loss || t.stop || '—') + '</div>' +
+      '</div>';
+  });
+  if (d.mavis_analysis) {
+    planHtml += '<div style="font-size: 12px; background: rgba(155,107,255,0.08); padding: 10px; border-left: 3px solid #9b6bff; border-radius: 4px; margin-top: 10px;">' +
+      '<b style="color: #9b6bff;">Mavis analysis:</b><br>' + d.mavis_analysis +
+      '</div>';
+  }
+  $('mavisPlan').innerHTML = planHtml;
+
+  // Decision tree
+  if (d.intraday_decision_tree) {
+    const tree = d.intraday_decision_tree;
+    let treeHtml = '';
+    Object.keys(tree).forEach(phase => {
+      const label = phase.replace(/_/g, ' ').replace(/phase (\d) /, 'Phase $1: ');
+      treeHtml += '<div style="margin-bottom: 6px; padding: 6px 10px; background: var(--bg); border-radius: 3px; border-left: 2px solid var(--accent);">' +
+        '<b style="color: var(--accent); font-size: 11px;">' + label + '</b> ' +
+        '<div style="font-size: 12px; margin-top: 2px;">' + tree[phase] + '</div></div>';
+    });
+    $('mavisTree').innerHTML = treeHtml;
+  } else {
+    $('mavisTree').innerHTML = '<span class="muted">no decision tree</span>';
+  }
 }
 
 function renderCandles(d, which) {
@@ -1157,7 +1286,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(err)))
                 self.end_headers()
                 self.wfile.write(err)
-        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal"):
+        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades"):
             try:
                 body = handle_api(self.path).encode("utf-8")
                 self.send_response(200)
@@ -1179,7 +1308,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def handle_api(path):
-    """Dispatch /api/candles, /api/option_chain, /api/terminal."""
+    """Dispatch /api/candles, /api/option_chain, /api/terminal, /api/quant_brain, /api/mavis_trades."""
     from urllib.parse import urlparse, parse_qs
     u = urlparse(path)
     qs = parse_qs(u.query)
@@ -1195,7 +1324,25 @@ def handle_api(path):
         return json.dumps(get_option_chain(sym, expiry, spot), default=str)
     if u.path == "/api/terminal":
         return json.dumps(get_terminal(), default=str)
+    if u.path == "/api/quant_brain":
+        return json.dumps(get_quant_brain(), default=str)
+    if u.path == "/api/mavis_trades":
+        return json.dumps(get_mavis_trades(), default=str)
     return json.dumps({"error": "unknown api"})
+
+
+def get_quant_brain():
+    """Read the latest quant_brain.json. Cached 30s."""
+    def _read():
+        p = os.path.join(DCACHE, "quant_brain.json")
+        return _read_json(p, {"available": False})
+    return _cached("qb", _read, 30.0)
+
+
+def get_mavis_trades():
+    """Read Mavis's actual trade decisions (written by Mavis-the-AI, not by template)."""
+    p = os.path.join(DCACHE, "mavis_trades.json")
+    return _read_json(p, {"available": False, "trades": []})
 
 
 def get_candles(symbol, interval, period):

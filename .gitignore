@@ -65,6 +65,13 @@ data_cache/compliance/
 # HTTP server watchdog audit (appended on every run)
 data_cache/http_watchdog.jsonl
 
+# Mavis quant brain — auto-regenerated on every `python scripts/quant_brain.py`
+# Source is in scripts/quant_brain.py; the JSON is a derived snapshot.
+data_cache/quant_brain.json
+
+# Mavis scratch / one-off inspection scripts (use _check_*.py to debug)
+data_cache/_check_*.py
+
 # system/run_http_server.ps1 logs (NSSM-managed)
 Logs/http_server_stderr.log
 Logs/http_server_stdout.log
