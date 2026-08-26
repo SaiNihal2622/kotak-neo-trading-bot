@@ -508,3 +508,84 @@ Four new utilities + a production HTTP server + a watchdog. Total
 - 297 tests pass in 16.9s.
 - All Monday-relevant crons scheduled and will fire: 08:15 morning-brief, 08:25 daily-maintenance (with new smoke test step), 09:00 daily-status + trader-desk first tick, 09:00-15:30 trader-desk every 5 min, 09:00-15:30 http-watchdog every 5 min, 15:35 eod-report, 15:45 state-backup.
 
+## 2026-08-26 23:00 IST — heartbeat-next-tick cron was silently dying on context-compaction
+
+**Rule**: The `heartbeat-next-tick` cron (cronId `d9fdcd69-b4e0-4f88-8368-7b4ab52f841c`,
+every 5 min, **AGENTS.md previously called it `kotak-bot-heartbeat` —
+the canonical name in the cron registry is `heartbeat-next-tick`**)
+was binding to a single long-lived session
+(`sessionId: mvs_d36c7630216c4768b73eb11633c4be10`) with a ~5 KB
+prompt. After ~300+ ticks of accumulation, the per-turn state grew
+past the runtime's checkpoint budget, and every subsequent tick
+aborted with:
+```
+compaction_failed: Context is too large for checkpoint generation
+                   after one temporary whole tool trim.
+```
+The user prompt never even reached the LLM — the runtime died at
+the pre-turn checkpoint stage. Three consecutive observed
+failures: 2026-08-24 18:20 IST (turn 312), 2026-08-25 07:30 IST
+(turn 306), 2026-08-26 23:00 IST (turn #N — fresh prompt but
+reused session still has full history). The 23:00 self-audit was
+the trigger that surfaced this.
+
+**The session-list view** shows these sessions with
+`status.type = "error"` and
+`status.message = "before_llm_checkpoint_aborted: context_compaction_failed:..."`.
+A "fresh" cron tick can still hit this if the session is
+`mode: sessionId` AND has accumulated enough prior turns.
+
+**Evidence** that the bot was actually fine during this entire
+window: self-monitor's `data_cache/self_audit.jsonl` shows
+liveness fresh, log fresh, dash=200 throughout. The
+`kotak-bot-247-watchdog` cron was the only safety net during
+this period; the 5-min "smart" heartbeat that knows about
+dashboard restart + Telegram was effectively dead.
+
+**Fix shipped 2026-08-26 23:08 IST** (this nightly-improvement
+pass — commit pending):
+1. New `scripts/heartbeat.py` (~280 lines, stdlib + `psutil` +
+   `httpx`) does the 5 checks **deterministically** — bot
+   process count (4h window + unfiltered second check),
+   dashboard HTTP 200, log freshness, restart bot (market hours
+   only, 09:00-15:30 IST Mon-Fri), restart dashboard
+   (anytime), Telegram on restart with 30-min cooldown, JSONL
+   history at `data_cache/heartbeat_history.jsonl` (rotated at
+   720 records = 60 h of 5-min ticks), one-line stdout for cron
+   log. Uses the **canonical `Logs\bot_stderr.log` path** (the
+   NSSM-managed one) — fixes the vestigial-root-file bug from
+   2026-08-22 by making the path a code constant, not a
+   per-prompt string the LLM might re-introduce.
+2. Cron prompt reduced from ~5 KB / 6 step blocks to a single
+   line: "Run the heartbeat.py script, report its stdout." The
+   LLM is now a thin shell, not the brain.
+3. Cron `session` binding changed from
+   `mode: sessionId → mvs_d36c7630...` to `mode: new` —
+   each tick is a fresh session, so per-tick state can never
+   accumulate past the checkpoint budget. No state needed
+   anyway; the script writes the durable record to
+   `data_cache/heartbeat_history.jsonl`.
+
+**Apply when**:
+- Diagnosing "why does my 5-min cron suddenly fail with
+  `context_compaction_failed`?" — check the session binding.
+  `mode: sessionId` reuses a long-lived session, which grows
+  with every turn. Switch to `mode: new` for stateless periodic
+  jobs. This applies to any cron that is "just run this command
+  and report", not just the heartbeat.
+- The user prompt's size matters less than the session's
+  accumulated turns. A 200-byte prompt in a 300-turn session
+  will still fail compaction; a 5 KB prompt in `mode: new` will
+  not.
+- For ANY cron that does significant work (reads files, calls
+  MCP, runs scripts), prefer the "script-driven" pattern: put
+  the logic in `scripts/`, keep the cron prompt to 1-3 lines
+  that just invoke the script. This isolates the LLM cost to
+  a thin shell and makes the actual work testable, versioned,
+  and reviewable.
+- When you see `status.type = "error"` with the
+  `before_llm_checkpoint_aborted` message in the session
+  list, the session is permanently poisoned. Don't bother
+  trying to recover it — change the cron to `mode: new` (or a
+  different `sessionId`) to start clean.
+
