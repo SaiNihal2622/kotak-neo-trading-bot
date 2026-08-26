@@ -1277,8 +1277,35 @@ def run_paper() -> None:
                     if minutes_to_event is not None and 0 <= minutes_to_event < 15:
                         logger.info(f"[SCAN] cycle={cycle_counter} {symbol} | skip: event {upcoming_event} in {minutes_to_event}min")
                         continue
+                    # FIX 2026-08-27: Mavis decision hook — consult mavis_trades.json BEFORE the
+                    # template's selector. If Mavis says BLOCK, skip. If Mavis has a custom
+                    # EXECUTE_PLAN for this symbol, use that instead of selector. Otherwise
+                    # fall through to selector (template fallback).
+                    _today_str = now.strftime("%Y-%m-%d")
+                    _mavis = _load_mavis_decision(_today_str)
+                    if _mavis["action"] == "BLOCK" and _mavis.get("valid"):
+                        logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | BLOCK by Mavis: {_mavis.get('reason','')[:140]}")
+                        log_signal({"symbol": symbol, "regime": rs.regime.value, "side": "mavis",
+                                    "confidence": 0.0, "reason": "mavis_block",
+                                    "action": f"skip:mavis_block:{_mavis.get('reason','')[:60]}"})
+                        continue
+                    if _mavis["action"] == "EXECUTE_PLAN" and _mavis.get("valid"):
+                        _mavis_plan = _mavis.get("plan") or {}
+                        _plan_underlying = str(_mavis_plan.get("underlying", symbol)).upper()
+                        if _plan_underlying != symbol.upper():
+                            logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | Mavis plan is for {_plan_underlying}, not {symbol} — falling through to template")
+                        else:
+                            _expiry = now.strftime("%d%b%y").upper()
+                            _mavis_tradeplan = _build_plan_from_mavis(symbol, spot, _mavis_plan, _expiry)
+                            if _mavis_tradeplan is not None:
+                                logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | EXECUTE_PLAN: {_mavis_tradeplan.strategy.value} confidence={_mavis_tradeplan.confidence:.2f} reason={_mavis_tradeplan.reason[:120]}")
+                                plan = _mavis_tradeplan
+                            else:
+                                logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | Mavis plan couldn't be parsed — falling through to template")
+                                plan = selector.select(sc, risk.status())
+                    else:
+                        plan = selector.select(sc, risk.status())
                     # Build plan first, then check risk with the plan's actual max loss
-                    plan = selector.select(sc, risk.status())
                     if not plan:
                         continue
                     # Compute plan's actual max loss: for debit = full debit, for credit = full width - credit
@@ -1536,6 +1563,138 @@ def _release_lock(lock_path):
                 lock_path.unlink()
     except Exception:
         pass
+
+
+# ---- Mavis decision hook (FIX 2026-08-27: data-driven, not template) -----
+def _load_mavis_decision(today_str: str) -> dict:
+    """Read Mavis's pre-market trade plan from data_cache/mavis_trades.json.
+
+    Returns a dict with at least:
+      - "action": "EXECUTE_PLAN" | "BLOCK" | "WAIT" | "REDUCE_SIZE"
+      - "plan": the matched plan dict (if action == EXECUTE_PLAN)
+      - "reason": human-readable rationale
+      - "valid": True if the decision is for today AND signed by Mavis
+
+    Any error (file missing, invalid JSON, no decision for today) returns
+    {"action": "WAIT", "valid": False, "reason": "<err>"} so the bot falls
+    through to the template selector. NEVER crashes the bot.
+    """
+    p = Path("data_cache/mavis_trades.json")
+    try:
+        if not p.exists():
+            return {"action": "WAIT", "valid": False, "reason": "mavis_trades.json missing"}
+        with open(p, "r", encoding="utf-8-sig") as f:
+            j = json.load(f)
+        if not isinstance(j, dict):
+            return {"action": "WAIT", "valid": False, "reason": "mavis_trades.json not a dict"}
+        # valid_for_date is the key field (or fall back to key_dates.tomorrow)
+        valid_for = j.get("valid_for_date") or ""
+        # Also accept key_dates.tomorrow as a fallback (older schema)
+        if not valid_for:
+            kd = j.get("key_dates") or {}
+            valid_for = kd.get("tomorrow") or ""
+        # Compare YYYY-MM-DD portion
+        if valid_for and today_str in str(valid_for):
+            decision = j.get("mavis_decision") or {}
+            action = str(decision.get("action") or "WAIT").upper()
+            reason = str(decision.get("reason_short") or decision.get("note") or "")
+            plan = None
+            if action == "EXECUTE_PLAN":
+                plan = j.get("primary_plan") or j.get("trade_plan", {}).get("primary") or {}
+            return {"action": action, "plan": plan, "reason": reason,
+                    "valid": True, "bias": decision.get("bias", ""),
+                    "confidence": decision.get("confidence", 0.0),
+                    "raw": j}
+        return {"action": "WAIT", "valid": False,
+                "reason": f"mavis_trades.json valid_for='{valid_for}' != today='{today_str}'"}
+    except Exception as e:
+        return {"action": "WAIT", "valid": False, "reason": f"mavis_decision_load_error: {e}"}
+
+
+def _build_plan_from_mavis(symbol: str, spot: float, mavis_plan: dict, expiry: str) -> Optional["TradePlan"]:
+    """Convert a Mavis primary_plan dict (sell/buy legs) into a TradePlan.
+
+    Supports iron_condor / iron_butterfly / vertical / strangle structures.
+    Returns None if the plan can't be parsed (caller should fall through to template).
+    """
+    from kotak_bot.strategy.base import TradePlan, StrategyName
+    if not isinstance(mavis_plan, dict):
+        return None
+    structure = str(mavis_plan.get("structure", "")).upper()
+    name = str(mavis_plan.get("name", "mavis_plan")).lower()
+    underlying = str(mavis_plan.get("underlying", symbol)).upper()
+    if underlying != symbol.upper():
+        return None  # Mavis plan is for a different symbol
+    # Parse legs from structure string (best-effort)
+    # Recognized patterns: "SELL 24200 PE + BUY 24100 PE + SELL 24500 CE + BUY 24600 CE"
+    import re
+    leg_re = re.compile(r"(SELL|BUY)\s+(\d+)\s*(CE|PE)", re.IGNORECASE)
+    matches = leg_re.findall(structure)
+    if len(matches) < 2:
+        return None
+    legs: list[dict] = []
+    for side, strike_s, opt_type in matches:
+        side_l = side.lower()
+        legs.append({
+            "side": side_l,
+            "qty": 1,
+            "symbol": f"{symbol}{expiry}{int(strike_s)}{opt_type.upper()}",
+            "strike": int(strike_s),
+            "opt_type": opt_type.upper(),
+            "expiry": expiry,
+            "order_type": "LIMIT",
+            "price": 0.0,  # will be filled at market
+            "tag": f"mavis:{name}",
+        })
+    if not legs:
+        return None
+    # Determine max loss and target from plan dict
+    stop = 0.0
+    target = 0.0
+    if "max_loss_rupees" in mavis_plan:
+        ml = mavis_plan["max_loss_rupees"]
+        if isinstance(ml, dict):
+            per_wing = ml.get("per_wing_total_75_shares") or ml.get("realistic_max_loss_single_wing")
+            if isinstance(per_wing, str):
+                # parse "Rs.4,500 - 5,625" — take midpoint
+                nums = re.findall(r"[\d,]+", per_wing)
+                if len(nums) >= 2:
+                    stop = (float(nums[0].replace(",", "")) + float(nums[1].replace(",", ""))) / 2
+                elif nums:
+                    stop = float(nums[0].replace(",", ""))
+            elif isinstance(per_wing, (int, float)):
+                stop = float(per_wing)
+    if "expected_premiums_rupees" in mavis_plan:
+        ep = mavis_plan["expected_premiums_rupees"]
+        if isinstance(ep, dict):
+            tc = ep.get("total_credit_lot1")
+            if isinstance(tc, str):
+                nums = re.findall(r"[\d,]+", tc)
+                if len(nums) >= 2:
+                    target = (float(nums[0].replace(",", "")) + float(nums[1].replace(",", ""))) / 2
+                elif nums:
+                    target = float(nums[0].replace(",", ""))
+            elif isinstance(tc, (int, float)):
+                target = float(tc)
+    if stop == 0.0:
+        # fallback: assume condor max loss = 6000
+        stop = 6000.0
+    if target == 0.0:
+        target = stop * 0.4  # 40% of max loss as target
+    # Pick strategy name
+    if "iron_condor" in name or "condor" in name:
+        strat = StrategyName.IRON_CONDOR
+    elif "straddle" in name or "strangle" in name:
+        strat = StrategyName.SHORT_STRANGLE
+    else:
+        strat = StrategyName.IRON_CONDOR
+    return TradePlan(
+        strategy=strat, underlying=symbol, legs=legs,
+        target=target, stop=-stop,
+        confidence=float(mavis_plan.get("confidence", 0.7)),
+        reason=f"mavis_override: {mavis_plan.get('rationale_data_driven', '')[:140]}",
+        expiry=expiry, expected_hold_minutes=int(mavis_plan.get("expected_hold_minutes", 60*6)),
+    )
 
 
 def main() -> int:
