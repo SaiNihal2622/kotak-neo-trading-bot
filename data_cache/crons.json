@@ -1,0 +1,92 @@
+[
+  {
+    "name": "kotak-self-monitor",
+    "schedule": "*/15 * * * *",
+    "next_run_ms": 1787762700000,
+    "next_run_ist": "22:15:00"
+  },
+  {
+    "name": "kotak-nightly-improvement",
+    "schedule": "0 23 * * *",
+    "next_run_ms": 1787765400000,
+    "next_run_ist": "23:00:00"
+  },
+  {
+    "name": "kotak-bot-nightly-backtest",
+    "schedule": "0 1 * * *",
+    "next_run_ms": 1787772600000,
+    "next_run_ist": "01:00:00"
+  },
+  {
+    "name": "kotak-bot-daily-maintenance",
+    "schedule": "25 8 * * 1-5",
+    "next_run_ms": 1787799300000,
+    "next_run_ist": "08:25:00"
+  },
+  {
+    "name": "kotak-thesis-premarket",
+    "schedule": "25 8 * * 1-5",
+    "next_run_ms": 1787799300000,
+    "next_run_ist": "08:25:00"
+  },
+  {
+    "name": "kotak-bot-daily-start",
+    "schedule": "30 8 * * 1-5",
+    "next_run_ms": 1787799600000,
+    "next_run_ist": "08:30:00"
+  },
+  {
+    "name": "kotak-bot-daily-status",
+    "schedule": "0 9 * * 1-5",
+    "next_run_ms": 1787801400000,
+    "next_run_ist": "09:00:00"
+  },
+  {
+    "name": "kotak-news-cache",
+    "schedule": "*/30 9-15 * * 1-5",
+    "next_run_ms": 1787801400000,
+    "next_run_ist": "09:00:00"
+  },
+  {
+    "name": "kotak-thesis-intraday",
+    "schedule": "*/30 9-15 * * 1-5",
+    "next_run_ms": 1787801400000,
+    "next_run_ist": "09:00:00"
+  },
+  {
+    "name": "kotak-trader-desk",
+    "schedule": "*/5 9-15 * * 1-5",
+    "next_run_ms": 1787801400000,
+    "next_run_ist": "09:00:00"
+  },
+  {
+    "name": "kotak-http-watchdog",
+    "schedule": "*/5 9-15 * * 1-5",
+    "next_run_ms": 1787801400000,
+    "next_run_ist": "09:00:00"
+  },
+  {
+    "name": "kotak-copilot",
+    "schedule": "*/10 9-15 * * 1-5",
+    "next_run_ms": 1787801400000,
+    "next_run_ist": "09:00:00"
+  },
+  {
+    "name": "kotak-thesis-eod",
+    "schedule": "35 15 * * 1-5",
+    "next_run_ms": 1787825100000,
+    "next_run_ist": "15:35:00"
+  },
+  {
+    "name": "kotak-bot-eod-report",
+    "schedule": "35 15 * * 1-5",
+    "next_run_ms": 1787825100000,
+    "next_run_ist": "15:35:00"
+  },
+  {
+    "name": "kotak-bot-state-backup",
+    "schedule": "45 15 * * 1-5",
+    "next_run_ms": 1787825700000,
+    "next_run_ist": "15:45:00"
+  }
+]

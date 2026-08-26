@@ -149,18 +149,53 @@ class PaperClient(BrokerClient):
                         if t.ltp and t.ltp > 0:
                             underlying_ltp = t.ltp
                             break
-            if underlying_ltp > 0:
-                # ATM-ish estimate: ~0.5% of underlying. Caller can adjust later
-                # via the per-tick force-fill pass.
-                if underlying == "NIFTY":
-                    ref_price = round(underlying_ltp * 0.005, 2)  # ~Rs.125 on 25k NIFTY
-                elif underlying == "BANKNIFTY":
-                    ref_price = round(underlying_ltp * 0.005, 2)  # ~Rs.260 on 52k BN
+            if underlying_ltp > 0 and order.strike and order.option_type:
+                # BUG FIX 2026-08-26: previous version used `0.5% of spot` for ALL options
+                # of an underlying, ignoring strike. This made deep-OTM options fill at
+                # ATM prices (e.g. NIFTY 24150 PE filled at Rs.121 instead of ~Rs.0),
+                # distorting the condor close P&L. Now we compute intrinsic + time-value
+                # decay that is strike-aware.
+                if order.option_type.upper() == "CE":
+                    intrinsic = max(0.0, underlying_ltp - order.strike)
+                else:  # PE
+                    intrinsic = max(0.0, order.strike - underlying_ltp)
+                # 0DTE vs normal expiry: 0DTE has much lower ATM time value, especially
+                # in the last 1-2 hours. Detect via order.expiry vs today.
+                from datetime import date as _date
+                _is_0dte = False
+                try:
+                    if order.expiry:
+                        _exp = order.expiry.date() if hasattr(order.expiry, "date") else _date.fromisoformat(str(order.expiry)[:10])
+                        _is_0dte = (_exp == _date.today())
+                except Exception:
+                    pass
+                if _is_0dte:
+                    # 0DTE: ATM time value ~0.1% of spot, decay faster (50pt half-life)
+                    atm_time_value = underlying_ltp * 0.001
+                    decay_pts = 50
                 else:
-                    ref_price = round(underlying_ltp * 0.005, 2)
+                    # Weekly/monthly: ATM time value ~0.5% of spot, slower decay
+                    atm_time_value = underlying_ltp * 0.005
+                    decay_pts = 150
+                # For BNF strikes are wider, so scale the decay rate
+                if underlying == "BANKNIFTY":
+                    decay_pts = decay_pts * 4  # 200 for 0DTE, 600 for weekly
+                distance = abs(underlying_ltp - order.strike)
+                time_value = atm_time_value * (0.5 ** (distance / decay_pts))
+                ref_price = round(intrinsic + time_value, 2)
                 logger.debug(
-                    f"[PAPER] FORCE_FILL underlying-derived ref for {order.order_id} "
-                    f"{order.symbol}: underlying={underlying} ltp={underlying_ltp} -> ref={ref_price}"
+                    f"[PAPER] FORCE_FILL strike-aware ref for {order.order_id} "
+                    f"{order.symbol}: spot={underlying_ltp} strike={order.strike} "
+                    f"type={order.option_type} 0dte={_is_0dte} "
+                    f"intrinsic={intrinsic:.2f} tv={time_value:.2f} -> ref={ref_price}"
+                )
+            elif underlying_ltp > 0:
+                # No strike info — fall back to ATM estimate (very rare)
+                ref_price = round(underlying_ltp * 0.005, 2)
+                logger.debug(
+                    f"[PAPER] FORCE_FILL underlying-derived (no strike) ref for "
+                    f"{order.order_id} {order.symbol}: underlying={underlying} "
+                    f"ltp={underlying_ltp} -> ref={ref_price}"
                 )
             else:
                 # Fallback 5: last-resort synthetic. Rs.1.00 keeps the fill book-true

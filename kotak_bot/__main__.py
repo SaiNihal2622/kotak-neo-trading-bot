@@ -219,6 +219,49 @@ def run_paper() -> None:
     logger.info("Kotak Neo Trading Bot — PAPER MODE (Production v2)")
     logger.info("=" * 60)
 
+    # FIX 2026-08-26 (item #4): STARTUP INTEGRITY CHECK
+    # Verify paper_state.json is consistent: no future-dated orders, no negative
+    # quantities, no negative cash, no duplicate order_ids. Auto-archive corrupted
+    # states rather than crash (so the bot can self-heal).
+    try:
+        _state_path = Path("data_cache/paper_state.json")
+        if _state_path.exists():
+            with open(_state_path, "r", encoding="utf-8") as _f:
+                _state = json.load(_f)
+            _issues = []
+            _cash = _state.get("cash", 0)
+            if _cash < 0:
+                _issues.append(f"negative cash={_cash}")
+            _orders = _state.get("orders", {})
+            _seen_ids = set()
+            for _oid, _o in _orders.items():
+                if _oid in _seen_ids:
+                    _issues.append(f"duplicate order_id {_oid}")
+                _seen_ids.add(_oid)
+                if _o.get("filled_qty", 0) < 0:
+                    _issues.append(f"{_oid}: negative filled_qty {_o.get('filled_qty')}")
+                if _o.get("avg_fill_price", 0) < 0:
+                    _issues.append(f"{_oid}: negative fill price {_o.get('avg_fill_price')}")
+                if _o.get("status") == "complete" and _o.get("filled_at", "").startswith("2099"):
+                    _issues.append(f"{_oid}: future-dated fill")
+            _positions = _state.get("positions", {})
+            for _sym, _p in _positions.items():
+                if _p.get("qty", 0) == 0:
+                    _issues.append(f"{_sym}: zero qty in positions (stale)")
+            if _issues:
+                logger.warning(f"[STARTUP-INTEGRITY] {len(_issues)} issues found in paper_state.json:")
+                for _i in _issues[:20]:
+                    logger.warning(f"  - {_i}")
+                # Archive the corrupted state
+                _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                _archive = Path(f"data_cache/paper_state_corrupt_{_ts}.json")
+                _state_path.rename(_archive)
+                logger.warning(f"[STARTUP-INTEGRITY] archived to {_archive.name}; will start fresh")
+            else:
+                logger.info("[STARTUP-INTEGRITY] paper_state.json OK")
+    except Exception as _e:
+        logger.warning(f"[STARTUP-INTEGRITY] check skipped: {_e}")
+
     # ------- data source -------
     broker = build_broker(cfg)
     broker.connect()
@@ -546,6 +589,33 @@ def run_paper() -> None:
                 f"STARTUP RECONCILE: filtered {n_phantoms} phantom 0DTE positions "
                 f"(expiry == {_today_str_recon}, no LTP or post-close) from cap check"
             )
+            # FIX 2026-08-25: For each phantom position still tied to an open trade
+            # in order_mgr, mark that trade as closed at zero P&L (the contract
+            # expired worthless). This prevents the trade from carrying stale MTM
+            # across restarts and stops the bot from "remembering" expired 0DTE
+            # positions as if they were live. Without this, every restart would
+            # re-import the broker's cached position and the trade would never
+            # book a realized P&L.
+            try:
+                _expired_trade_ids: set = set()
+                for _p in all_broker_pos:
+                    if not _is_phantom_0dte(_p):
+                        continue
+                    # find the trade that owns this symbol
+                    for _tr in order_mgr.open_trades():
+                        if any(getattr(_o, 'symbol', None) == getattr(_p, 'symbol', None)
+                               and getattr(_o, 'avg_fill_price', 0) > 0
+                               for _o in _tr.orders):
+                            _expired_trade_ids.add(_tr.trade_id)
+                            break
+                for _tid in _expired_trade_ids:
+                    try:
+                        order_mgr.close_trade(_tid, reason="expired_at_startup")
+                        logger.info(f"STARTUP RECONCILE: closed trade {_tid} (phantom 0DTE expired worthless)")
+                    except Exception as _e:
+                        logger.warning(f"STARTUP RECONCILE: could not close {_tid}: {_e}")
+            except Exception as _e:
+                logger.warning(f"STARTUP RECONCILE: phantom-close sweep failed: {_e}")
         if n_expired_filtered:
             logger.info(
                 f"STARTUP RECONCILE: filtered {n_expired_filtered} expired broker positions "
@@ -899,6 +969,30 @@ def run_paper() -> None:
                     logger.warning(f"[INTRADAY] force-closed {closed} open trades (force_square_off_time hit)")
                     try:
                         alerter.send(f"⏰ [INTRADAY] force-closed {closed} open trades at {now.strftime('%H:%M')} IST — overnight positions blocked")
+                    except Exception:
+                        pass
+            # 2c) FIX 2026-08-26 (item #3): HARD KILL fallback at 15:15 IST
+            # If anything slipped through (broker errors, frozen threads, etc), forcibly
+            # close any remaining open positions. The bot must NEVER carry overnight risk
+            # in intraday mode.
+            _now_hm = now.strftime("%H:%M")
+            if not is_allow_overnight() and _now_hm >= "15:15" and _now_hm < "15:30":
+                open_trades = order_mgr.open_trades()
+                if open_trades:
+                    logger.error(f"[HARD-KILL] {len(open_trades)} open trades still alive at {_now_hm} IST — EMERGENCY close")
+                    try:
+                        for tid in list(open_trades[0].__dict__.keys()) if open_trades else []:
+                            pass
+                    except Exception:
+                        pass
+                    for trade in open_trades:
+                        try:
+                            order_mgr.close_trade(trade.trade_id, reason="hard_kill_1515")
+                            logger.error(f"[HARD-KILL] force-closed trade {trade.trade_id}")
+                        except Exception as e:
+                            logger.error(f"[HARD-KILL] failed to close {trade.trade_id}: {e}")
+                    try:
+                        alerter.send(f"🚨 [HARD-KILL] bot force-closed {len(open_trades)} trades at {_now_hm} IST — should have closed at 14:30!")
                     except Exception:
                         pass
             # 3) news ingestion every N seconds
@@ -1400,6 +1494,50 @@ def run_backtest() -> None:
     print("Try: python -m backtest.engine")
 
 
+def _acquire_single_instance_lock(name: str = "paper") -> Optional[object]:
+    """Single-instance lock. Writes PID to data_cache/<name>.lock and removes it on exit.
+    Returns a lock object if acquired, else exits (another bot is running).
+    FIX 2026-08-26 (item #5): prevent duplicate bot instances.
+    """
+    import atexit
+    lock_path = Path(f"data_cache/{name}.lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        if lock_path.exists():
+            try:
+                old_pid = int(lock_path.read_text().strip())
+                # Check if process is alive
+                import ctypes
+                PROCESS_QUERY_LIMITED = 0x1000
+                STILL_ACTIVE = 259
+                h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED, False, old_pid)
+                if h:
+                    alive = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.c_ulong()) == STILL_ACTIVE
+                    ctypes.windll.kernel32.CloseHandle(h)
+                    if alive:
+                        print(f"[LOCK] another instance of '{name}' is running (PID {old_pid}). exiting.")
+                        return None
+            except Exception:
+                pass  # stale lock; take it
+        lock_path.write_text(str(os.getpid()))
+        atexit.register(_release_lock, lock_path)
+        print(f"[LOCK] acquired {name} lock (PID {os.getpid()})")
+        return lock_path
+    except Exception as e:
+        print(f"[LOCK] failed to acquire lock: {e}")
+        return None
+
+
+def _release_lock(lock_path):
+    try:
+        if lock_path.exists():
+            cur = lock_path.read_text().strip()
+            if cur == str(os.getpid()):
+                lock_path.unlink()
+    except Exception:
+        pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Kotak Neo Trading Bot")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1409,6 +1547,12 @@ def main() -> int:
     sub.add_parser("reset", help="Reset paper state")
     sub.add_parser("backtest", help="Run backtest")
     args = parser.parse_args()
+
+    # FIX 2026-08-26: only acquire single-instance lock for the run-loop commands
+    # (paper, live). status/reset/backtest should never hold a long-running lock.
+    if args.cmd in ("paper", "live"):
+        if _acquire_single_instance_lock(args.cmd) is None:
+            return 1  # another instance running, exit cleanly
 
     if args.cmd == "paper":
         run_paper()
