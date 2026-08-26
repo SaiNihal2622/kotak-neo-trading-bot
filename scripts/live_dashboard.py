@@ -988,8 +988,28 @@ function renderMavisPlan(d) {
     $('mavisTree').innerHTML = '<span class="muted">—</span>';
     return;
   }
-  // Render trade plan
+  // Render decision banner at the top
   let planHtml = '';
+  if (d.decision) {
+    const actionColor = d.decision === 'EXECUTE_PLAN' ? 'green' :
+                        d.decision === 'BLOCK' ? 'red' : 'yellow';
+    const actionBg = d.decision === 'EXECUTE_PLAN' ? 'rgba(31,191,117,0.18)' :
+                     d.decision === 'BLOCK' ? 'rgba(231,76,60,0.18)' : 'rgba(245,179,66,0.18)';
+    const conf = d.decision_confidence ? Math.round(d.decision_confidence * 100) + '%' : '—';
+    const at = d.decision_at || d.generated_at || '';
+    const atShort = at.length >= 16 ? at.substring(11, 16) : at;
+    planHtml += '<div style="background: ' + actionBg + '; border: 1px solid ' + actionColor + '; border-radius: 6px; padding: 12px; margin-bottom: 12px;">' +
+      '<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">' +
+      '<div style="font-size: 22px; font-weight: 700; color: ' + actionColor + ';">' + d.decision + '</div>' +
+      '<div style="font-size: 12px;"><span class="muted">bias:</span> <b>' + (d.decision_bias || '—') + '</b></div>' +
+      '<div style="font-size: 12px;"><span class="muted">confidence:</span> <b>' + conf + '</b></div>' +
+      '<div style="font-size: 12px;"><span class="muted">valid_for:</span> <b>' + (d.valid_for || '—') + '</b></div>' +
+      '<div style="font-size: 11px;" class="muted">updated ' + atShort + '</div>' +
+      '</div>' +
+      (d.decision_reason ? '<div style="font-size: 12px; margin-top: 8px;"><b style="color: ' + actionColor + ';">Why:</b> ' + d.decision_reason + '</div>' : '') +
+      '</div>';
+  }
+  // Render trade plan
   d.trades.forEach((t, i) => {
     const badge = t.type === 'primary' ? '<span class="green" style="background:rgba(31,191,117,0.15); padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700;">PRIMARY</span>' :
                   t.type === 'alternative' ? '<span class="yellow" style="background:rgba(245,179,66,0.15); padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700;">ALT</span>' :
@@ -1007,6 +1027,10 @@ function renderMavisPlan(d) {
   if (d.mavis_analysis) {
     planHtml += '<div style="font-size: 12px; background: rgba(155,107,255,0.08); padding: 10px; border-left: 3px solid #9b6bff; border-radius: 4px; margin-top: 10px;">' +
       '<b style="color: #9b6bff;">Mavis analysis:</b><br>' + d.mavis_analysis +
+      '</div>';
+  } else if (d.decision_reason) {
+    planHtml += '<div style="font-size: 12px; background: rgba(155,107,255,0.08); padding: 10px; border-left: 3px solid #9b6bff; border-radius: 4px; margin-top: 10px;">' +
+      '<b style="color: #9b6bff;">Mavis decision rationale:</b><br>' + d.decision_reason +
       '</div>';
   }
   $('mavisPlan').innerHTML = planHtml;
@@ -1340,9 +1364,103 @@ def get_quant_brain():
 
 
 def get_mavis_trades():
-    """Read Mavis's actual trade decisions (written by Mavis-the-AI, not by template)."""
+    """Read Mavis's actual trade decisions (written by Mavis-the-AI, not by template).
+
+    Transforms v3 schema (mavis_decision + primary_plan + alternatives) into a
+    v2-compatible list of 'trades' with type=primary/alternative/no_trade so the
+    dashboard's renderMavisPlan() can display them uniformly.
+    """
     p = os.path.join(DCACHE, "mavis_trades.json")
-    return _read_json(p, {"available": False, "trades": []})
+    raw = _read_json(p, {})
+    if not raw:
+        return {"available": False, "trades": []}
+    # v2 shape already? pass through with availability flag
+    if "trades" in raw and isinstance(raw.get("trades"), list):
+        return {"available": True, **raw}
+    # v3 shape -> transform
+    decision = raw.get("mavis_decision") or {}
+    action = str(decision.get("action", "WAIT")).upper()
+    bias = str(decision.get("bias", ""))
+    confidence = decision.get("confidence", 0)
+    reason_short = str(decision.get("reason_short", ""))
+    trades = []
+    # Primary plan
+    pp = raw.get("primary_plan") or {}
+    if pp:
+        # Build entry_trigger text from conditions
+        entry_sig = pp.get("entry_signal", {}) or {}
+        conds = entry_sig.get("conditions_all_required", [])
+        skips = entry_sig.get("skip_if", [])
+        et = "Conditions: " + "; ".join(conds[:4]) if conds else "—"
+        if skips:
+            et += "  |  SKIP if: " + "; ".join(skips[:3])
+        # Target premium
+        ep = pp.get("expected_premiums_rupees", {}) or {}
+        net_credit = ep.get("net_credit_per_share", "—")
+        total_credit = ep.get("total_credit_lot1", "—")
+        target = f"{net_credit}/share  ({total_credit})"
+        # Stop
+        ml = pp.get("max_loss_rupees", {}) or {}
+        single = ml.get("realistic_max_loss_single_wing", "—")
+        stop = f"single wing: {single}"
+        # Window
+        win = pp.get("entry_window_ist", "—")
+        trades.append({
+            "type": "primary",
+            "name": pp.get("name", "Primary plan"),
+            "logic": pp.get("rationale_data_driven", "—")[:240],
+            "instrument": pp.get("structure", "—")[:200],
+            "entry_trigger": et,
+            "entry_window": win,
+            "target_premium": target,
+            "stop_loss": stop,
+            "exits": pp.get("exit_rules", {}),
+            "adjustments": pp.get("adjustments", {}),
+        })
+    # Alternatives
+    alts = raw.get("alternative_plans") or {}
+    if isinstance(alts, dict):
+        for k, a in alts.items():
+            t_type = "no_trade" if a.get("name", "").lower().startswith("no trade") else "alternative"
+            trades.append({
+                "type": t_type,
+                "name": a.get("name", k),
+                "logic": a.get("rationale", a.get("trigger", "—"))[:200],
+                "instrument": a.get("instrument", "—"),
+                "entry_trigger": a.get("trigger", "—"),
+                "target_premium": a.get("target", "—"),
+                "stop_loss": a.get("stop", "—"),
+            })
+    # BANKNIFTY decision
+    bnf = raw.get("banknifty_decision") or {}
+    if bnf.get("action") == "BLOCK":
+        trades.append({
+            "type": "no_trade",
+            "name": "BANKNIFTY blocked",
+            "logic": bnf.get("reason", "—")[:240],
+            "instrument": "BANKNIFTY",
+            "entry_trigger": "BLOCKED by Mavis",
+            "target_premium": "—",
+            "stop_loss": "—",
+        })
+    return {
+        "available": True,
+        "schema_version": raw.get("schema_version", "v?"),
+        "generated_at": raw.get("generated_at", ""),
+        "valid_for": raw.get("valid_for_session", raw.get("valid_for_date", "")),
+        "decision": action,
+        "decision_confidence": confidence,
+        "decision_bias": bias,
+        "decision_reason": reason_short,
+        "decision_at": raw.get("last_decision_at", raw.get("generated_at", "")),
+        "premarket_check": raw.get("premarket_check"),
+        "trades": trades,
+        "research": raw.get("research_at_generation", {}),
+        "intraday_decision_tree": raw.get("intraday_decision_tree", {}),
+        "risk_management": raw.get("risk_management", {}),
+        "what_makes_this_different": raw.get("what_makes_this_different_from_template", {}),
+        "data_snapshot": raw.get("data_snapshot", {}),
+    }
 
 
 def get_candles(symbol, interval, period):
