@@ -392,17 +392,80 @@ HTML = r"""<!DOCTYPE html>
   * { box-sizing: border-box; }
   body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--bg); color: var(--fg); font-size: 13px; }
-  .topbar { display: flex; align-items: center; gap: 18px; padding: 10px 18px;
-    background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-  .topbar .brand { font-weight: 700; font-size: 16px; color: var(--accent); }
-  .topbar .pill { padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
-    background: var(--panel2); color: var(--muted); }
-  .topbar .pill.alive { background: rgba(31,191,117,0.18); color: var(--green); }
-  .topbar .pill.dead { background: rgba(231,76,60,0.18); color: var(--red); }
-  .topbar .pill.warn { background: rgba(245,179,66,0.18); color: var(--yellow); }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    background: linear-gradient(180deg, #0a1020 0%, #060a14 100%);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .topbar .brand {
+    font-weight: 700;
+    font-size: 17px;
+    color: var(--accent);
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .topbar .brand-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    background: linear-gradient(135deg, var(--accent), #2563eb);
+    color: #fff;
+    font-size: 14px;
+    box-shadow: 0 2px 6px rgba(79,156,255,0.4);
+  }
+  .topbar .pill {
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--panel2);
+    color: var(--muted);
+    border: 1px solid var(--line);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .topbar .pill.alive {
+    background: rgba(31,191,117,0.15);
+    color: var(--green);
+    border-color: rgba(31,191,117,0.3);
+  }
+  .topbar .pill.dead {
+    background: rgba(231,76,60,0.15);
+    color: var(--red);
+    border-color: rgba(231,76,60,0.3);
+  }
+  .topbar .pill.warn {
+    background: rgba(245,179,66,0.15);
+    color: var(--yellow);
+    border-color: rgba(245,179,66,0.3);
+  }
+  .topbar .pill-clock {
+    background: rgba(45,212,212,0.10);
+    color: var(--cyan);
+    border-color: rgba(45,212,212,0.3);
+    font-family: 'Consolas', monospace;
+  }
   .topbar .spacer { flex: 1; }
-  .topbar .clock { font-family: 'Consolas', monospace; color: var(--cyan); font-size: 14px; }
-  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; padding: 12px; }
+  .topbar .clock { font-family: 'Consolas', monospace; color: var(--cyan); font-size: 15px; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; padding: 14px; }
+  .col-12 { grid-column: span 12; }
+  .col-8  { grid-column: span 8; }
+  .col-6  { grid-column: span 6; }
+  .col-4  { grid-column: span 4; }
+  .col-3  { grid-column: span 3; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 12px 14px; min-height: 60px; }
   .card h3 { margin: 0 0 8px 0; font-size: 11px; text-transform: uppercase;
@@ -537,6 +600,97 @@ HTML = r"""<!DOCTYPE html>
   .ic-pnl-num.red   { color: var(--red); }
   .ic-pnl-num.muted { color: var(--muted); }
 
+  /* Pro metric values (for Cash/Realized/Unrealized/Total cards) */
+  .metric-value {
+    font-size: 26px;
+    font-weight: 700;
+    font-family: 'Consolas', monospace;
+    color: var(--fg);
+    margin: 4px 0 2px 0;
+    line-height: 1.1;
+  }
+  .metric-value.green { color: var(--green); }
+  .metric-value.red   { color: var(--red); }
+  .metric-value.accent { color: var(--accent); }
+  .metric-value.purple { color: var(--purple); }
+  .metric-value.cyan  { color: var(--cyan); }
+  .metric-sub {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  /* Pro table (for positions, trades, crons, processes) */
+  .pro-table-wrap {
+    border-top: 1px solid var(--line);
+  }
+  .pro-table {
+    width: 100%;
+    font-size: 11px;
+    font-family: 'Consolas', monospace;
+    border-collapse: collapse;
+  }
+  .pro-table thead th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 8px 10px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .pro-table tbody td {
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .pro-table tbody tr:hover td {
+    background: rgba(79,156,255,0.05);
+  }
+  .pro-table tbody tr:last-child td { border-bottom: 0; }
+  .pro-table .num { text-align: right; }
+
+  /* Pro log box */
+  .pro-log {
+    max-height: 260px;
+    background: #050810;
+    border: 1px solid #1a2236;
+    border-radius: 6px;
+    padding: 10px 12px;
+    overflow-y: auto;
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  /* KV grid for Bot Health / Market / Brain cards */
+  .kv-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .kv-grid .kv-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 5px 0;
+    border-bottom: 1px dashed rgba(255,255,255,0.04);
+    font-size: 12px;
+  }
+  .kv-grid .kv-row:last-child { border-bottom: 0; }
+  .kv-grid .kv-k { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .kv-grid .kv-v { font-family: 'Consolas', monospace; font-weight: 600; color: var(--fg); }
+  .kv-grid .kv-v.green { color: var(--green); }
+  .kv-grid .kv-v.red   { color: var(--red); }
+  .kv-grid .kv-v.accent { color: var(--accent); }
+  .kv-grid .kv-v.cyan  { color: var(--cyan); }
+  .kv-grid .kv-v.yellow { color: var(--yellow); }
+  .kv-grid .kv-v.muted { color: var(--muted); }
+
   /* P&L scenarios table */
   .pnl-table { width: 100%; font-size: 11px; font-family: 'Consolas', monospace; border-collapse: collapse; }
   .pnl-table th { text-align: left; color: var(--muted); font-weight: 400; padding: 4px 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
@@ -571,10 +725,18 @@ HTML = r"""<!DOCTYPE html>
     border-top: 1px solid rgba(255,255,255,0.04);
   }
   .pnl-zone-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
-  .cd-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-  .cd-cell { background: var(--bg); border-radius: 4px; padding: 6px; text-align: center; }
-  .cd-cell .t { font-size: 14px; font-weight: 700; color: var(--cyan); font-family: 'Consolas', monospace; }
-  .cd-cell .l { font-size: 9px; color: var(--muted); text-transform: uppercase; margin-top: 2px; }
+  .cd-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .cd-cell {
+    background: linear-gradient(180deg, rgba(79,156,255,0.04) 0%, rgba(79,156,255,0.01) 100%);
+    border: 1px solid rgba(79,156,255,0.12);
+    border-radius: 6px;
+    padding: 10px 8px;
+    text-align: center;
+    transition: all 0.2s;
+  }
+  .cd-cell.passed { opacity: 0.45; }
+  .cd-cell .t { font-size: 18px; font-weight: 700; color: var(--cyan); font-family: 'Consolas', monospace; letter-spacing: 0.5px; }
+  .cd-cell .l { font-size: 9px; color: var(--muted); text-transform: uppercase; margin-top: 4px; letter-spacing: 0.5px; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
   .dot.green { background: var(--green); }
   .dot.red { background: var(--red); }
@@ -589,125 +751,180 @@ HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="topbar">
-  <span class="brand">⚡ KOTAK NEO BOT — LIVE</span>
+  <span class="brand"><span class="brand-mark">⚡</span>KOTAK NEO BOT <span style="color:var(--muted); font-weight:500; margin-left:4px">— LIVE</span></span>
   <span id="botPill" class="pill">…</span>
   <span id="vixPill" class="pill">VIX …</span>
   <span id="dataPill" class="pill">data …</span>
   <span id="tickPill" class="pill">tick …</span>
   <span class="spacer"></span>
   <span class="clock" id="clock">--:--:--</span>
-  <span class="pill">IST</span>
+  <span class="pill pill-clock">IST</span>
 </div>
 
 <div class="grid">
 
-  <!-- COUNTDOWNS -->
-  <div class="card col-12">
-    <h3>⏱ 0DTE Countdowns</h3>
-    <div class="cd-grid" id="cdGrid">
-      <div class="cd-cell"><div class="t" id="cd_open">--</div><div class="l">Market open 09:15</div></div>
-      <div class="cd-cell"><div class="t" id="cd_soft">--</div><div class="l">Soft force-square 14:15</div></div>
-      <div class="cd-cell"><div class="t" id="cd_hard">--</div><div class="l">Hard force-square 15:15</div></div>
-      <div class="cd-cell"><div class="t" id="cd_close">--</div><div class="l">Market close 15:30</div></div>
+  <!-- COUNTDOWNS — 0DTE -->
+  <div class="pro-card col-12" style="margin-bottom: 14px;">
+    <div class="pro-card-header">
+      <div class="pro-card-title">
+        <span class="pro-icon" style="background: linear-gradient(135deg,#f5b342,#d97706);">⏱</span>
+        <span>0DTE Countdowns</span>
+        <span class="pro-card-sub">today's expiry timeline</span>
+      </div>
+    </div>
+    <div class="pro-card-body">
+      <div class="cd-grid" id="cdGrid">
+        <div class="cd-cell"><div class="t" id="cd_open">--</div><div class="l">Market open 09:15</div></div>
+        <div class="cd-cell"><div class="t" id="cd_soft">--</div><div class="l">Soft force-square 14:15</div></div>
+        <div class="cd-cell"><div class="t" id="cd_hard">--</div><div class="l">Hard force-square 15:15</div></div>
+        <div class="cd-cell"><div class="t" id="cd_close">--</div><div class="l">Market close 15:30</div></div>
+      </div>
     </div>
   </div>
 
-  <!-- ACCOUNT -->
-  <div class="card col-3">
-    <h3>💰 Cash</h3>
-    <div class="v accent" id="cash">--</div>
-    <div class="sub" id="cashSub">--</div>
+  <!-- ACCOUNT — 4 metric cards -->
+  <div class="pro-card col-3">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">₹</span>
+      <span>Cash</span>
+    </div></div>
+    <div class="pro-card-body">
+      <div class="metric-value accent" id="cash">--</div>
+      <div class="metric-sub" id="cashSub">--</div>
+    </div>
   </div>
-  <div class="card col-3">
-    <h3>📈 Realized P&L</h3>
-    <div class="v" id="realized">--</div>
-    <div class="sub" id="realizedSub">closed trades only</div>
+  <div class="pro-card col-3">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">▲</span>
+      <span>Realized P&amp;L</span>
+    </div></div>
+    <div class="pro-card-body">
+      <div class="metric-value" id="realized">--</div>
+      <div class="metric-sub" id="realizedSub">closed trades only</div>
+    </div>
   </div>
-  <div class="card col-3">
-    <h3>📊 Unrealized P&L</h3>
-    <div class="v" id="unrealized">--</div>
-    <div class="sub" id="unrealizedSub">open positions MTM</div>
+  <div class="pro-card col-3">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">◐</span>
+      <span>Unrealized P&amp;L</span>
+    </div></div>
+    <div class="pro-card-body">
+      <div class="metric-value" id="unrealized">--</div>
+      <div class="metric-sub" id="unrealizedSub">open positions MTM</div>
+    </div>
   </div>
-  <div class="card col-3">
-    <h3>💎 Total Value</h3>
-    <div class="v" id="total">--</div>
-    <div class="sub" id="totalSub">cash + unrealized</div>
+  <div class="pro-card col-3">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">◆</span>
+      <span>Total Value</span>
+    </div></div>
+    <div class="pro-card-body">
+      <div class="metric-value" id="total">--</div>
+      <div class="metric-sub" id="totalSub">cash + unrealized</div>
+    </div>
   </div>
 
-  <!-- BOT HEALTH -->
-  <div class="card col-4">
-    <h3>🤖 Bot Health</h3>
-    <div id="botKv"></div>
+  <!-- BOT HEALTH / MARKET / BRAIN DECISION -->
+  <div class="pro-card col-4">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">◉</span>
+      <span>Bot Health</span>
+    </div></div>
+    <div class="pro-card-body"><div id="botKv" class="kv-grid"></div></div>
   </div>
-  <div class="card col-4">
-    <h3>📊 Market (live)</h3>
-    <div id="marketKv"></div>
+  <div class="pro-card col-4">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">▦</span>
+      <span>Market <span class="dot green pulse" style="margin-left:6px"></span><span class="pro-card-sub" style="margin-left:0">live</span></span>
+    </div></div>
+    <div class="pro-card-body"><div id="marketKv" class="kv-grid"></div></div>
   </div>
-  <div class="card col-4">
-    <h3>🧠 Last Brain Decision</h3>
-    <div id="brainKv"></div>
-  </div>
-  <div class="card col-4">
-    <h3>🎯 Market Thesis</h3>
-    <div id="thesisKv"></div>
+  <div class="pro-card col-4">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">◈</span>
+      <span>Last Brain Decision</span>
+    </div></div>
+    <div class="pro-card-body"><div id="brainKv" class="kv-grid"></div></div>
   </div>
 
   <!-- OPEN POSITIONS -->
-  <div class="card col-8">
-    <h3>📂 Open Positions <span id="posCount" class="muted">(0)</span></h3>
-    <div class="scroll"><table id="posTable">
-      <thead><tr>
-        <th>Symbol</th><th>Underlying</th><th class="num">Qty</th>
-        <th class="num">Avg</th><th class="num">LTP</th><th class="num">P&L</th>
-        <th>Expiry</th>
-      </tr></thead>
-      <tbody></tbody>
-    </table></div>
+  <div class="pro-card col-8">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">▤</span>
+      <span>Open Positions</span>
+      <span class="pro-card-sub" id="posCount">(0)</span>
+    </div></div>
+    <div class="pro-card-body" style="padding: 0;">
+      <div class="scroll pro-table-wrap"><table class="pro-table" id="posTable">
+        <thead><tr>
+          <th>Symbol</th><th>Underlying</th><th class="num">Qty</th>
+          <th class="num">Avg</th><th class="num">LTP</th><th class="num">P&amp;L</th>
+          <th>Expiry</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
   </div>
 
   <!-- TODAY'S TRADES -->
-  <div class="card col-4">
-    <h3>📋 Today's Trades <span id="trdCount" class="muted">(0)</span></h3>
-    <div class="scroll" id="trdScroll" style="max-height:300px"><table id="trdTable">
-      <thead><tr><th>Time</th><th>Sym</th><th>Side</th><th class="num">Qty</th><th class="num">Fill</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
+  <div class="pro-card col-4">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">▥</span>
+      <span>Today's Trades</span>
+      <span class="pro-card-sub" id="trdCount">(0)</span>
+    </div></div>
+    <div class="pro-card-body" style="padding: 0;">
+      <div class="scroll pro-table-wrap" id="trdScroll" style="max-height:300px"><table class="pro-table" id="trdTable">
+        <thead><tr><th>Time</th><th>Sym</th><th>Side</th><th class="num">Qty</th><th class="num">Fill</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
   </div>
 
-  <!-- THESIS -->
-  <div class="card col-6">
-    <h3>🎯 Market Thesis</h3>
-    <div id="thesisBody" class="muted">—</div>
+  <!-- THESIS + CRONS -->
+  <div class="pro-card col-6">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#f5b342,#d97706);">◆</span>
+      <span>Market Thesis</span>
+    </div></div>
+    <div class="pro-card-body"><div id="thesisBody">—</div></div>
+  </div>
+  <div class="pro-card col-6">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">⏰</span>
+      <span>Cron Schedule</span>
+      <span class="pro-card-sub">kotak-* jobs</span>
+    </div></div>
+    <div class="pro-card-body" style="padding: 0;">
+      <div class="scroll pro-table-wrap" style="max-height:280px"><table class="pro-table" id="cronTable">
+        <thead><tr><th>Name</th><th>Schedule</th><th>Next IST</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
   </div>
 
-  <!-- CRONS -->
-  <div class="card col-6">
-    <h3>⏰ Cron Schedule (kotak-*)</h3>
-    <div class="scroll" style="max-height:240px"><table id="cronTable">
-      <thead><tr><th>Name</th><th>Schedule</th><th>Next IST</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
+  <!-- LOG + PROCESSES -->
+  <div class="pro-card col-8">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">▤</span>
+      <span>bot.log (tail)</span>
+      <span class="pro-card-sub">last 20 INFO/ERROR</span>
+    </div></div>
+    <div class="pro-card-body" style="padding: 12px 16px;">
+      <div class="log pro-log" id="logBox"></div>
+    </div>
   </div>
-
-  <!-- LOG TAIL -->
-  <div class="card col-8">
-    <h3>📜 bot.log (tail)</h3>
-    <div class="log" id="logBox"></div>
-  </div>
-
-  <!-- PROCESS TREE -->
-  <div class="card col-4">
-    <h3>🌳 kotak-neo-bot Processes</h3>
-    <div class="scroll" id="procScroll" style="max-height:300px"><table id="procTable">
-      <thead><tr><th>PID</th><th>Name</th><th class="num">Sess</th><th class="num">Uptime</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-  </div>
-
-  <!-- RESET HISTORY -->
-  <div class="card col-12">
-    <h3>🔄 Reset History (file-level)</h3>
-    <div id="resetBody" class="muted">—</div>
+  <div class="pro-card col-4">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">⌥</span>
+      <span>kotak-neo-bot Processes</span>
+    </div></div>
+    <div class="pro-card-body" style="padding: 0;">
+      <div class="scroll pro-table-wrap" id="procScroll" style="max-height:280px"><table class="pro-table" id="procTable">
+        <thead><tr><th>PID</th><th>Name</th><th class="num">Sess</th><th class="num">Uptime</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
   </div>
 
   <!-- ========== TRADING TERMINAL (full-width section, own padding) ========== -->
@@ -723,57 +940,71 @@ HTML = r"""<!DOCTYPE html>
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
 
       <!-- NIFTY CANDLES -->
-      <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
-        <div style="display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px;">
-          <div style="font-size: 14px; font-weight: 700; color: var(--fg);">📈 NIFTY 5min</div>
-          <div style="font-size: 22px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace;" id="niftySpotPill">--</div>
-          <div style="font-size: 11px; color: var(--muted); margin-left: auto;" id="niftyCandleMeta">—</div>
+      <div class="pro-card">
+        <div class="pro-card-header">
+          <div class="pro-card-title">
+            <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">📈</span>
+            <span>NIFTY 5min</span>
+            <span style="font-size: 22px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace; margin-left: 8px;" id="niftySpotPill">--</span>
+            <span class="pro-card-sub" style="margin-left:auto" id="niftyCandleMeta">—</span>
+          </div>
         </div>
-        <div id="niftyCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 4px; height: 320px; width: 100%;">
-          <div style="padding: 8px; color: var(--muted); font-size: 11px;">fetching candles...</div>
+        <div class="pro-card-body" style="padding: 12px 16px;">
+          <div id="niftyCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 6px; height: 320px; width: 100%;">
+            <div style="padding: 10px; color: var(--muted); font-size: 11px;">fetching candles...</div>
+          </div>
         </div>
       </div>
 
       <!-- BANKNIFTY CANDLES -->
-      <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
-        <div style="display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px;">
-          <div style="font-size: 14px; font-weight: 700; color: var(--fg);">📈 BANKNIFTY 5min</div>
-          <div style="font-size: 22px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace;" id="bnfSpotPill">--</div>
-          <div style="font-size: 11px; color: var(--muted); margin-left: auto;" id="bnfCandleMeta">—</div>
+      <div class="pro-card">
+        <div class="pro-card-header">
+          <div class="pro-card-title">
+            <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">📈</span>
+            <span>BANKNIFTY 5min</span>
+            <span style="font-size: 22px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace; margin-left: 8px;" id="bnfSpotPill">--</span>
+            <span class="pro-card-sub" style="margin-left:auto" id="bnfCandleMeta">—</span>
+          </div>
         </div>
-        <div id="bnfCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 4px; height: 320px; width: 100%;">
-          <div style="padding: 8px; color: var(--muted); font-size: 11px;">fetching candles...</div>
+        <div class="pro-card-body" style="padding: 12px 16px;">
+          <div id="bnfCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 6px; height: 320px; width: 100%;">
+            <div style="padding: 10px; color: var(--muted); font-size: 11px;">fetching candles...</div>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- ROW 2: POSITIONS TERMINAL (full width) -->
-    <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
-      <div style="display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px;">
-        <div style="font-size: 14px; font-weight: 700; color: var(--fg);">💼 Positions Terminal</div>
-        <div style="font-size: 11px; color: var(--muted);" id="termPosCount">(0 legs)</div>
-        <div style="font-size: 11px; color: var(--muted); margin-left: auto;">LTP from bot's last MTM tick · bid/ask estimated 0.5% (0DTE) / 1% (1D+) · real exchange bid/ask unavailable (NSE blocked, Kite MCP down)</div>
+    <div class="pro-card" style="margin-bottom: 16px;">
+      <div class="pro-card-header">
+        <div class="pro-card-title">
+          <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">💼</span>
+          <span>Positions Terminal</span>
+          <span class="pro-card-sub" id="termPosCount">(0 legs)</span>
+          <span class="pro-card-sub" style="margin-left:auto">LTP from bot's last MTM tick · bid/ask estimated 0.5% (0DTE) / 1% (1D+)</span>
+        </div>
       </div>
-      <div style="overflow-x: auto;"><table id="termPosTable" style="width: 100%; font-size: 12px; border-collapse: collapse;">
-        <thead><tr style="background: #0d1421;">
-          <th style="text-align:left; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Symbol</th>
-          <th style="text-align:left; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Side</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Lots × Qty</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Strike</th>
-          <th style="text-align:center; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Type</th>
-          <th style="text-align:center; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Expiry</th>
-          <th style="text-align:center; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">DTE</th>
-          <th style="text-align:center; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">ITM?</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Entry</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">LTP</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Bid est</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Ask est</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">P&L / unit</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">P&L total</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Value if sold now</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table></div>
+      <div class="pro-card-body" style="padding: 0;">
+        <div class="scroll pro-table-wrap"><table class="pro-table" id="termPosTable">
+          <thead><tr>
+            <th>Symbol</th><th>Side</th>
+            <th class="num">Lots × Qty</th>
+            <th class="num">Strike</th>
+            <th class="num">Type</th>
+            <th>Expiry</th>
+            <th class="num">DTE</th>
+            <th>ITM?</th>
+            <th class="num">Entry</th>
+            <th class="num">LTP</th>
+            <th class="num">Bid est</th>
+            <th class="num">Ask est</th>
+            <th class="num">P&amp;L / unit</th>
+            <th class="num">P&amp;L total</th>
+            <th class="num">Value if sold</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
     </div>
 
     <!-- ROW 3: RISK MATRIX + SCENARIOS (2 columns) -->
@@ -805,29 +1036,30 @@ HTML = r"""<!DOCTYPE html>
     </div>
 
     <!-- ROW 4: OPTION CHAIN (full width) -->
-    <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
-      <div style="display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px;">
-        <div style="font-size: 14px; font-weight: 700; color: var(--fg);">🔗 NIFTY Option Chain</div>
-        <div style="font-size: 11px; color: var(--muted);">26-Aug-2026 (0DTE)</div>
-        <div style="font-size: 11px; color: var(--muted); margin-left: auto;" id="ocMeta">—</div>
+    <div class="pro-card" style="margin-top: 16px;">
+      <div class="pro-card-header">
+        <div class="pro-card-title">
+          <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">▦</span>
+          <span>NIFTY Option Chain</span>
+          <span class="pro-card-sub">27-Aug-2026 · 0DTE</span>
+          <span class="pro-card-sub" id="ocMeta" style="margin-left:auto">—</span>
+        </div>
       </div>
-      <div style="overflow-x: auto; max-height: 360px; overflow-y: auto;"><table id="ocTable" style="width: 100%; font-size: 12px; border-collapse: collapse;">
-        <thead><tr style="background: #0d1421;">
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">Strike</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">CE LTP</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">CE Bid</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">CE Ask</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">CE OI</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">CE IV</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">PE LTP</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">PE Bid</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">PE Ask</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">PE OI</th>
-          <th style="text-align:right; padding: 8px 6px; border-bottom: 2px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; font-weight: 700;">PE IV</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table></div>
-      <div style="font-size: 11px; color: var(--muted); margin-top: 8px;" id="ocNote">—</div>
+      <div class="pro-card-body" style="padding: 0;">
+        <div class="scroll pro-table-wrap" style="overflow-x: auto; max-height: 360px;">
+          <table class="pro-table" id="ocTable">
+            <thead><tr>
+              <th class="num">Strike</th>
+              <th class="num">CE LTP</th><th class="num">CE Bid</th><th class="num">CE Ask</th>
+              <th class="num">CE OI</th><th class="num">CE IV</th>
+              <th class="num">PE LTP</th><th class="num">PE Bid</th><th class="num">PE Ask</th>
+              <th class="num">PE OI</th><th class="num">PE IV</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div style="padding: 8px 14px; font-size: 10px; color: var(--muted); border-top: 1px solid var(--line);" id="ocNote">—</div>
+      </div>
     </div>
 
     <!-- ========== 🧠 MAVIS BRAIN (quant trader AI, not template) ========== -->
@@ -948,36 +1180,39 @@ function render(s) {
   $('cash').textContent = fmtINR(acc.cash);
   $('cashSub').innerHTML = 'started ₹' + (acc.starting_capital || 0).toLocaleString('en-IN') + ' · <span class="' + signClass(acc.cash - acc.starting_capital) + '">' + fmtPct(acc.today_pnl_pct) + ' today</span>';
   $('realized').textContent = fmtINR(acc.realized_pnl);
-  $('realized').className = 'v ' + signClass(acc.realized_pnl);
+  $('realized').className = 'metric-value ' + signClass(acc.realized_pnl);
   $('unrealized').textContent = fmtINR(acc.unrealized_pnl);
-  $('unrealized').className = 'v ' + signClass(acc.unrealized_pnl);
+  $('unrealized').className = 'metric-value ' + signClass(acc.unrealized_pnl);
   $('total').textContent = fmtINR(acc.total_value);
-  $('total').className = 'v accent';
+  $('total').className = 'metric-value accent';
 
   // bot health kv
   $('botKv').innerHTML = renderKv({
-    'PID': bot.pid || '--', 'State': bot.state || '--',
-    'Uptime': fmtUptime(bot.uptime_sec),
-    'Tick': bot.tick, 'Last liveness age': (bot.last_liveness_age_sec || 0).toFixed(1) + 's',
-    'Main thread alive': bot.main_thread_alive ? 'yes' : 'no',
-    'Trades today': bot.trades_today,
-    'Open positions': bot.open_positions,
-    'Paused': bot.is_paused ? 'YES' : 'no',
+    'PID': {value: bot.pid || '--', color: 'accent'},
+    'State': {value: bot.state || '--', color: bot.state === 'running' ? 'green' : (bot.state === 'paused' ? 'yellow' : 'red')},
+    'Uptime': {value: fmtUptime(bot.uptime_sec), color: 'cyan'},
+    'Tick': {value: bot.tick, color: 'accent'},
+    'Last liveness age': {value: (bot.last_liveness_age_sec || 0).toFixed(1) + 's', color: 'muted'},
+    'Main thread': {value: bot.main_thread_alive ? 'alive ✓' : 'DEAD ✗', color: bot.main_thread_alive ? 'green' : 'red'},
+    'Trades today': {value: bot.trades_today || 0, color: 'muted'},
+    'Open positions': {value: bot.open_positions, color: 'accent'},
+    'Paused': {value: bot.is_paused ? 'YES' : 'no', color: bot.is_paused ? 'yellow' : 'green'},
+    'Risk preset': {value: bot.risk_preset || 'base', color: 'muted'}
     'Risk preset': bot.risk_preset || '--',
   });
 
   // market kv (live from bot :8502)
   const mk = s.market || {};
   $('marketKv').innerHTML = renderKv({
-    'NIFTY spot': (mk.nifty_spot || 'n/a'),
-    'BANKNIFTY spot': (mk.banknifty_spot || 'n/a'),
-    'VIX (live)': (mk.vix || 0).toFixed(2),
-    'PCR': mk.pcr || 'n/a',
-    'Max pain (NIFTY)': mk.max_pain_nifty || 'n/a',
-    'Max pain (BANKNIFTY)': mk.max_pain_banknifty || 'n/a',
-    'FII net OI': mk.fii_net_oi || 'n/a',
-    'Data source': mk.data_source || '--',
-    'Risk preset': mk.risk_preset || '--',
+    'NIFTY spot': {value: mk.nifty_spot || 'n/a', color: 'accent'},
+    'BANKNIFTY spot': {value: mk.banknifty_spot || 'n/a', color: 'accent'},
+    'VIX (live)': {value: (mk.vix || 0).toFixed(2), color: 'cyan'},
+    'PCR': {value: mk.pcr || 'n/a', color: 'muted'},
+    'Max pain (NIFTY)': {value: mk.max_pain_nifty || 'n/a', color: 'muted'},
+    'Max pain (BANKNIFTY)': {value: mk.max_pain_banknifty || 'n/a', color: 'muted'},
+    'FII net OI': {value: mk.fii_net_oi || 'n/a', color: 'muted'},
+    'Data source': {value: mk.data_source || '--', color: 'cyan'},
+    'Risk preset': {value: mk.risk_preset || 'base', color: 'muted'}
   });
 
   // thesis (rich — from thesis/latest.json, updated every 30m)
@@ -995,11 +1230,11 @@ function render(s) {
       ? (macroEvt.name + ' · ' + (macroEvt.datetime_ist || '?') + ' · ' + (macroEvt.minutes_to_event ? Math.round(macroEvt.minutes_to_event/60) + 'h away' : ''))
       : 'none scheduled';
     $('thesisKv').innerHTML =
-      '<div class="kv"><span class="k">NIFTY</span><span class="v accent">' + (t.nifty_spot ? t.nifty_spot.toFixed(2) : '--') + '</span></div>' +
-      '<div class="kv"><span class="k">BANKNIFTY</span><span class="v accent">' + (t.banknifty_spot ? t.banknifty_spot.toFixed(2) : '--') + '</span></div>' +
-      '<div class="kv"><span class="k">VIX</span><span class="v">' + (t.india_vix ? t.india_vix.toFixed(2) : '--') + '</span></div>' +
-      '<div class="kv"><span class="k">Regime</span><span class="v ' + regCls + '">' + (t.regime || '--') + '</span></div>' +
-      '<div class="kv"><span class="k">Bias</span><span class="v ' + biasCls + '">' + (t.bias || '--') + ' (conf ' + ((t.confidence || 0) * 100).toFixed(0) + '%)</span></div>' +
+      '<div class="kv-row"><span class="kv-k">NIFTY</span><span class="kv-v accent">' + (t.nifty_spot ? t.nifty_spot.toFixed(2) : '--') + '</span></div>' +
+      '<div class="kv-row"><span class="kv-k">BANKNIFTY</span><span class="kv-v accent">' + (t.banknifty_spot ? t.banknifty_spot.toFixed(2) : '--') + '</span></div>' +
+      '<div class="kv-row"><span class="kv-k">VIX</span><span class="kv-v cyan">' + (t.india_vix ? t.india_vix.toFixed(2) : '--') + '</span></div>' +
+      '<div class="kv-row"><span class="kv-k">Regime</span><span class="kv-v ' + regCls + '">' + (t.regime || '--') + '</span></div>' +
+      '<div class="kv-row"><span class="kv-k">Bias</span><span class="kv-v ' + biasCls + '">' + (t.bias || '--') + ' (conf ' + ((t.confidence || 0) * 100).toFixed(0) + '%)</span></div>' +
       '<div class="kv"><span class="k">NIFTY range</span><span class="v">' + rng + '</span></div>' +
       '<div class="kv"><span class="k">Risk budget</span><span class="v">' + (t.risk_budget_pct || '--') + '% · max ' + (t.max_positions || '--') + ' pos</span></div>' +
       '<div class="kv"><span class="k">Strategies</span><span class="v">' + prefs + '</span></div>' +
@@ -1017,12 +1252,12 @@ function render(s) {
   const br = s.brain || {};
   const la = br.last_action || {};
   $('brainKv').innerHTML = renderKv({
-    'Bias': la.bias || '--',
-    'Source': la.source || '--',
-    'Max positions': la.max_positions,
-    'Actions': (la.actions || []).length,
-    'Note': la.note || '--',
-    'Updated': la.ist_time || '--',
+    'Bias': {value: la.bias || '--', color: la.bias === 'bullish' ? 'green' : (la.bias === 'bearish' ? 'red' : 'muted')},
+    'Source': {value: la.source || '--', color: 'accent'},
+    'Max positions': {value: la.max_positions, color: 'cyan'},
+    'Actions': {value: (la.actions || []).length, color: (la.actions || []).length > 0 ? 'yellow' : 'muted'},
+    'Note': {value: la.note || '--', color: 'muted'},
+    'Updated': {value: la.ist_time || '--', color: 'muted'}
   });
 
   // positions
@@ -1053,14 +1288,19 @@ function render(s) {
   const th = s.thesis || {};
   if (th.available && th.thesis) {
     const t = th.thesis;
-    $('thesisBody').innerHTML = '<div class="kv"><span class="k">Regime</span><span class="v accent">' + (t.regime || '--') + '</span></div>'
-      + '<div class="kv"><span class="k">Bias</span><span class="v">' + (t.bias || '--') + '</span></div>'
-      + '<div class="kv"><span class="k">Confidence</span><span class="v">' + (t.confidence || '--') + '</span></div>'
-      + '<div class="kv"><span class="k">Risk budget</span><span class="v">' + (t.risk_budget || '--') + '</span></div>'
-      + '<div class="kv"><span class="k">Updated</span><span class="v muted">' + (t.updated_at || t.ts || '--') + '</span></div>'
-      + (t.narrative ? '<div style="margin-top:6px;font-size:11px;color:var(--muted)">' + t.narrative + '</div>' : '');
+    const regCls = t.regime === 'range' ? 'green' : (t.regime === 'trend' ? 'accent' : 'yellow');
+    const biasCls = t.bias === 'bullish' ? 'green' : (t.bias === 'bearish' ? 'red' : 'muted');
+    $('thesisBody').innerHTML =
+      '<div class="kv-grid">'
+      + '<div class="kv-row"><span class="kv-k">Regime</span><span class="kv-v ' + regCls + '">' + (t.regime || '--') + '</span></div>'
+      + '<div class="kv-row"><span class="kv-k">Bias</span><span class="kv-v ' + biasCls + '">' + (t.bias || '--') + '</span></div>'
+      + '<div class="kv-row"><span class="kv-k">Confidence</span><span class="kv-v accent">' + (t.confidence != null ? (t.confidence * 100).toFixed(0) + '%' : '--') + '</span></div>'
+      + '<div class="kv-row"><span class="kv-k">Risk budget</span><span class="kv-v cyan">' + (t.risk_budget_pct != null ? t.risk_budget_pct + '%' : (t.risk_budget || '--')) + '</span></div>'
+      + '<div class="kv-row"><span class="kv-k">Updated</span><span class="kv-v muted">' + (t.updated_at || t.ts || t.ist_time || '--') + '</span></div>'
+      + '</div>'
+      + (t.narrative ? '<div style="margin-top:10px; padding:8px 10px; background:rgba(155,107,255,0.06); border-left:2px solid var(--purple); border-radius:4px; font-size:11.5px; line-height:1.5; color:var(--fg)">' + t.narrative + '</div>' : '');
   } else {
-    $('thesisBody').innerHTML = '<span class="muted">no thesis yet — pre-market 08:25 cron hasn\'t run</span>';
+    $('thesisBody').innerHTML = '<div style="padding:12px; text-align:center; color:var(--muted); font-size:12px">no thesis yet — pre-market 08:25 cron hasn\'t run today</div>';
   }
 
   // crons
@@ -1549,7 +1789,14 @@ function renderOC(d) {
 }
 
 function renderKv(obj) {
-  return Object.keys(obj).map(k => '<div class="kv"><span class="k">' + k + '</span><span class="v">' + (obj[k] == null ? '--' : obj[k]) + '</span></div>').join('');
+  // obj: {label: value} or {label: {value, color}}
+  return Object.keys(obj).map(k => {
+    const v = obj[k];
+    if (v && typeof v === 'object' && 'value' in v) {
+      return '<div class="kv-row"><span class="kv-k">' + k + '</span><span class="kv-v ' + (v.color || '') + '">' + (v.value == null ? '--' : v.value) + '</span></div>';
+    }
+    return '<div class="kv-row"><span class="kv-k">' + k + '</span><span class="kv-v">' + (v == null ? '--' : v) + '</span></div>';
+  }).join('');
 }
 
 function escapeHtml(s) {
