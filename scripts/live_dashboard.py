@@ -438,6 +438,139 @@ HTML = r"""<!DOCTYPE html>
   .kv { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
   .kv .k { color: var(--muted); }
   .kv .v { font-family: 'Consolas', monospace; }
+
+  /* Pro card style — used by Iron Condor Risk Matrix + P&L Scenarios */
+  .pro-card {
+    background: linear-gradient(180deg, #131927 0%, #0e1421 100%);
+    border: 1px solid #232b3f;
+    border-radius: 10px;
+    padding: 0;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+  }
+  .pro-card-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid #232b3f;
+    background: rgba(255,255,255,0.015);
+  }
+  .pro-card-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--fg);
+    letter-spacing: 0.2px;
+  }
+  .pro-card-title .pro-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    font-size: 14px;
+    color: #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+  }
+  .pro-card-sub {
+    font-size: 10px;
+    color: var(--muted);
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-left: 6px;
+  }
+  .pro-card-body {
+    padding: 14px 16px;
+  }
+
+  /* Iron condor risk matrix */
+  .ic-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 6px 0;
+    border-bottom: 1px dashed rgba(255,255,255,0.04);
+  }
+  .ic-row:last-child { border-bottom: 0; }
+  .ic-row .ic-k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .ic-row .ic-v { font-family: 'Consolas', monospace; font-size: 13px; font-weight: 600; }
+  .ic-strikes {
+    font-family: 'Consolas', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    background: rgba(79,156,255,0.06);
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(79,156,255,0.15);
+  }
+  .ic-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .ic-header-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .ic-header-spot {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--cyan);
+    font-family: 'Consolas', monospace;
+  }
+  .ic-divider { height: 14px; }
+
+  /* P&L profile SVG container */
+  .pnl-chart {
+    width: 100%;
+    height: 90px;
+    margin: 4px 0 8px 0;
+    display: block;
+  }
+  .ic-pnl-num.green { color: var(--green); }
+  .ic-pnl-num.red   { color: var(--red); }
+  .ic-pnl-num.muted { color: var(--muted); }
+
+  /* P&L scenarios table */
+  .pnl-table { width: 100%; font-size: 11px; font-family: 'Consolas', monospace; border-collapse: collapse; }
+  .pnl-table th { text-align: left; color: var(--muted); font-weight: 400; padding: 4px 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .pnl-table td { padding: 4px 6px; }
+  .pnl-bar-cell { width: 50%; position: relative; height: 16px; }
+  .pnl-bar { position: absolute; top: 4px; height: 8px; border-radius: 2px; }
+  .pnl-bar.pos { background: linear-gradient(90deg, #1fbf75, #0d9668); }
+  .pnl-bar.neg { background: linear-gradient(90deg, #e74c3c, #c0392b); }
+  .pnl-row.current { background: rgba(245,179,66,0.10); }
+  .pnl-row.edge    { background: rgba(79,156,255,0.06); }
+  .pnl-label-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-left: 4px;
+  }
+  .pnl-label-tag.current { background: #f5b342; color: #0b0f17; }
+  .pnl-label-tag.maxprof { background: #1fbf75; color: #0b0f17; }
+  .pnl-label-tag.maxloss { background: #e74c3c; color: #fff; }
+  .pnl-zone {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 4px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255,255,255,0.04);
+  }
+  .pnl-zone-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
   .cd-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
   .cd-cell { background: var(--bg); border-radius: 4px; padding: 6px; text-align: center; }
   .cd-cell .t { font-size: 14px; font-weight: 700; color: var(--cyan); font-family: 'Consolas', monospace; }
@@ -647,15 +780,27 @@ HTML = r"""<!DOCTYPE html>
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
 
       <!-- IRON CONDOR RISK MATRIX -->
-      <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
-        <div style="font-size: 14px; font-weight: 700; color: var(--fg); margin-bottom: 12px;">📐 Iron Condor Risk Matrix <span style="font-size: 11px; color: var(--muted); font-weight: 400;">(at expiry)</span></div>
-        <div id="riskMatrix" style="color: var(--muted);">—</div>
+      <div class="pro-card" id="riskMatrixCard">
+        <div class="pro-card-header">
+          <div class="pro-card-title">
+            <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">▣</span>
+            <span>Iron Condor Risk Matrix</span>
+            <span class="pro-card-sub">at expiry · live from positions</span>
+          </div>
+        </div>
+        <div id="riskMatrix" class="pro-card-body">—</div>
       </div>
 
       <!-- SCENARIOS -->
-      <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
-        <div style="font-size: 14px; font-weight: 700; color: var(--fg); margin-bottom: 12px;">🎯 P&L Scenarios <span style="font-size: 11px; color: var(--muted); font-weight: 400;">(P&L at various underlying levels)</span></div>
-        <div id="scenariosBody" style="color: var(--muted);">—</div>
+      <div class="pro-card" id="scenariosCard">
+        <div class="pro-card-header">
+          <div class="pro-card-title">
+            <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">◉</span>
+            <span>P&amp;L Scenarios</span>
+            <span class="pro-card-sub">P&amp;L at various underlying levels</span>
+          </div>
+        </div>
+        <div id="scenariosBody" class="pro-card-body">—</div>
       </div>
     </div>
 
@@ -1245,62 +1390,119 @@ function renderTerminal(t) {
       + '</tr>';
   }).join('') || '<tr><td colspan="15" class="muted">no positions</td></tr>';
 
-  // Risk matrix
+  // Risk matrix — professional layout with P&L profile curve (SVG tent)
   const risk = t.risk || { strategies: [] };
   if (risk.strategies && risk.strategies.length) {
     $('riskMatrix').innerHTML = risk.strategies.map(r => {
       const pnlNow = r.current_pnl;
       const pnlCls = pnlNow > 0 ? 'green' : (pnlNow < 0 ? 'red' : 'muted');
-      return '<div style="margin-bottom: 14px; padding: 8px; background: var(--bg); border-radius: 4px; border: 1px solid var(--line);">'
-        + '<div style="font-weight:700; color: var(--accent); margin-bottom: 4px;">' + r.underlying + ' Iron Condor</div>'
-        + '<div class="kv"><span class="k">Strikes (PE/PE/C/CE)</span><span class="v">' + r.pe_long_strike + ' / ' + r.pe_short_strike + ' · ' + r.ce_short_strike + ' / ' + r.ce_long_strike + '</span></div>'
-        + '<div class="kv"><span class="k">Net premium collected</span><span class="v accent">₹' + r.net_premium.toFixed(2) + ' / share</span></div>'
-        + '<div class="kv"><span class="k">Max profit at expiry</span><span class="v green">₹' + r.max_profit.toLocaleString('en-IN') + '</span></div>'
-        + '<div class="kv"><span class="k">Max loss at expiry</span><span class="v red">₹' + r.max_loss.toLocaleString('en-IN') + '</span></div>'
-        + '<div class="kv"><span class="k">Breakevens</span><span class="v">' + r.be_low + ' &nbsp;–&nbsp; ' + r.be_high + '</span></div>'
-        + '<div class="kv"><span class="k">Current value (mid)</span><span class="v">₹' + r.current_value.toLocaleString('en-IN') + '</span></div>'
-        + '<div class="kv"><span class="k">Current P&L (vs entry)</span><span class="v ' + pnlCls + '"><b>' + (pnlNow >= 0 ? '+' : '') + fmtINR(pnlNow) + '</b></span></div>'
+      // P&L profile "tent" SVG
+      const sc = (t.scenarios || {})[r.underlying];
+      let svg = '';
+      if (sc && sc.scenarios && sc.scenarios.length) {
+        const W = 320, H = 70, padL = 6, padR = 6, padT = 6, padB = 14;
+        const innerW = W - padL - padR, innerH = H - padT - padB;
+        const spots = sc.scenarios.map(s => s.spot);
+        const minS = Math.min(...spots), maxS = Math.max(...spots);
+        const maxAbsPnl = Math.max(...sc.scenarios.map(s => Math.abs(s.pnl)), 1);
+        const xOf = s => padL + ((s - minS) / (maxS - minS || 1)) * innerW;
+        const yOf = p => padT + (1 - p / maxAbsPnl) * innerH;
+        // Build a smooth tent: line with profit zone filled green, loss zone filled red
+        const points = sc.scenarios.map(s => xOf(s.spot) + ',' + yOf(s.pnl));
+        const polyline = points.join(' ');
+        // Profit zone polygon: from zero-line up through curve down
+        const zeroY = yOf(0);
+        const profitPath = 'M' + xOf(minS) + ',' + zeroY + ' L' + points.join(' L') + ' L' + xOf(maxS) + ',' + zeroY + ' Z';
+        svg += '<svg class="pnl-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">'
+          + '<defs><linearGradient id="g' + r.underlying + '" x1="0" y1="0" x2="0" y2="1">'
+          + '<stop offset="0%" stop-color="#1fbf75" stop-opacity="0.35"/>'
+          + '<stop offset="100%" stop-color="#1fbf75" stop-opacity="0.02"/>'
+          + '</linearGradient></defs>'
+          + '<line x1="' + padL + '" y1="' + zeroY + '" x2="' + (W - padR) + '" y2="' + zeroY + '" stroke="#3a4258" stroke-width="0.5" stroke-dasharray="2,2"/>'
+          + '<path d="' + profitPath + '" fill="url(#g' + r.underlying + ')"/>'
+          + '<polyline points="' + polyline + '" fill="none" stroke="#1fbf75" stroke-width="1.5"/>'
+          // Current spot marker
+          + '<line x1="' + xOf(sc.spot) + '" y1="' + padT + '" x2="' + xOf(sc.spot) + '" y2="' + (H - padB) + '" stroke="#f5b342" stroke-width="1.2" stroke-dasharray="3,2"/>'
+          + '<circle cx="' + xOf(sc.spot) + '" cy="' + yOf(pnlNow) + '" r="3" fill="#f5b342" stroke="#0b0f17" stroke-width="1.5"/>'
+          + '<text x="' + xOf(sc.spot) + '" y="' + (H - 2) + '" text-anchor="middle" font-size="9" fill="#f5b342" font-family="Consolas">' + sc.spot.toFixed(0) + '</text>'
+          + '</svg>';
+      }
+      return '<div style="margin-bottom: 10px;">'
+        + '<div class="ic-header">'
+        +   '<span class="ic-header-name">' + r.underlying + ' Iron Condor</span>'
+        +   '<span class="ic-strikes">PE ' + r.pe_long_strike + '/' + r.pe_short_strike + ' · CE ' + r.ce_short_strike + '/' + r.ce_long_strike + '</span>'
+        +   '<span class="ic-header-spot">spot ' + ((sc && sc.spot) ? sc.spot.toFixed(2) : '—') + '</span>'
+        + '</div>'
+        + svg
+        + '<div class="ic-row"><span class="ic-k">Net premium</span><span class="ic-v" style="color:#4f9cff">₹' + r.net_premium.toFixed(2) + ' / share</span></div>'
+        + '<div class="ic-row"><span class="ic-k">Max profit @ expiry</span><span class="ic-v" style="color:#1fbf75">+₹' + r.max_profit.toLocaleString('en-IN') + '</span></div>'
+        + '<div class="ic-row"><span class="ic-k">Max loss @ expiry</span><span class="ic-v" style="color:#e74c3c">−₹' + r.max_loss.toLocaleString('en-IN') + '</span></div>'
+        + '<div class="ic-row"><span class="ic-k">Breakevens</span><span class="ic-v">' + r.be_low.toFixed(2) + ' — ' + r.be_high.toFixed(2) + '</span></div>'
+        + '<div class="ic-row"><span class="ic-k">Current P&amp;L</span><span class="ic-v ' + pnlCls + '">' + (pnlNow >= 0 ? '+' : '−') + '₹' + Math.abs(pnlNow).toLocaleString('en-IN') + '</span></div>'
         + '</div>';
     }).join('');
   } else {
-    $('riskMatrix').innerHTML = '<span class="muted">no iron condor detected in positions</span>';
+    $('riskMatrix').innerHTML = '<div style="padding: 20px; text-align: center; color: var(--muted);">no iron condor detected in positions</div>';
   }
 
-  // Scenarios
+  // Scenarios — professional table with proper bars, fixed labeling
   const sc = t.scenarios || {};
   const scKeys = Object.keys(sc);
   if (scKeys.length === 0) {
-    $('scenariosBody').innerHTML = '<span class="muted">no scenarios</span>';
+    $('scenariosBody').innerHTML = '<div style="padding: 20px; text-align: center; color: var(--muted);">no scenarios</div>';
   } else {
     const maxAbs = (arr) => Math.max(...arr.map(s => Math.abs(s.pnl)), 1);
     $('scenariosBody').innerHTML = scKeys.map(und => {
       const u = sc[und];
       const maxA = maxAbs(u.scenarios);
-      // Find max profit and max loss rows
       const maxProf = Math.max(...u.scenarios.map(s => s.pnl));
       const maxLoss = Math.min(...u.scenarios.map(s => s.pnl));
       const curIdx = u.scenarios.findIndex(s => Math.abs(s.spot - u.spot) < 50);
-      return '<div style="margin-bottom: 12px;">'
-        + '<div style="font-weight:700; color: var(--accent); margin-bottom: 4px;">' + und + ' · spot ' + u.spot.toFixed(2) + '</div>'
-        + '<table style="width:100%; font-size:11px; font-family: Consolas, monospace;">'
-        + '<thead><tr style="color: var(--muted);"><th style="text-align:left">Spot</th><th style="text-align:right">P&L</th><th style="text-align:right">Bar</th><th></th></tr></thead><tbody>'
+
+      // BUGFIX: only mark EDGE strikes as max profit / max loss (the ones closest
+      // to the current spot within their zone), not every row matching the value.
+      // We pick: for max profit zone, the row at the center (or the current spot if inside).
+      // For max loss zone, the closest row to the spot.
+      const profitIdxs = u.scenarios.map((s, i) => s.pnl === maxProf ? i : -1).filter(i => i >= 0);
+      const lossIdxs = u.scenarios.map((s, i) => s.pnl === maxLoss ? i : -1).filter(i => i >= 0);
+      const profitEdgeIdx = curIdx >= 0 && profitIdxs.includes(curIdx)
+        ? curIdx
+        : profitIdxs[Math.floor(profitIdxs.length / 2)];  // center of profit zone
+      const lossEdgeIdx = lossIdxs.length > 0 ? lossIdxs[lossIdxs.length - 1] : -1;  // closest edge to spot
+
+      return '<div style="margin-bottom: 14px;">'
+        + '<div class="ic-header">'
+        +   '<span class="ic-header-name">' + und + '</span>'
+        +   '<span class="ic-strikes">spot ' + u.spot.toFixed(2) + '</span>'
+        + '</div>'
+        + '<table class="pnl-table">'
+        + '<thead><tr><th>Strike</th><th style="text-align:right">P&amp;L</th><th style="width:50%">At-expiry P&amp;L</th></tr></thead><tbody>'
         + u.scenarios.map((s, i) => {
-          const sign = s.pnl >= 0 ? '+' : '-';
-          const pnlCls = s.pnl > 0 ? 'green' : (s.pnl < 0 ? 'red' : 'muted');
-          const w = Math.round((Math.abs(s.pnl) / maxA) * 100);
-          const isAt = i === curIdx;
-          const isMax = s.pnl === maxProf || s.pnl === maxLoss;
-          const bg = isAt ? 'background: rgba(245,179,66,0.15);' : (isMax ? 'background: rgba(79,156,255,0.10);' : '');
-          const bar = s.pnl > 0
-            ? '<div style="background:#1fbf75;height:8px;width:' + w + '%;margin-left:auto;"></div>'
-            : '<div style="background:#e74c3c;height:8px;width:' + w + '%;margin-left:auto;"></div>';
-          const label = isAt ? ' <span class="yellow" style="font-size:9px">← current</span>' : (isMax && s.pnl === maxProf ? ' <span class="green" style="font-size:9px">← max profit</span>' : (isMax ? ' <span class="red" style="font-size:9px">← max loss</span>' : ''));
-          return '<tr style="' + bg + '"><td style="padding: 1px 4px; text-align: left;">' + s.spot + '</td>'
-            + '<td style="padding: 1px 4px; text-align: right;" class="' + pnlCls + '">' + sign + '₹' + Math.abs(s.pnl).toLocaleString('en-IN') + '</td>'
-            + '<td style="padding: 1px 4px; width: 60%;">' + bar + '</td>'
-            + '<td style="padding: 1px 4px;">' + label + '</td></tr>';
+          const sign = s.pnl >= 0 ? '+' : '−';
+          const pnlCls = s.pnl > 0 ? 'ic-pnl-num green' : (s.pnl < 0 ? 'ic-pnl-num red' : 'ic-pnl-num muted');
+          const w = Math.max(2, Math.round((Math.abs(s.pnl) / maxA) * 100));
+          const rowCls = i === curIdx ? 'pnl-row current' : (i === profitEdgeIdx || i === lossEdgeIdx ? 'pnl-row edge' : '');
+          // Bar alignment: positive P&L bars grow right from left, negative grow left from right
+          const bar = s.pnl >= 0
+            ? '<div class="pnl-bar pos" style="left:0;width:' + w + '%;"></div>'
+            : '<div class="pnl-bar neg" style="right:0;width:' + w + '%;"></div>';
+          // Tag — only ONE label per zone, not all matching rows
+          let tag = '';
+          if (i === curIdx) tag = '<span class="pnl-label-tag current">spot</span>';
+          else if (i === profitEdgeIdx && i !== curIdx) tag = '<span class="pnl-label-tag maxprof">max profit</span>';
+          else if (i === lossEdgeIdx && i !== curIdx) tag = '<span class="pnl-label-tag maxloss">max loss</span>';
+          return '<tr class="' + rowCls + '">'
+            + '<td>' + s.spot + tag + '</td>'
+            + '<td style="text-align:right" class="' + pnlCls + '"><b>' + sign + '₹' + Math.abs(s.pnl).toLocaleString('en-IN') + '</b></td>'
+            + '<td class="pnl-bar-cell">' + bar + '</td>'
+            + '</tr>';
         }).join('')
-        + '</tbody></table></div>';
+        + '</tbody></table>'
+        + '<div class="pnl-zone">'
+        +   '<span><span class="pnl-zone-swatch" style="background:#1fbf75"></span>Profit zone (max ₹' + maxProf.toLocaleString('en-IN') + ')</span>'
+        +   '<span style="margin-left:12px"><span class="pnl-zone-swatch" style="background:#e74c3c"></span>Loss zone (max −₹' + Math.abs(maxLoss).toLocaleString('en-IN') + ')</span>'
+        + '</div>'
+        + '</div>';
     }).join('');
   }
 }
