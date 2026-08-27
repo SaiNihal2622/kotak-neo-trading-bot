@@ -288,6 +288,22 @@ the alert policy is throttled to ~1 per N-hour cluster.
 
 **Constraint at time of fix**: An orphan `python.exe -m kotak_bot paper` (PID 10184, started 2026-08-27 09:41:37, owned by SYSTEM via NSSM parent) survived the death of the NSSM-tracked PowerShell wrapper at 09:40:41 IST (parent 10148 died, the python child was orphaned to SYSTEM). This orphan is running the OLD code. `Stop-Process -Id 10184 -Force` and `taskkill /F /T /PID 10184` both return "Access is denied" without admin elevation. The 14:30 force-square-off is the bot's backstop. The fix is in the file and will take effect on the next bot restart (or when this orphan is killed via admin UAC).
 
+**Resolution (2026-08-27 evening)**:
+- Orphan 10184 died with `reason=signal` at 20:29:32 IST (UTC timestamp `+00:00` in liveness_crash.jsonl = 14:59:32 UTC = 20:29:32 IST). The signal came from an external kill.
+- The atexit handler ran startup_reconcile on the orphan's death, which placed 8 close MARKET orders at 20:29:27-28 IST. All filled at EOD reference prices:
+  - NIFTY 24300CE: closed @ 17.50 (was 87.01) → +₹4,518 on short
+  - NIFTY 24400CE: closed @ 4.23 (was 50.73) → +₹3,023 on long (the long was nearly worthless)
+  - NIFTY 24100PE: closed @ 21.85 (was 42.98) → -₹1,373 on short
+  - NIFTY 24000PE: closed @ 5.53 (was 23.56) → +₹1,170 on long
+  - BNF 57900CE: closed @ 21.26 (was 826.34) → +₹24,152 on short
+  - BNF 58000CE: closed @ 47.44 (was 770.44) → +₹21,690 on long
+  - BNF 57700PE: closed @ 242.55 (was 580.66) → -₹10,143 on short (BNF PE was deep ITM at 14:30, only 47.55pt left of wing)
+  - BNF 57600PE: closed @ 177.07 (was 543.27) → +₹10,986 on long
+  - **Net NIFTY condor: +₹1,697. BNF condor: +₹1,620. Day P&L: +₹3,317.**
+- Fresh bot PID 14876 started 2026-08-27 23:38:51 IST, picked up the b273669 fix (verified `_read_json`, brain_actions reader, force_action reader all present in source).
+- Capital landed at ₹1,09,978 (started ₹1,00,000, +₹9,978 paper).
+- Telegram update sent to user at 00:47:30 IST (msg_id 1881, chat 8537408638).
+
 **Apply when**:
 - Any new module in `kotak_bot/` calls a function that should be defined elsewhere — verify it's in module scope or imported. Do NOT assume a function name; grep for `def <name>` in the package directory.
 - Adding any new "external control" channel (file-based, IPC, signal-based) to the bot — write a small unit test that exercises the path end-to-end, and add a `logger.warning` (NOT debug) for any catch-block that swallows exceptions. Silent debug-level error swallowing is a recurring footgun in this codebase.
