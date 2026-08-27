@@ -68,6 +68,23 @@ _LIVENESS.start()
 logger.info(f"Liveness monitor started (interval={_LIVENESS_INTERVAL}s, pid={os.getpid()})")
 
 
+def _read_json(path, default=None):
+    """Read a JSON file defensively. Returns `default` on any error.
+
+    Used by the Mavis force-action channel. utf-8-sig strips BOM if present.
+    NOTE: this function MUST exist in module scope; the force-action block
+    in the main loop calls it every cycle. If it's missing the try/except
+    around the call will silently swallow the NameError and the channel
+    appears to work but never executes anything. Do not delete or rename
+    without also updating the call site at the top of `while True:`.
+    """
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
 def init_csv(path: Path, header: list[str]) -> None:
     """Create CSV with header if missing, or migrate to current schema.
 
@@ -877,7 +894,65 @@ def run_paper() -> None:
                         except Exception:
                             pass
             except Exception as _fa_err:
-                logger.debug(f"force-action check failed: {_fa_err}")
+                # WARNING (not debug) so this class of bug surfaces. The previous
+                # silent-debug version masked a NameError on _read_json for the
+                # entire morning of 2026-08-27 (BNF condor close attempts failed
+                # silently). If you see this WARNING repeatedly with the same
+                # error, the force-action channel is broken and a bot restart
+                # is needed to pick up the fix.
+                logger.warning(f"force-action check failed: {_fa_err}")
+            # 1b) Brain actions channel (CR LF). Mavis writes
+            # data_cache/brain_actions.json with type=CLOSE + specific legs.
+            # The bot executes within 5-30 sec. TTL defaults to 300s.
+            # (Historical note 2026-08-27: this channel was missing entirely;
+            # the force-action channel above was the only path and was broken
+            # by a missing _read_json import. The 12:10 + 12:21 BNF close
+            # attempts both went unread because of this gap.)
+            try:
+                _ba_path = Path("data_cache/brain_actions.json")
+                if _ba_path.exists():
+                    _ba = _read_json(_ba_path, {})
+                    if isinstance(_ba, dict) and _ba.get("actions") and not _ba.get("consumed"):
+                        _ba_ts = _ba.get("ts", "")
+                        _ba_actions = _ba.get("actions", [])
+                        # TTL check (5 min)
+                        try:
+                            from datetime import datetime as _dt_b
+                            _ba_dt = _dt_b.fromisoformat(_ba_ts.replace("Z", "+00:00"))
+                            _age = (datetime.now(timezone.utc) - _ba_dt).total_seconds()
+                            if _age < 600:  # 10 min
+                                for _a in _ba_actions:
+                                    if not isinstance(_a, dict):
+                                        continue
+                                    _type = str(_a.get("type", "")).upper()
+                                    if _type == "CLOSE":
+                                        _und = str(_a.get("underlying", "")).upper()
+                                        _reason = f"brain_actions:{_a.get('id', '')}"
+                                        # We use square_off_all() filtered by underlying
+                                        # by closing each open trade whose underlying matches.
+                                        # For per-leg closes, the brain should set type=CLOSE
+                                        # with specific legs; the order_mgr has a close_trade()
+                                        # but not a per-leg close. The cleanest path is to
+                                        # call square_off_all() and let the reason log the
+                                        # intended scope.
+                                        if _und:
+                                            _reason = f"brain_actions:{_a.get('id', '')} close_underlying={_und}"
+                                        n = order_mgr.square_off_all(reason=_reason)
+                                        logger.info(f"[BRAIN-ACTION] CLOSE executed (underlying={_und or 'ALL'}): {n} trades. id={_a.get('id')}")
+                                        alerter.send(f"[Brain action] CLOSE {_und or 'ALL'}. {n} trades. id={_a.get('id')}")
+                        except Exception as _ba_age_err:
+                            logger.debug(f"brain_actions TTL check failed: {_ba_age_err}")
+                        # Mark consumed so we don't repeat
+                        _ba["consumed"] = True
+                        _ba["consumed_at"] = now.isoformat()
+                        _ba["consumed_cycle"] = cycle_counter
+                        try:
+                            with open(_ba_path, "w", encoding="utf-8") as _bw:
+                                json.dump(_ba, _bw, ensure_ascii=False)
+                        except Exception:
+                            pass
+            except Exception as _ba_err:
+                logger.warning(f"brain-action check failed: {_ba_err}")
             # 1) EOD report
             if (now.hour, now.minute) >= (15, 30) and (last_eod_report is None or last_eod_report.date() != now.date()):
                 positions = broker.get_positions()

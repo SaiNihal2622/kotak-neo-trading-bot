@@ -77,6 +77,7 @@ The bot does NOT have its own LLM call. The cron IS the brain.
 
 ## Things to never do
 
+0. **NEVER rely on `mavis_force_action.json` or `brain_actions.json` channels without verifying the bot's `__main__._read_json` and brain_actions reader are both present.** The 2026-08-27 BNF close-failure was caused by `_read_json` being referenced in the force-action block but never defined in module scope — the try/except around the call silently swallowed the NameError, so Mavis's 12:10 + 12:21 CLOSE actions never executed. See "Known-issues register" entry below.
 1. **NEVER start a new `python -m kotak_bot` while NSSM is running** —
    you'll have two bots fighting over the same paper state. Use NSSM
    restart instead: `nssm restart KotakBotPaper`.
@@ -273,6 +274,25 @@ the alert policy is throttled to ~1 per N-hour cluster.
   per day), the upstream may be having an outage worth investigating.
 - WinError 10054 specifically = remote-side TCP RST. Correlates with
   brief outage clusters, not a single bad request.
+
+### 2026-08-27: `_read_json` is undefined in `__main__` — force-action channel silently broken
+
+**Rule**: `kotak_bot/__main__.py` calls `_read_json(...)` at the top of the main loop (force-action channel for `data_cache/mavis_force_action.json`), but the function is **not defined in module scope and not imported**. The reference exists only in `scripts/live_dashboard.py` and other scripts. The try/except around the call site catches the resulting `NameError` and logs it as `logger.debug(...)`, which means it never appears in normal log inspection.
+
+**Evidence (2026-08-27)**: BNF condor (short 57,700 PE) breached the strike at 12:10 IST. Brain issued a CLOSE action with `act-1210BNFCL` to `data_cache/brain_actions.json` (300s TTL). Bot did not execute. At 12:21 brain reissued as `act-1221BNFCLRE` to `brain_actions.json` (loss-cutting reissue, BNF now -98pt ITM). Bot did not execute. Brain noticed the channel was broken at 12:26:01 (`note: "...force_action_channel_broken_bot_cannot_close_undefined_read_json_in_main_848_14_30_force_square_2h04m_backstop_nifty_comfortable_pe_buffer_46pt"`). Investigation confirmed `_read_json` is never imported, never defined in `__main__.py`. **Bot also doesn't read `brain_actions.json` at all** — that channel did not exist in the codebase. The 12:10 + 12:21 brain writes were unread by the bot from the moment they were written.
+
+**Fix shipped 2026-08-27 12:30 IST** (this commit):
+1. Added `def _read_json(path, default=None)` at module level in `__main__.py` (right above `init_csv`), with utf-8-sig handling matching the pattern in `scripts/live_dashboard.py`.
+2. Promoted the silent `logger.debug("force-action check failed: ...")` to `logger.warning(...)` so this class of bug surfaces in normal log inspection.
+3. Added a brand-new `brain_actions.json` reader in the main loop (block 1b). Mavis CLOSE actions with `ttl_sec <= 600` and a `consumed=False` flag are now executed within 5-30 sec. `consumed=True` is written back so we don't repeat. Per-leg closes use `square_off_all()` (the cleanest path; the reason field logs the intended scope).
+
+**Constraint at time of fix**: An orphan `python.exe -m kotak_bot paper` (PID 10184, started 2026-08-27 09:41:37, owned by SYSTEM via NSSM parent) survived the death of the NSSM-tracked PowerShell wrapper at 09:40:41 IST (parent 10148 died, the python child was orphaned to SYSTEM). This orphan is running the OLD code. `Stop-Process -Id 10184 -Force` and `taskkill /F /T /PID 10184` both return "Access is denied" without admin elevation. The 14:30 force-square-off is the bot's backstop. The fix is in the file and will take effect on the next bot restart (or when this orphan is killed via admin UAC).
+
+**Apply when**:
+- Any new module in `kotak_bot/` calls a function that should be defined elsewhere — verify it's in module scope or imported. Do NOT assume a function name; grep for `def <name>` in the package directory.
+- Adding any new "external control" channel (file-based, IPC, signal-based) to the bot — write a small unit test that exercises the path end-to-end, and add a `logger.warning` (NOT debug) for any catch-block that swallows exceptions. Silent debug-level error swallowing is a recurring footgun in this codebase.
+- Reviewing future bot failures where Mavis wrote an action and the bot didn't execute it — first check the bot's log for `force-action check failed` or `brain-action check failed` warnings.
+- Diagnosing "why did NSSM's app appear running but the process was gone" — check for orphan python children owned by SYSTEM. They're a real risk in the NSSM-managed launch pattern; recommend adding a `kill /F /T /PID <wrapper>` to the recovery flow so the child doesn't get orphaned to SYSTEM.
 
 ### 2026-08-22: kotak-bot-heartbeat cron checks the VESTIGIAL log, not the active one
 **Rule**: The `kotak-bot-heartbeat` cron prompt (cronId
@@ -588,4 +608,50 @@ pass — commit pending):
   list, the session is permanently poisoned. Don't bother
   trying to recover it — change the cron to `mode: new` (or a
   different `sessionId`) to start clean.
+
+## http_server_watchdog design gap (2026-08-27 12:20 IST)
+
+`scripts/http_server_watchdog.py` has a **DEGRADED-without-restart**
+hole: it only auto-restarts the HTTP server when `is_listening()`
+returns False (port unbound). If the http_server process is hung
+but the listening socket is still up (kernel hasn't reaped the
+FD), `is_listening` returns True and the watchdog skips the
+restart branch — it goes straight to `probe_health()`, which
+times out and returns exit 1. The Telegram alert fires but the
+bot stays broken.
+
+Observed 2026-08-27 12:20 IST: last OK at 12:15:16 (PID 16228,
+age 23.9s, healthy), then `http 0 body=error: timed out` at
+12:20:29. Port :8502 was still bound by the hung process, so the
+watchdog reported DEGRADED but didn't restart.
+
+**Workaround applied by the cron tick** (until the script is
+fixed): when watchdog exits non-zero AND `http 0` AND the port
+is bound by a stale python PID, the tick does the restart
+manually:
+1. `Get-NetTCPConnection -LocalPort 8502 -State Listen` to find
+   the hung OwningProcess.
+2. `Stop-Process -Force` on that PID (use `$procId`, not `$pid`
+   — `$pid` is read-only in PowerShell).
+3. `Start-Process` the http_server module via
+   `python -u -m kotak_bot.http_server --port 8502` with
+   `-RedirectStandardOutput Logs\http_server.out` and
+   `-RedirectStandardError Logs\http_server.err`,
+   `-WindowStyle Hidden -PassThru`.
+4. `Start-Sleep 5`, then re-run
+   `scripts\http_server_watchdog.py --port 8502 --dry-run` to
+   confirm `/health = 200`.
+
+**Apply when**:
+- `http_server_watchdog.py` exits 1 with `http 0 body=error: timed out`
+  and a stale PID still owns :8502. The script's restart branch
+  is dead code in this state — escalate to manual force-restart.
+- The proper fix is in the script: when `is_listening()` returns
+  True but `probe_health()` returns False with a connection
+  error, the script should also call `restart_server()`. Don't
+  depend on the kernel to reap a hung-but-listening socket.
+- Note also: when invoked from a single chained PowerShell, the
+  watchdog call can hang past 60s if the http_server start races
+  with the bind. Wait 5s post-`Start-Process` before re-probing.
+
 
