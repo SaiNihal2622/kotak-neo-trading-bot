@@ -1,0 +1,39 @@
+{
+  "schema_version": "market-snapshot-v1",
+  "generated_at": "2026-08-27T12:04:05.052333+05:30",
+  "bot": {
+    "state": "running",
+    "pid": 16228,
+    "uptime_sec": 8458.73,
+    "tick": 281,
+    "main_thread_alive": true,
+    "is_paused": false,
+    "data_source": "live_kotak",
+    "risk_preset": "base"
+  },
+  "market": {
+    "nifty_spot": 24152.65,
+    "banknifty_spot": 57699.3,
+    "vix": 11.12,
+    "ts": "2026-08-27 12:03:53.376"
+  },
+  "market_fresh": true,
+  "kotak_heartbeat": {
+    "authed": true,
+    "subscribed": 10,
+    "latest_seq": 2,
+    "tick_count": 5292,
+    "ts": "2026-08-27 12:03:05.306"
+  },
+  "last_scan": {
+    "cycle": 1686,
+    "note": "skip: 2 open strategies >= max 2",
+    "ts": "2026-08-27 12:03:55.705"
+  },
+  "capital": {
+    "cash": 113080.30000000005,
+    "realized_pnl": 6661.099999999995,
+    "open_positions": 8,
+    "vix_from_paper": 11.067500114440918
+  }
+}

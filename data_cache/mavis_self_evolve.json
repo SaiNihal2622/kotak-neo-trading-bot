@@ -1,0 +1,11 @@
+{
+  "schema_version": "mavis-self-evolve-v1",
+  "entries": [
+    {
+      "ts": "2026-08-27T12:04:05+05:30",
+      "finding": "Cron ticks had to parse liveness.json + paper_state.json + tail of bot.log (regex on LiveIndia/Heartbeat/SCAN lines) to answer 'what is the market + bot doing right now'. No consolidated snapshot existed; also data_cache/mavis_self_evolve.json was missing entirely even though this cron was supposed to append to it.",
+      "action_taken": "Added scripts/market_snapshot.py (~150 lines) that consolidates liveness + paper_state + last LiveIndia/Heartbeat/SCAN lines from bot.log into a single data_cache/market_snapshot.json. Exits 0 on fresh market data, 2 if stale. Future cron ticks, watchdogs, and dashboards can now read one file for current state instead of three. Created mavis_self_evolve.json (this file) since it was missing.",
+      "file_or_cron_changed": "scripts/market_snapshot.py (new), data_cache/market_snapshot.json (new, first run), data_cache/mavis_self_evolve.json (new)"
+    }
+  ]
+}
