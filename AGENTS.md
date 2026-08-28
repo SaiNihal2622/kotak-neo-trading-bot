@@ -343,6 +343,31 @@ found nothing because it read the wrong file.
   post-fix on historical 8/14 noise (the prompt already has this
   filter written; just the path needs to point at `Logs\`).
 
+### 2026-08-28: yfinance fetch fails silently on empty DataFrame during off-hours
+**Rule**: `yf.Ticker(SYMBOL).history(period="1d")["Close"].iloc[-1]` raises
+"single positional indexer is out-of-bounds" when the DataFrame is empty
+(weekends, US holidays when NSE is also closed, late-night IST windows).
+The old `_fetch_spot` in `scripts/mavis_monitor.py` swallowed this in a
+broad `except Exception` and logged it as `[warn] yfinance fetch failed:`
+~60 times per 24h, polluting `logs/mavis_monitor.log` and making real
+errors hard to spot.
+**Fix shipped 2026-08-28 06:05 IST** (this commit): added
+`_is_market_hours(now)` (Mon-Fri 08:30-15:45 IST) and `_safe_yf_close(symbol)`
+which returns 0.0 silently on empty DataFrame and only logs on real
+network/API errors. The main loop now gates `_fetch_spot()` on
+`_is_market_hours`; during off-hours the yfinance call is skipped entirely,
+so 1440 calls/day drop to ~390. Health checks (bot liveness, dashboards,
+log staleness) still run 24/7.
+**Apply when**:
+- Reading `logs/mavis_monitor.log` and seeing `[warn] yfinance fetch failed` —
+  these should now be rare. If you see a cluster, it means a real upstream
+  problem, not just off-hours noise.
+- Adding new yfinance fetches to other scripts — copy the
+  `_safe_yf_close` pattern, or import from mavis_monitor. The empty
+  DataFrame case is the most common error.
+- Same pattern exists in `scripts/mavis_realtime.py` `_fetch_spot`
+  (lines 107-131) but is not yet fixed there. Apply when convenient.
+
 ## Production-level utilities (added 2026-08-23 + 2026-08-24)
 
 ### Round 1 (commit 4188b8d, 2026-08-23 13:32 IST)

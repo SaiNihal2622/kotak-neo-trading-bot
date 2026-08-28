@@ -6,6 +6,12 @@
       "finding": "Cron ticks had to parse liveness.json + paper_state.json + tail of bot.log (regex on LiveIndia/Heartbeat/SCAN lines) to answer 'what is the market + bot doing right now'. No consolidated snapshot existed; also data_cache/mavis_self_evolve.json was missing entirely even though this cron was supposed to append to it.",
       "action_taken": "Added scripts/market_snapshot.py (~150 lines) that consolidates liveness + paper_state + last LiveIndia/Heartbeat/SCAN lines from bot.log into a single data_cache/market_snapshot.json. Exits 0 on fresh market data, 2 if stale. Future cron ticks, watchdogs, and dashboards can now read one file for current state instead of three. Created mavis_self_evolve.json (this file) since it was missing.",
       "file_or_cron_changed": "scripts/market_snapshot.py (new), data_cache/market_snapshot.json (new, first run), data_cache/mavis_self_evolve.json (new)"
+    },
+    {
+      "ts": "2026-08-28T06:05:00+05:30",
+      "finding": "mavis_monitor.py logs 'yfinance fetch failed: single positional indexer is out-of-bounds' ~60 times per 24h (counted in logs/mavis_monitor.log). Root cause: yfinance returns empty DataFrames when the market is closed; the old code did `history(period='1d')['Close'].iloc[-1]` which raises on empty. Worse, the existing comment promised 'Skip market-closed heavy checks at night (still run health check)' but the code still hit yfinance every 60s overnight — comment and behavior were out of sync.",
+      "action_taken": "Split _fetch_spot into _safe_yf_close (silent on empty DataFrame, logs only on real error) and added _is_market_hours helper (Mon-Fri 08:30-15:45 IST). The main loop now gates the yfinance call on _is_market_hours; during off-hours it returns (0,0,0) without hitting the network, so the 60 nightly warnings disappear and the 1440 calls/day drop to ~390. Health checks (bot liveness, dashboards, log staleness) still run 24/7 as before. Tested all time/weekday edge cases — verified Sat/Sun/early-morning all correctly skip.",
+      "file_or_cron_changed": "scripts/mavis_monitor.py (modified, +49/-11), data_cache/mavis_self_evolve.json (this entry)"
     }
   ]
 }

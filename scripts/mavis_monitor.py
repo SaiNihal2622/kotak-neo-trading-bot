@@ -93,17 +93,49 @@ def _send_telegram(msg: str) -> None:
         _log(f"  [tg] send failed: {e}")
 
 
-def _fetch_spot() -> tuple[float, float, float]:
-    """Best-effort NIFTY spot, BANKNIFTY spot, India VIX via yfinance."""
+def _is_market_hours(now: datetime) -> bool:
+    """True only when the NSE cash market is actually open.
+
+    NSE cash hours: Mon-Fri 09:15-15:30 IST. We widen to 08:30-15:45
+    to include pre-market previews and a buffer for the post-close
+    alert window, but skip weekends + late nights.
+    """
+    # Mon=0 ... Sun=6
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 8 * 60 + 30 <= minutes <= 15 * 60 + 45
+
+
+def _safe_yf_close(symbol: str) -> float:
+    """Return latest close from yfinance, or 0.0 on empty/error.
+
+    Differentiates "no data" (empty DataFrame during off-hours) from
+    "actual error" (network/API failure). Only the latter is logged.
+    """
+    import yfinance as yf
     try:
-        import yfinance as yf
-        n = float(yf.Ticker("^NSEI").history(period="1d")["Close"].iloc[-1])
-        b = float(yf.Ticker("^NSEBANK").history(period="1d")["Close"].iloc[-1])
-        v = float(yf.Ticker("^INDIAVIX").history(period="1d")["Close"].iloc[-1])
-        return n, b, v
+        df = yf.Ticker(symbol).history(period="1d")
+        if df is None or df.empty or "Close" not in df.columns:
+            return 0.0
+        return float(df["Close"].iloc[-1])
     except Exception as e:
-        _log(f"  [warn] yfinance fetch failed: {e}")
-        return 0.0, 0.0, 0.0
+        _log(f"  [warn] yfinance fetch failed for {symbol}: {e}")
+        return 0.0
+
+
+def _fetch_spot() -> tuple[float, float, float]:
+    """Best-effort NIFTY spot, BANKNIFTY spot, India VIX via yfinance.
+
+    Returns (0.0, 0.0, 0.0) silently during off-hours (yfinance returns
+    empty DataFrames when the market is closed) so the monitor doesn't
+    spam 'yfinance fetch failed' warnings at 60s cadence overnight.
+    """
+    return (
+        _safe_yf_close("^NSEI"),
+        _safe_yf_close("^NSEBANK"),
+        _safe_yf_close("^INDIAVIX"),
+    )
 
 
 def _check_bot_health() -> dict:
@@ -244,8 +276,14 @@ def main() -> int:
         cycle += 1
         try:
             now = _now_ist()
-            # Skip market-closed heavy checks at night (still run health check)
-            nifty, banknifty, vix = _fetch_spot()
+            mkt_open = _is_market_hours(now)
+            # Skip yfinance during off-hours: yfinance returns empty
+            # DataFrames when the market is closed, which would log a
+            # warning every 60s. Health checks still run 24/7.
+            if mkt_open:
+                nifty, banknifty, vix = _fetch_spot()
+            else:
+                nifty, banknifty, vix = 0.0, 0.0, 0.0
             health = _check_bot_health()
             # Log every 5th cycle (5 min if poll=60)
             if cycle % 5 == 1 or cycle == 1:
