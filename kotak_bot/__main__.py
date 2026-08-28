@@ -1411,18 +1411,36 @@ def run_paper() -> None:
                         _mavis_plan = _mavis.get("plan") or {}
                         _plan_underlying = str(_mavis_plan.get("underlying", symbol)).upper()
                         if _plan_underlying != symbol.upper():
-                            logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | Mavis plan is for {_plan_underlying}, not {symbol} — falling through to template")
+                            # FIX 2026-08-28: Mavis plan is for a different symbol — BLOCK this symbol
+                            # (don't fall back to template). The LLM can explicitly write a per-symbol
+                            # plan in mavis_trades.json to enable trading in the other underlying.
+                            logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | BLOCK: Mavis plan is for {_plan_underlying}, not {symbol}")
+                            log_signal({"symbol": symbol, "regime": rs.regime.value, "side": "mavis",
+                                        "confidence": 0.0, "reason": "mavis_block_no_plan",
+                                        "action": f"skip:mavis_block_no_plan_for_{_plan_underlying}"})
+                            continue
+                        _expiry = now.strftime("%d%b%y").upper()
+                        _mavis_tradeplan = _build_plan_from_mavis(symbol, spot, _mavis_plan, _expiry)
+                        if _mavis_tradeplan is not None:
+                            logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | EXECUTE_PLAN: {_mavis_tradeplan.strategy.value} confidence={_mavis_tradeplan.confidence:.2f} reason={_mavis_tradeplan.reason[:120]}")
+                            plan = _mavis_tradeplan
                         else:
-                            _expiry = now.strftime("%d%b%y").upper()
-                            _mavis_tradeplan = _build_plan_from_mavis(symbol, spot, _mavis_plan, _expiry)
-                            if _mavis_tradeplan is not None:
-                                logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | EXECUTE_PLAN: {_mavis_tradeplan.strategy.value} confidence={_mavis_tradeplan.confidence:.2f} reason={_mavis_tradeplan.reason[:120]}")
-                                plan = _mavis_tradeplan
-                            else:
-                                logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | Mavis plan couldn't be parsed — falling through to template")
-                                plan = selector.select(sc, risk.status())
+                            # FIX 2026-08-28: Mavis plan couldn't be parsed — BLOCK this symbol
+                            # (don't fall back to template). The LLM should regenerate the plan.
+                            logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | BLOCK: Mavis EXECUTE_PLAN couldn't be parsed for {symbol}")
+                            log_signal({"symbol": symbol, "regime": rs.regime.value, "side": "mavis",
+                                        "confidence": 0.0, "reason": "mavis_block_parse_error",
+                                        "action": "skip:mavis_block_parse_error"})
+                            continue
                     else:
-                        plan = selector.select(sc, risk.status())
+                        # FIX 2026-08-28: _mavis["action"] is not BLOCK and not EXECUTE_PLAN.
+                        # The LLM must explicitly write EXECUTE_PLAN to enable trading. BLOCK otherwise.
+                        # (Previously this fell through to the template selector.)
+                        logger.info(f"[MAVIS] cycle={cycle_counter} {symbol} | BLOCK: mavis action='{_mavis.get('action')}' (need BLOCK or EXECUTE_PLAN) reason={_mavis.get('reason','')[:120]}")
+                        log_signal({"symbol": symbol, "regime": rs.regime.value, "side": "mavis",
+                                    "confidence": 0.0, "reason": "mavis_block_unknown_action",
+                                    "action": f"skip:mavis_block_{_mavis.get('action')}"})
+                        continue
                     # Build plan first, then check risk with the plan's actual max loss
                     if not plan:
                         continue
@@ -1697,14 +1715,17 @@ def _load_mavis_decision(today_str: str) -> dict:
     {"action": "WAIT", "valid": False, "reason": "<err>"} so the bot falls
     through to the template selector. NEVER crashes the bot.
     """
+    # FIX 2026-08-28: Default to BLOCK (not template) when Mavis has no fresh plan.
+    # The bot previously fell through to a template iron condor when WAIT+valid=False.
+    # Per user directive: "no template for everything" — the LLM brain is the only authority.
     p = Path("data_cache/mavis_trades.json")
     try:
         if not p.exists():
-            return {"action": "WAIT", "valid": False, "reason": "mavis_trades.json missing"}
+            return {"action": "BLOCK", "valid": True, "reason": "mavis_trades.json missing — LLM brain must provide a plan before the bot trades"}
         with open(p, "r", encoding="utf-8-sig") as f:
             j = json.load(f)
         if not isinstance(j, dict):
-            return {"action": "WAIT", "valid": False, "reason": "mavis_trades.json not a dict"}
+            return {"action": "BLOCK", "valid": True, "reason": "mavis_trades.json not a dict — LLM brain must regenerate"}
         # valid_for_date is the key field (or fall back to key_dates.tomorrow)
         valid_for = j.get("valid_for_date") or ""
         # Also accept key_dates.tomorrow as a fallback (older schema)
@@ -1714,19 +1735,21 @@ def _load_mavis_decision(today_str: str) -> dict:
         # Compare YYYY-MM-DD portion
         if valid_for and today_str in str(valid_for):
             decision = j.get("mavis_decision") or {}
-            action = str(decision.get("action") or "WAIT").upper()
+            action = str(decision.get("action") or "BLOCK").upper()
+            # Only EXECUTE_PLAN is honored for entries. Any other action -> BLOCK.
+            # (The LLM must explicitly say EXECUTE_PLAN to enable trading. WAIT/HOLD/REDUCE_SIZE default to BLOCK.)
+            if action != "EXECUTE_PLAN":
+                return {"action": "BLOCK", "valid": True, "reason": f"mavis_decision.action='{action}' is not EXECUTE_PLAN — bot requires explicit EXECUTE_PLAN to enter. reason={decision.get('reason_short','')[:120]}"}
             reason = str(decision.get("reason_short") or decision.get("note") or "")
-            plan = None
-            if action == "EXECUTE_PLAN":
-                plan = j.get("primary_plan") or j.get("trade_plan", {}).get("primary") or {}
+            plan = j.get("primary_plan") or j.get("trade_plan", {}).get("primary") or {}
             return {"action": action, "plan": plan, "reason": reason,
                     "valid": True, "bias": decision.get("bias", ""),
                     "confidence": decision.get("confidence", 0.0),
                     "raw": j}
-        return {"action": "WAIT", "valid": False,
-                "reason": f"mavis_trades.json valid_for='{valid_for}' != today='{today_str}'"}
+        return {"action": "BLOCK", "valid": True,
+                "reason": f"mavis_trades.json valid_for='{valid_for}' != today='{today_str}' — LLM brain must regenerate for today"}
     except Exception as e:
-        return {"action": "WAIT", "valid": False, "reason": f"mavis_decision_load_error: {e}"}
+        return {"action": "BLOCK", "valid": True, "reason": f"mavis_decision_load_error: {e} — LLM brain must regenerate"}
 
 
 def _build_plan_from_mavis(symbol: str, spot: float, mavis_plan: dict, expiry: str) -> Optional["TradePlan"]:
