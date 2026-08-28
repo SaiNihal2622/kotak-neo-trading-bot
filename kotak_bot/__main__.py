@@ -1034,7 +1034,14 @@ def run_paper() -> None:
                 # compliance PDF
                 try:
                     # collect trades from CSV
-                    from pathlib import Path
+                    # NOTE: do NOT re-import `from pathlib import Path` here.
+                    # This function already has Path as a local binding from line 793's
+                    # `from pathlib import Path as _Path`; re-importing without an alias
+                    # would shadow `Path` in this function's scope and break all
+                    # Path(...) calls earlier in the loop (notably the force-action and
+                    # brain-action channels at lines ~863 and ~912 — see the
+                    # 'force-action check failed: cannot access local variable Path'
+                    # WARNINGs in bot.log). `Path` is already imported at module level.
                     trades = []
                     tr_path = Path("logs/trades.csv")
                     if tr_path.exists():
