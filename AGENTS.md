@@ -310,6 +310,25 @@ the alert policy is throttled to ~1 per N-hour cluster.
 - Reviewing future bot failures where Mavis wrote an action and the bot didn't execute it — first check the bot's log for `force-action check failed` or `brain-action check failed` warnings.
 - Diagnosing "why did NSSM's app appear running but the process was gone" — check for orphan python children owned by SYSTEM. They're a real risk in the NSSM-managed launch pattern; recommend adding a `kill /F /T /PID <wrapper>` to the recovery flow so the child doesn't get orphaned to SYSTEM.
 
+### 2026-08-28: FOLLOW-UP — duplicate `from pathlib import Path` shadowed `Path` as a local in `run_paper()`, breaking BOTH action channels even after the _read_json fix shipped
+
+**Rule**: The 2026-08-27 12:30 fix added `_read_json` and a new `brain_actions.json` reader in `kotak_bot/__main__.py:run_paper()`, but it left an unprefixed `from pathlib import Path` at line 1037 (compliance-PDF block). Python's compiler sees ANY `from X import Y` inside a function and marks `Y` as a LOCAL for the entire function. Subsequent `Path(...)` calls at lines 863 (force-action) and 912 (brain-action) then raise `UnboundLocalError: cannot access local variable 'Path' where it is not associated with a value` at runtime, which the try/except catches and logs as a WARNING every 5s. **Result: BOTH Mavis action channels were silently broken even after the 12:30 fix — the fix was incomplete.**
+
+**Evidence (2026-08-28)**: `bot_stderr.log` shows the warning firing every 5s from 08:01 IST onwards (after the bot restarted at 08:31), 200+ times in the first 2 hours:
+```
+WARNING | force-action check failed: cannot access local variable 'Path' where it is not associated with a value
+WARNING | brain-action check failed: cannot access local variable 'Path' where it is not associated with a value
+```
+The startup-integrity check at line 244 also failed the same way (`[STARTUP-INTEGRITY] check skipped: cannot access local variable 'Path'`). Bytecode analysis of the live `__pycache__` confirms: `Path` is in `co_names` (LOAD_GLOBAL), but the inner `from pathlib import Path` at line 1037 makes the compiler mark `Path` as local. The outer `from pathlib import Path as _Path` at line 793 ONLY binds `_Path` as local — the bug is specifically the unprefixed re-import at line 1037.
+
+**Fix shipped 2026-08-28 09:04 (uncommitted in working tree) → committed 30c0fc9**: removed the `from pathlib import Path` at line 1037 and replaced with a comment explaining why not to re-import. After NSSM restart (or natural process recycle), the warnings stopped. Verified: last Path WARNING in bot_stderr.log was ~09:08 IST; from 09:09 onwards the channels are clean.
+
+**Apply when**:
+- Adding a NEW `from X import Y` (without alias) inside any function that already references `Y` elsewhere in the same function — the unprefixed import will shadow the module-level `Y` for the ENTIRE function scope, breaking every `Y(...)` call before the import. Use `from X import Y as _Y` if you need a function-local import, OR put the import at the top of the function (before any use), OR (best) rely on the module-level import.
+- Reviewing the 2026-08-27 _read_json fix — the original fix added the reader but introduced this new bug. Test pattern: after any code change that adds an import inside `run_paper()`, run a 60s test and `grep "WARNING | .* check failed"` in `Logs\bot_stderr.log`.
+- Looking for "silent" code-channel breakage in this bot: any try/except that logs at WARNING level can mask a recurring error. The fact that this fired every 5s for 2+ hours without being caught is a sign the heartbeat / self-monitor pipeline needs a stricter "recurring WARNING rate" alert (a per-minute count of identical WARNINGs would have flagged this in 5 min, not 2 hours).
+- NSSM restart from a non-elevated shell: returns "Access is denied" silently (no UAC prompt, just exit 3). The only path is `Start-Process -Verb RunAs` from a non-elevated shell, which surfaces the UAC prompt — and if the user isn't at the console, it gets cancelled. Document this so future self-driver sessions don't waste a tick trying to restart.
+
 ### 2026-08-22: kotak-bot-heartbeat cron checks the VESTIGIAL log, not the active one
 **Rule**: The `kotak-bot-heartbeat` cron prompt (cronId
 `3fc44c8d-b1e2-4606-9812-d7b9cec0f78e`, every 5 min) tells the LLM
