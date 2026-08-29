@@ -714,4 +714,67 @@ manually:
   watchdog call can hang past 60s if the http_server start races
   with the bind. Wait 5s post-`Start-Process` before re-probing.
 
+### 2026-08-29: Legacy `kotak-bot-heartbeat` cron disabled — it was duplicating `heartbeat-next-tick` and reading the wrong log file
+
+**Rule**: The legacy `kotak-bot-heartbeat` cron (cronId
+`3fc44c8d-b1e2-4606-9812-d7b9cec0f78e`, `*/5 * * * *`) was the
+2026-08-22-era LLM-based heartbeat with the documented vestigial-log
+bug (its `Select-String` path pointed at the lowercase root
+`bot_stderr.log`, NOT the canonical `Logs\bot_stderr.log`). On
+2026-08-26 we shipped `heartbeat-next-tick` (cronId
+`d9fdcd69-...`, runs `scripts/heartbeat.py` deterministically) as
+the replacement — but the legacy cron was never disabled. Result
+between 2026-08-26 and 2026-08-29: two 5-min crons both firing on
+the same machine, with `heartbeat-next-tick` doing the real work
+and `kotak-bot-heartbeat` doing the wrong-but-silent
+vestigial-file read, ~288 redundant LLM calls/day.
+
+**Evidence (2026-08-29 23:00)**: `mavis session list` at 23:00 IST
+showed `kotak-bot-heartbeat · 08-29 23:00` AND
+`heartbeat-next-tick · 08-29 23:00` as separate cron sessions,
+both with `mode: new` and `status: started`/`idle`. The legacy
+prompt is the one with `Select-String -Path
+'C:\Users\saini\...kotak-neo-bot\bot_stderr.log'` (lowercase
+root, frozen since 2026-08-20 02:27:15) — see the 2026-08-22
+entry above for the full pathology. The `heartbeat-next-tick`
+prompt is the single-line `Run:
+C:\...\scripts\heartbeat.py` (3-line `mode: new` shell that
+delegates everything to the deterministic script).
+
+**Fix shipped 2026-08-29 23:00 IST** (this nightly-improvement
+pass): `mavis cron update --cronId 3fc44c8d-... --enabled false`.
+The cron is now `enabled: false, status: paused` (verified via
+`mavis cron get`). The registry keeps the prompt body for audit
+history; future `mavis cron list` will show it disabled. The
+`heartbeat-next-tick` cron is unchanged (it's the one doing real
+work). Net effect: ~288 fewer LLM turns/day and the vestigial-log
+footgun is removed from production.
+
+**Why not delete the cron?** Keeping a disabled cron entry
+preserves the audit trail (you can `cron get` to read the legacy
+prompt and see what the bug was). If we ever need to revert, it's
+a one-flag toggle. Don't `cron delete` it.
+
+**Apply when**:
+- Auditing the cron stack: `kotak-bot-heartbeat` should now
+  show `enabled: false, status: paused` in `mavis cron list`.
+  If a future agent sees it enabled, that's a regression.
+- Adding NEW heartbeat-style crons: use the `heartbeat-next-tick`
+  pattern (one-line `mode: new` prompt that runs
+  `scripts/heartbeat.py`). Do NOT re-introduce a
+  multi-paragraph LLM-driven prompt — that's the bug class this
+  entry closes.
+- A similar duplicate-cron pattern may exist for other
+  5-min crons (e.g. `kotak-bot-watchdog` cronId `a747781e-...`
+  is ALSO LLM-based, also runs every 5 min Mon-Sat, ALSO reads
+  the lowercase root `bot_stderr.log`). The 24/7 watchdog
+  (`kotak-bot-247-watchdog`, cronId `70e211c8-...`, every 15
+  min) is the canonical replacement there. Cleaning that up is
+  a separate change — out of scope for tonight, but a candidate
+  for a future nightly pass.
+- Diagnosing "why are there two 5-min heartbeat sessions in
+  `session list`?" — check `mavis cron list` for any cron
+  with `enabled: true, schedule: */5 * * * *`. There should be
+  exactly one (the canonical `heartbeat-next-tick`).
+
 
