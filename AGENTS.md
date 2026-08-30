@@ -172,7 +172,7 @@ Format: one entry per finding, dated, with the rule + the evidence +
 when it applies. Don't add one-off trivia. Don't add stuff that's
 already in code or git history.
 
-Last reviewed: 2026-08-22 (Mavis operator-mode activation)
+Last reviewed: 2026-08-30 (Mavis nightly-improvement, false-positive liveness_ping_failed documented)
 
 ## Known-issues register (durable findings)
 
@@ -386,6 +386,132 @@ log staleness) still run 24/7.
   DataFrame case is the most common error.
 - Same pattern exists in `scripts/mavis_realtime.py` `_fetch_spot`
   (lines 107-131) but is not yet fixed there. Apply when convenient.
+  **(Fixed 2026-08-30 — same `_is_market_hours` + `_safe_yf_close` pattern applied
+  in this same fix pass; the empty-DataFrame case is now silent during off-hours.)**
+
+### 2026-08-30: mavis_realtime.py silent death — orphan reaping pattern
+**Rule**: `scripts/mavis_realtime.py` writes `data_cache/mavis_realtime_state.json`
+and `data_cache/mavis_events.jsonl` (powers the dashboard's "Mavis Live" + Event
+Ticker sections). When launched via plain `Start-Process -FilePath python.exe ...`
+from a parented PowerShell, the resulting python child becomes orphaned when
+the parent exits. The orphan gets reaped silently within 30-60 minutes — no
+error, no exit log, just stops writing. Symptom: dashboard sections freeze
+on 2-3-day-old data; the respawn cron fires but the new launches are also
+orphans and also die.
+
+**Evidence (2026-08-30)**: After my 02:46 IST restart via plain Start-Process,
+the script ran 34 min then died at 03:20:38 with no error. Log was clean
+(`cycle=681 NIFTY=0.00 BNF=0.00 ...`), no `=== Mavis real-time rotating ===`
+exit message — just stopped. State file became 998 min old. Dashboard
+`/api/mavis_state` returned frozen 2026-08-27 data.
+
+**Fix shipped (2026-08-30 20:08 IST)**:
+1. **`system/run_mavis_realtime.ps1`** — self-respawning wrapper. Loops forever,
+   launches `python -u scripts\mavis_realtime.py` via Start-Process, waits
+   for exit, waits 5s, relaunches. The wrapper is a long-lived powershell,
+   so the python child is NEVER an orphan.
+2. **Detached launch via `cmd /c start /B powershell.exe ...`** — the wrapper
+   itself is reparented to SYSTEM (parent = empty), so it survives the
+   Mavis session that launched it.
+3. **Respawn cron updated** to look for the WRAPPER (run_mavis_realtime.ps1),
+   not the python directly. If wrapper is dead, relaunch detached.
+   Old cron's `python` Start-Process pattern was the bug — the new one uses
+   `cmd /c start /B powershell.exe`.
+4. **Verified at 20:08**: detached wrapper PID 13956 (parent reparented to
+   SYSTEM) → python 16996 → python daemon 17880. State file age = 1 sec.
+   `/api/mavis_state` returns `ts: 2026-08-30T20:07:24, is_watching: true`.
+
+**Apply when**:
+- Adding new long-lived polling/streaming scripts in `scripts/`: launch them
+  via `system\<name>_wrapper.ps1` with the same pattern, NOT plain Start-Process.
+  The wrapper is a tiny PowerShell that loops, launches the python, waits for
+  exit, relaunches. Two layers of persistence.
+- Reviewing the cron `kotak-mavis-monitor-respawn`: it watches the wrapper,
+  not the python. If the cron prompt changes back to checking for the python
+  directly, the orphan-reaping bug returns.
+- Future "proper" fix when admin access is available: install the wrapper as
+  an NSSM service (`nssm install KotakMavisRealtime powershell.exe -File
+  system\run_mavis_realtime.ps1`). NSSM handles restart-on-crash and survives
+  everything. The current wrapper-based approach works without admin, but
+  NSSM would be cleaner for production.
+
+### 2026-08-30: Three data sources silently dead, mavis_realtime fix unmasks the rest
+**Rule**: The dashboard reads from 8 API endpoints. Each points at a different
+data file. When the user said "still no correct dashboard" after the
+mavis_realtime fix, the unfixed endpoints were:
+- `/api/mavis_state` (FIXED 20:08, see above)
+- `/api/quant_brain` — reads `data_cache/quant_brain.json`, written by
+  `scripts/quant_brain.py` (one-shot, cron-driven). Last write 2026-08-26
+  22:25 IST = 3.9 days stale. Will refresh next cron fire (8:25 daily).
+- `/api/mavis_trades` — reads `data_cache/mavis_trades.json`, written by
+  `scripts/mavis_premarket.py` (one-shot, 8:35 cron). Last write 2026-08-28
+  08:35 IST = 2.5 days stale. Will refresh Monday 8:35 cron.
+
+**Apply when**: If user reports "dashboard not working", check ALL data
+source ages with `Get-ChildItem data_cache\*.json | Select Name, LastWriteTime`.
+Don't just trust the live process — every JSON file is its own dependency.
+
+### 2026-08-30: Structural fix for Mavis context-too-large killer (the real one)
+
+**Rule**: A single 3.6MB tool result bakes itself into the assistant message's
+`tool_call_result_data` field, and the runtime's checkpoint generation cannot
+recover from it. The previous sanitizer hook only knew about 4 tool families
+(`bash`/`read`/`filesystem`/`puppeteer`) and the `memory` and `mavis` tools
+sailed through untruncated. A single `memory` read of MEMORY.md (3.6MB) or a
+single `mavis session messages --limit 20` (still 900KB because individual
+messages are large) was enough to kill the session at the next checkpoint.
+
+**Evidence (2026-08-30)**:
+- `mvs_fddaffedef47489491056112be947e73` (the user's complaint): 6.46MB / 117 msgs, biggest msg 2831KB
+- `mvs_47cf562d0ce2451aad1d6be4aa97c51b` (the "fix it" session that died the same way): 5.10MB / 74 msgs, biggest msg **3623KB** from `memory` tool reading MEMORY.md
+- Field breakdown across the 4 most-recent dead sessions: 99.4% of big-message bytes were in `tool_calls[].tool_call_result_data`. The actual `msg_content` was 0%.
+
+**Fix shipped (this commit)**:
+1. **Sanitizer v2** at `C:\Users\saini\.minimax\agents\mavis\hooks\sanitize_tool_result.py`:
+   - Added explicit `memory` tool branch: full content saved to disk, return head (5 lines) + tail (200 lines) summary.
+   - Added catch-all branch: any tool result > 50KB that wasn't already sanitized gets capped with overflow to disk.
+   - Fixed `mavis session messages` matcher: previously checked `tool_name` only, but the MCP tool name is just `"mavis"`. Now also matches `args.command == "session messages"` (handles both flat and `args.args.limit` nested paths).
+   - Verified: 3.6MB memory result → 10.1KB; 980KB mavis result → 5.1KB; 4MB unknown-tool result → 5.1KB. All 5 unit tests pass.
+2. **SessionStart hook** at `C:\Users\saini\.minimax\agents\mavis\hooks\session-start-handoff.md`:
+   - On every new session, scans for `data_cache/session_handoff.md`. If present, writes per-session state file to `data_cache/_handoff_state/<sessionId>.json` with `injected: false`.
+3. **UserPromptSubmit hook** at `C:\Users\saini\.minimax\agents\mavis\hooks\user-prompt-handoff.md`:
+   - On the first user prompt of each session, reads the state file and prepends the handoff content (capped at 12KB) as a `SYSTEM CONTEXT` block before the user's actual message.
+   - Marks `injected: true` so subsequent prompts pass through untouched. One-shot, idempotent, no rewrite when no handoff.
+4. **Session janitor** at `C:\Users\saini\.minimax\agents\mavis\scripts\session_janitor.py` (new cron `kotak-session-janitor`, every 5 min):
+   - **STRIP pass**: for active sessions > 1.5MB total, walk back through older assistant messages (skip the most-recent 30) and null out `tool_calls[].tool_call_result_data` from those where the LLM has already produced a conclusion (`msg_content` is non-empty). Replaces with a short `[stripped by session_janitor: original ~X chars from <tool>; call again if needed]` reference. Truncates `tool_call_args` > 200 chars.
+   - **HANDOFF pass**: for active sessions > 3MB total, write a fresh `data_cache/session_handoff.md` capturing the last 20 turns.
+   - Verified: 60-msg / 1.44MB synthetic test session → 0.73MB (50% reduction), 15 tool results stripped, no recent context lost.
+5. **Existing `kotak-session-hygiene` cron prompt** updated to reference the new fix and treat new FAILs as regressions.
+
+**Apply when**:
+- Investigating any "Mavis session died of context_compaction_failed" incident — the cause is almost certainly one large tool result, not accumulated small ones. Look at the biggest single message, find its `tool_call_result_data`, and verify the corresponding tool is in the sanitizer's catch-all path.
+- Adding a new MCP server or builtin tool that can return large results: copy the catch-all pattern (it's already there as the default). The sanitizer will catch any tool > 50KB regardless of name.
+- Reviewing "why does the LLM sometimes have stale context" — the janitor strips tool results from messages older than the most-recent 30. The LLM has the conclusion in `msg_content` but the raw tool data is gone. If the LLM needs the raw data again, it can re-call the tool.
+- Designing a "session continuity" feature for any future Mavis version: the SessionStart/UserPromptSubmit pair is the working pattern. Don't try to inject context via persona system-prompt edits — runtime hooks are the right layer.
+
+### 2026-08-30: `liveness_ping_failed` events in `liveness_crash.jsonl` are FALSE-POSITIVE crash signals (self-recovering)
+
+**Rule**: When you see an entry like
+```json
+{"ts": "...", "event": "crash", "reason": "liveness_ping_failed: [Errno 13] Permission denied: 'data_cache\\liveness.tmp'", "uptime_sec": 192617.83, "last_ping_age_sec": 30.5, "main_thread_alive": true, ...}
+```
+in `data_cache/liveness_crash.jsonl`, **do NOT restart the bot**. The `main_thread_alive: true` field is the discriminator. The liveness thread caught its OWN `tmp.write_text()` exception at `kotak_bot/utils/liveness.py:201` via the `except Exception` at line 166-175, wrote a "crash" event with the traceback, then the next 30s ping succeeded and the bot kept running.
+
+**Evidence (2026-08-30 02:00:39 IST)**: A `liveness_ping_failed: [Errno 13] Permission denied: 'data_cache\\liveness.tmp'` event was written for PID 10544 at uptime 192617s (53.5h). The bot kept running for another 21+ hours after that, still PID 10544 at the time of writing (uptime ~268000s = 74.3h). No restart, no Telegram, no real impact. Previous instance: 2026-08-24 03:20:50 with `OSError: [Errno 22] Invalid argument: 'data_cache\\liveness.tmp'` for PID 15204 (uptime 103109s) — same pattern, also self-recovered.
+
+**Root cause**: `kotak_bot/utils/liveness.py:200-207` writes to `data_cache/liveness.tmp` and then `os.replace`s it onto `liveness.json`. On Windows, if the previous ping's `tmp` file handle is still being released by the kernel (a known Win32 file-locking race when the writer is the same process within ~30s), the next `tmp.write_text(...)` returns `PermissionError [Errno 13]`. The fallback at line 207 (`self.ping_file.write_text(...)`) has the same vulnerability. The liveness thread's outer `try/except` was deliberately written to NEVER let the liveness thread itself die — see the comment at line 167 "Never let the liveness thread itself die". So the thread logs the failure and tries again 30s later. This is by design, not a bug.
+
+**Apply when**:
+- Reading `data_cache/liveness_crash.jsonl` and seeing `event: "crash", reason: "liveness_ping_failed:*"` — check the `main_thread_alive` field. If `true`, ignore. If `false`, treat as a real crash and follow the recovery procedure below.
+- Distinguishing real crashes from false positives at a glance:
+  - `event: "atexit", reason: "atexit_normal"` → process exited cleanly (could be a planned restart, could be NSSM stopping it)
+  - `event: "atexit", reason: "signal:SIGINT"` / `"signal:SIGBREAK"` → external kill (NSSM stop, taskkill, Ctrl+C)
+  - `event: "signal", reason: "SIGINT"` / `"SIGBREAK"` / `"SIGTERM"` → signal handler fired (planned shutdown)
+  - `event: "crash", main_thread_alive: true` → liveness sub-component hiccup, **NOT a real crash**
+  - `event: "crash", main_thread_alive: false` → real process death, follow recovery
+- For liveness state, trust `data_cache/liveness.json` (rewritten every 30s by the ping thread) and `data_cache/heartbeat_latest.json`. `age_sec < 60` = healthy. Do not use `liveness_crash.jsonl` for liveness state — it's an event log, not a status file.
+- If the false-positive noise becomes annoying: future hardening is `tmp.unlink(missing_ok=True)` before `tmp.write_text(...)` at liveness.py:201, and using `os.replace(self.ping_file, tmp)` (reverse direction) so the tmp is always the new file. Out of scope for this nightly — the spec says "Do NOT touch kotak_bot/ core code" and `kotak_bot/utils/liveness.py` is core.
+- Operators (and future crons) writing alerts on `liveness_crash.jsonl` should filter: only alert on `event: "crash"` AND `main_thread_alive: false`. The current `kotak-bot-watchdog` cron correctly uses `liveness.json` `age_sec` and is not affected.
 
 ## Production-level utilities (added 2026-08-23 + 2026-08-24)
 
