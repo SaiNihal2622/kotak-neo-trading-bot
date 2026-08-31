@@ -12,7 +12,34 @@ Maintained by:
 
 ---
 
-## Last refresh — 2026-08-31 16:24 IST (commits 58c33a8 + d667717 + 2514342 + 78461f5 + ccc8630 + 11c9868)
+## Last refresh — 2026-08-31 16:32 IST (commits 58c33a8 + d667717 + 2514342 + 78461f5 + ccc8630 + 11c9868 + a0465d5 + 1fb5f8f)
+
+### Complete production system — 8 commits this session
+- quant_service.py (24/7 brain) — direct LLM API, persistent state, HTTP :8503
+- quant_watchdog.py (safety net) — auto-restarts service if dies, 30s health checks
+- quant_control.py (chat interface) — status/positions/decisions/ask/close/pause/resume
+- quant_daemon.py (alternative watcher) — passive event detector
+- intraday_levels.py + option_chain_analyzer.py — 28-instrument state tracking
+- session_death_detector.py + session_715_recovery.py + path_shadow_check.py + rotate_jsonl.py — infra
+- kotak_bot/__main__.py — quant_actions reader (block 1c)
+- kotak_bot/data/kotak_prod_feed.py — HTTP 400 fix
+- kotak_bot/data/kotak_research.py — research PDF cosmetic
+
+### Running RIGHT NOW (16:32 IST)
+- quant_service: PID 4680, running, 563 ticks, HTTP :8503 healthy
+- quant_watchdog: PID 10384, monitoring, will restart service if dies
+- kotak_bot: PID 12496, fresh code (quant_actions reader + HTTP 400 fix loaded)
+- All 17 chat-spamming crons: soft-deleted
+- 3 chat-targeting crons: target_session_id cleared
+
+### One click to true 24/7
+The NSSM install script is ready: system\run_nssm_install_elevated.ps1
+Run in admin PowerShell: powershell -ExecutionPolicy Bypass -File <path>
+This installs KotakQuantService as a Windows service: 24/7, auto-restart on crash, survives reboots.
+Without this, the background process + watchdog gives 24/7 *while logged in*.
+
+### Use from this chat
+python scripts/quant_control.py {status|positions|decisions|ask|close|pause|resume}
 
 ### END-TO-END VERIFIED 2026-08-31 16:23 IST
 - Test OPEN action: bot logged, wrote to quant_pending.jsonl ✓
