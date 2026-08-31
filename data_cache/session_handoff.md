@@ -12,7 +12,29 @@ Maintained by:
 
 ---
 
-## Last refresh — 2026-08-31 15:32 IST (commits 58c33a8 + 5d2a1c4 pending)
+## Last refresh — 2026-08-31 16:14 IST (commits 58c33a8 + d667717 + 2514342 + 78461f5 + ccc8630)
+
+### The one-stop solution: quant_service.py
+**The Mavis session / cron architecture is no longer the brain.**
+A standalone Python service (`scripts/quant_service.py`) is now the
+always-on, persistent-LLM, direct-API trading brain. NSSM-installable for
+24/7. HTTP control on :8503. Calls the LLM directly via httpx (no
+Mavis session, no 715 errors, no chat spam).
+
+### Active state
+- Service PID 4680, started 16:12 IST, running, HTTP :8503 healthy
+- Bot PID 2388, started 16:00 IST, on OLD code (pre-quant_actions reader)
+- 6 errored sessions archived today
+- HTTP 400 fix committed (kotak_prod_feed batch-chunk), needs bot restart to load
+- Heartbeat crons (kotak-bot-watchdog, kotak-self-monitor) — DISABLED to stop chat spam
+
+### Bot executor hook (added in ccc8630, needs bot restart to load)
+- `kotak_bot/__main__.py` block 1c reads `data_cache/quant_actions.json`
+- CLOSE: `order_mgr.square_off_all(reason=...)` + Telegram
+- OPEN: log + Telegram + write to `quant_pending.jsonl` for review
+- consumed=True after processing
+
+### Production-level safety net (Layer 1-4 complete)
 
 ### Bot state
 - **Process**: alive, liveness writer PID 7332, uptime 6h36m, tick 712
@@ -78,8 +100,30 @@ Maintained by:
 - `scripts/session_715_recovery.py` — soft-retry transient 715 errors
 - `scripts/path_shadow_check.py` — catches 2026-08-28 Path-shadow bug pattern
 - `scripts/rotate_jsonl.py` — caps growing JSONL files at 500KB
+- `scripts/intraday_levels.py` — day OHLC, VWAP, opening range, swing 30m
+- `scripts/option_chain_analyzer.py` — full chain + BS Greeks for 28 instruments
+- `scripts/quant_daemon.py` — always-on watcher (event detector)
+- `scripts/quant_service.py` — **THE BRAIN** — direct LLM API, persistent state, HTTP control
+- `scripts/quant_control.py` — chat-side control (status, decisions, ask, close)
+- `scripts/test_llm_direct.py` — confirms /messages endpoint works
+- `system/install_quant_service.ps1` — NSSM installer
 - `kotak_bot/data/kotak_prod_feed.py` — HTTP 400 fix (chunked batches of 50)
 - `kotak_bot/data/kotak_research.py` — research PDF cosmetic downgrade
+- `kotak_bot/__main__.py` block 1c — quant_actions.json reader
+
+### Architecture (final)
+- quant_service (24/7 Python) — direct LLM API calls via httpx
+- kotak_bot/__main__.py — executor (reads quant_actions.json, places orders)
+- This chat (primary) — control via quant_control.py + manual LLM ask
+- data_cache/session_handoff.md — the single source of truth across sessions
+
+### To restart bot with new code (HTTP 400 fix + quant_actions reader):
+  nssm restart KotakBotPaper
+  # or: Start-Process -FilePath ".venv\Scripts\python.exe" -ArgumentList "-u","-m","kotak_bot","paper" -RedirectStandardOutput "bot_stdout.log" -RedirectStandardError "bot_stderr.log" -WindowStyle Hidden
+
+### To NSSM-install the quant service (needs admin UAC):
+  powershell -Verb RunAs -File system\install_quant_service.ps1
+  # or run in background: Start-Process -FilePath ".venv\Scripts\python.exe" -ArgumentList "-u","scripts/quant_service.py" -WindowStyle Hidden -RedirectStandardOutput "Logs\quant_service.out.log"
 
 ---
 
@@ -128,6 +172,150 @@ Affected (last 24h):
 - `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
 
 ## 715/1000 recovery alert @ 2026-08-31T15:25:09+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T15:29:43+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T15:30:10+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T15:35:19+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T15:40:14+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T15:45:11+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T15:45:16+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T15:50:18+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T15:55:11+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T16:00:09+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T16:00:17+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T16:05:07+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T16:10:15+05:30
 Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
 **Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
 **Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
