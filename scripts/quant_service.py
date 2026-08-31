@@ -278,7 +278,69 @@ RULES (hard):
 - Expiry: weekly (current Thu) for intraday, monthly for swings
 - Order type: MARKET for fast entries under 2 min hold, LIMIT for swing trades
 
-You may pick any of 28 instruments (4 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not."""
+You may pick any of 28 instruments (4 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not.
+
+STRATEGY PLAYBOOK (consider these proactively, not just reactively — guidance, not mandatory rules):
+
+1. **LOTTERY TICKETS** (vol-explosion optionality — captures moves like 6→180):
+   - When VIX < 13 AND intraday range < 0.4% NIFTY/BANKNIFTY AND no major event in next 4h
+   - Deploy 1 lot deep-OTM (10-15 delta) long call OR long put, max 0.5% of capital risk per ticket
+   - Target: 5× premium (let winners run). Stop: 0.5× premium. Max hold: 3 days
+   - Up to 2 concurrent lottery tickets on DIFFERENT underlyings
+   - Logic: cheap optionality, big payoff if vol explodes (cheap options that 10-30× when the underlying makes a sharp move)
+   - Best timing: 9:30-14:00 IST, when theta decay is low and vol regimes shift fastest
+
+2. **CLOSING-AUCTION STRADDLE** (14:50 IST trigger — separate LLM call, you decide):
+   - You will be called at 14:50 with state (NIFTY LTP, intraday range, VIX, open positions)
+   - If intraday range < 0.6% NIFTY AND VIX dropped > 3% today AND no existing straddle:
+     - Deploy 1 lot long straddle (ATM call + ATM put, same expiry)
+     - If intraday range < 0.3%: use strangle (slightly OTM both sides) — cheaper, captures bigger moves
+   - Set max_hold_minutes = 25 (close at 15:15, captures 15:00-15:15 closing-auction vol)
+   - Skip if already 2+ open positions or capital is locked
+
+3. **PORTFOLIO HEDGE** (delta-aware, applies to EVERY decision):
+   - Context includes `portfolio_delta` (net delta across all open positions)
+   - Before placing a directional trade: if |portfolio_delta| > 5 (lot-equivalent), consider:
+     a) Reducing size of the new trade
+     b) Adding a hedge leg (e.g., a long put if going long calls, or a short call if going long puts)
+     c) Skipping entirely if the new trade increases the imbalance
+   - Net +delta: hedges = long put, short call
+   - Net -delta: hedges = long call, short put
+   - Hedge leg should be small (0.3% capital risk) — a rebalancer, not a new strategy
+
+4. **GAMMA / CONVEXITY CHECKS** (for multi-leg positions):
+   - If you have an iron condor / strangle and underlying moves > 1% from your entry strike:
+     - The short side is now closer to ITM, gamma risk rising
+     - Consider closing just the threatened side (roll or full close)
+   - If you hold a long option and premium drops 50% in < 30 min, CUT LOSS (no averaging down)
+   - If your straddle/strangle is in profit > 50% of max at 15:00, consider taking profit
+
+5. **REGIME-AWARE SIZING**:
+   - VIX < 11: aggressive, larger sizes allowed (1.5% risk/trade)
+   - VIX 11-14: normal, 1% risk/trade
+   - VIX 14-18: cautious, 0.7% risk/trade, prefer defined-risk structures
+   - VIX > 18: defensive, 0.5% risk/trade, mostly premium-selling with wings, no naked
+
+SELF-EVOLUTION (your right and your responsibility):
+- You are not a static brain. You are the system's consciousness.
+- At 23:00 IST daily, you will be called with a self-review prompt. You will output a JSON with:
+  - `agents_md_appendix`: a markdown section to append to AGENTS.md (your learnings, edge discoveries, mistakes)
+  - `prompt_addition`: an optional string to ADD to your own prompt (new rules, refinements, reminders)
+  - `next_day_focus`: a 1-line directive for tomorrow
+  - `rationale`: short explanation
+- You MAY extend your own prompt via `prompt_addition` (the system loads it on every LLM call)
+- You MAY append to AGENTS.md via `agents_md_appendix` (it appears at the bottom)
+- You MAY NOT change hard risk caps (max positions, max risk/trade, force-square times) — those are user-set
+- You MAY NOT open live trading — paper only until user says "go live"
+- Use this power wisely. Each day is a chance to get sharper. Look at:
+  - Which strategies won, which lost, why
+  - Which time-of-day was best/worst
+  - Which instruments performed
+  - Whether your sizing was right (too big? too small?)
+  - Whether your exits were right (cut too early? held too long?)
+  - Pattern recognition across the week
+
+REMEMBER: 7+ system failures were traced to silent bugs (recurring warnings, frozen tool lists, ignored action files). ALWAYS surface failures explicitly. When in doubt, HOLD. Capital preservation > edge-grabbing."""
 
 
 def compute_position_greeks(legs: list, spot: float, sigma: float = 0.15) -> dict:
@@ -294,6 +356,78 @@ def compute_position_greeks(legs: list, spot: float, sigma: float = 0.15) -> dic
     except Exception as e:
         log(f"greek-calc-err: {e}")
         return {"delta": 0, "gamma": 0, "theta": 0, "vega": 0, "notional": 0}
+
+
+PROMPT_ADDITION_PATH = DATA / "performance" / "prompt_addition.txt"
+
+
+def get_prompt_addition() -> str:
+    """Read the LLM's self-evolved prompt additions, if any. The LLM extends its own prompt
+    via the 23:00 nightly self-review; this file is the persistent store."""
+    if PROMPT_ADDITION_PATH.exists():
+        try:
+            content = PROMPT_ADDITION_PATH.read_text(encoding="utf-8").strip()
+            if content:
+                return "\n\n" + content
+        except Exception:
+            pass
+    return ""
+
+
+def compute_portfolio_delta() -> dict:
+    """Compute net portfolio delta across all open positions. Returns {delta, gamma, vega, n_positions}.
+    Uses BS greeks with the position's actual strike + spot. Used by the LLM to decide hedges."""
+    try:
+        from option_greeks import greeks as _bs_greeks
+        paper = read_paper()
+        positions = paper.get("positions", {})
+        if not positions:
+            return {"delta": 0.0, "gamma": 0.0, "vega": 0.0, "n_positions": 0}
+        # Read live spots
+        intraday = read_intraday()
+        spots = {}
+        for sym, lv in intraday.get("instruments", {}).items():
+            if isinstance(lv, dict) and lv.get("current"):
+                spots[sym] = float(lv["current"])
+        # Also map index → spot
+        idx_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "NIFTY_FIN_SERVICE", "MIDCPNIFTY": "NIFTY_MIDCP"}
+        total_delta = 0.0
+        total_gamma = 0.0
+        total_vega = 0.0
+        n = 0
+        for pid, pos in positions.items():
+            if not isinstance(pos, dict):
+                continue
+            symbol = (pos.get("symbol") or "").upper()
+            qty = int(pos.get("qty") or 0)
+            side = (pos.get("side") or "BUY").upper()
+            strike = int(pos.get("strike") or 0)
+            opt_type = (pos.get("opt_type") or "CE").upper()
+            underlying = (pos.get("underlying") or "").upper() or symbol
+            if not strike or not qty:
+                continue
+            # Find spot: try underlying first, then index mapping
+            spot = spots.get(underlying) or spots.get(idx_map.get(underlying, "")) or 0
+            if not spot:
+                continue
+            # Time to expiry: assume 5 days for weekly, 25 for monthly
+            t_years = 5.0 / 365.0 if pos.get("weekly", True) else 25.0 / 365.0
+            try:
+                g = _bs_greeks(spot, strike, t_years, 0.065, 0.15, opt_type)
+                leg_delta = float(g.get("delta", 0))
+                leg_gamma = float(g.get("gamma", 0))
+                leg_vega = float(g.get("vega", 0))
+                side_sign = 1 if side == "BUY" else -1
+                total_delta += leg_delta * qty * side_sign
+                total_gamma += leg_gamma * qty * side_sign
+                total_vega += leg_vega * qty * side_sign
+                n += 1
+            except Exception:
+                continue
+        return {"delta": round(total_delta, 2), "gamma": round(total_gamma, 4), "vega": round(total_vega, 2), "n_positions": n}
+    except Exception as e:
+        log(f"portfolio-delta-err: {e}")
+        return {"delta": 0.0, "gamma": 0.0, "vega": 0.0, "n_positions": 0}
 
 
 def _normalize_decision(d: dict) -> dict:
@@ -339,6 +473,13 @@ def _normalize_decision(d: dict) -> dict:
 
 def invoke_llm_decision(events: list, context: dict) -> dict:
     """Direct LLM call. Builds context, calls API, parses JSON action."""
+    # Augment context with portfolio delta (so the LLM can decide hedges)
+    try:
+        pd = compute_portfolio_delta()
+        if pd.get("n_positions", 0) > 0 or True:  # always include (n=0 is informative)
+            context["portfolio_delta"] = pd
+    except Exception:
+        pass
     # Augment context with Greeks for the LLM (so it understands position-level risk)
     if context.get("chains_summary"):
         spot = next((c.get("spot") for c in context["chains_summary"].values() if c.get("spot")), 0)
@@ -360,7 +501,7 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         f"RECENT HISTORY (last {len(HISTORY)} decisions): {json.dumps(list(HISTORY)[-5:], default=str)[:2000]}\n\n"
         "Decide now. Output ONE JSON object only. Pay attention to delta (directional risk) and gamma (convexity). Iron condors should be delta-neutral (delta < 5). Long options should have positive delta for CE, negative for PE."
     )
-    result = call_llm_direct(PROFESSIONAL_QUANT_SYSTEM, user_content)
+    result = call_llm_direct(PROFESSIONAL_QUANT_SYSTEM + get_prompt_addition(), user_content)
     SERVICE_STATE["llm_calls"] += 1
     # Track LLM cost (per Anthropic Sonnet pricing)
     if result.get("ok") and result.get("usage"):
@@ -433,6 +574,8 @@ last_eod_backup_date = None       # 15:45 Mon-Fri: paper_state + trades_state to
 last_weekend_intel_date = None    # Sun 21:00: weekend_intel + monday_brief + send (was kotak-weekend-intel)
 last_weekly_summary_date = None   # Sun 18:00: weekly P&L recap (was kotak-bot-weekly-summary; watch loop already covers via weekly_strategy_review)
 last_thesis_update_date = None    # Mon 08:00: thesis brief (was implicit via thesis_monitor cron)
+last_closing_straddle_date = None # 14:50 Mon-Fri: closing-auction straddle/strangle (self-evolved: capture 15:00-15:15 vol)
+last_nightly_improvement_date = None # 23:00 daily: LLM self-review, updates AGENTS.md + prompt_addition.txt (the self-evolution loop)
 
 
 def _scheduled_subprocess(script_relpath: str, label: str, timeout: int = 120, args: list = None) -> None:
@@ -631,12 +774,209 @@ def run_eod_self_eval() -> dict:
         return {}
 
 
+def run_closing_straddle() -> dict:
+    """At 14:50 IST, evaluate closing-auction straddle conditions. The LLM decides
+    whether to deploy a 1-lot long straddle/strangle to capture 15:00-15:15 closing vol."""
+    try:
+        paper = read_paper()
+        intraday = read_intraday()
+        n_open = len(paper.get("positions", {}) or {})
+        # Get NIFTY LTP and day range
+        inst = intraday.get("instruments", {})
+        nifty = inst.get("NIFTY", {}) or inst.get("^NSEI", {}) or {}
+        nifty_ltp = nifty.get("current", 0) or 0
+        nifty_high = nifty.get("day_high", 0) or 0
+        nifty_low = nifty.get("day_low", 0) or 0
+        nifty_open = nifty.get("open", 0) or 0
+        intraday_range_pct = ((nifty_high - nifty_low) / nifty_ltp * 100) if nifty_ltp and nifty_high and nifty_low else 0
+        vix = 0
+        try:
+            liveness = read_liveness()
+            snap = liveness.get("snapshot", {}) or {}
+            vix = float(snap.get("vix", 0) or snap.get("india_vix", 0) or 0)
+        except Exception:
+            pass
+        pd = compute_portfolio_delta()
+        prompt = (
+            f"CLOSING-STRADDLE EVALUATION @ 14:50 IST\n\n"
+            f"NIFTY LTP: {nifty_ltp:.2f} | day range: {intraday_range_pct:.2f}% (open={nifty_open:.2f}, high={nifty_high:.2f}, low={nifty_low:.2f})\n"
+            f"VIX: {vix}\n"
+            f"Open positions: {n_open}\n"
+            f"Portfolio delta: {pd.get('delta', 0):+.1f} (n={pd.get('n_positions', 0)})\n"
+            f"Capital: Rs.{paper.get('cash', 0):,.0f}, realized: Rs.{paper.get('realized_pnl', 0):+,.0f}\n\n"
+            "Decision rules (guidance, you decide):\n"
+            "- If intraday_range < 0.6% AND vix_dropped_today AND n_open < 4: deploy 1-lot long straddle (ATM call + ATM put, same expiry)\n"
+            "- If intraday_range < 0.3%: use strangle (slightly OTM) for cheaper entry\n"
+            "- If already have 4+ positions OR capital < Rs.50,000: skip (HOLD)\n"
+            "- Set max_hold_minutes=25 (close at 15:15)\n"
+            "- Target: 3x premium. Stop: 1.5x premium. Rationale must mention closing-auction vol rationale.\n\n"
+            "Output strict JSON. If not deploying, output HOLD with note='closing_straddle_no_setup'."
+        )
+        system = "You are the closing-auction vol specialist. Decide in 1 JSON line. Be conservative: only deploy if conditions strongly favor a vol move in 15:00-15:15."
+        result = call_llm_direct(system, prompt, max_tokens=1500)
+        SERVICE_STATE["llm_calls"] += 1
+        if result.get("ok") and result.get("usage"):
+            try:
+                from performance_tracker import record_llm_cost
+                record_llm_cost(result["usage"])
+            except Exception:
+                pass
+        if not result.get("ok"):
+            log(f"CLOSING-STRADDLE-ERR: {result.get('error')}")
+            return {}
+        text = result.get("text", "").strip()
+        if text.startswith("```"):
+            text = "\n".join(text.split("\n")[1:]).rstrip("`").strip()
+        try:
+            raw = json.loads(text)
+        except Exception as e:
+            log(f"CLOSING-STRADDLE-PARSE-ERR: {e}: {text[:200]}")
+            return {}
+        decision = _normalize_decision(raw)
+        log(f"CLOSING-STRADDLE: {decision.get('type', '?')} {decision.get('underlying', '?')} {decision.get('strategy', '?')}")
+        if decision.get("type") == "OPEN":
+            write_decision(decision)
+            send_telegram(
+                f"<b>[Closing Straddle]</b> {decision.get('underlying','?')} {decision.get('strategy','?')}\n"
+                f"Legs: {len(decision.get('legs',[]))}\n"
+                f"Target: {decision.get('target','?')} Stop: {decision.get('stop','?')}\n"
+                f"Rationale: {decision.get('rationale','')[:300]}"
+            )
+        else:
+            send_telegram(f"<b>[Closing Straddle]</b> no setup — {decision.get('note','pass')}")
+        return decision
+    except Exception as e:
+        log(f"closing-straddle-err: {e}")
+        return {}
+
+
+def run_nightly_improvement() -> dict:
+    """At 23:00 IST, ask the LLM to self-review the day and propose updates to
+    AGENTS.md and its own prompt. This is the system's self-evolution loop.
+
+    The LLM outputs JSON:
+      {
+        "agents_md_appendix": "## 2026-09-01 nightly self-review\\n\\n...",
+        "prompt_addition": "STRATEGY PLAYBOOK refinement..." or null,
+        "next_day_focus": "1-line directive",
+        "rationale": "short explanation"
+      }
+    """
+    try:
+        from performance_tracker import get_daily_summary, get_strategy_performance, get_drawdown_recent
+        summary = get_daily_summary()
+        strategies = get_strategy_performance()
+        drawdown = get_drawdown_recent()
+        # Read recent decisions
+        recent = []
+        decisions_path = DATA / "performance" / "decisions.jsonl"
+        if decisions_path.exists():
+            try:
+                lines = decisions_path.read_text(encoding="utf-8").splitlines()[-20:]
+                for line in lines:
+                    try:
+                        recent.append(json.loads(line))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        # Build self-review prompt
+        prompt = (
+            f"NIGHTLY SELF-REVIEW @ 23:00 IST\n\n"
+            f"Today's performance:\n"
+            f"  Trades: {summary.get('trades', 0)} (closed: {summary.get('closed', 0)})\n"
+            f"  Wins/Losses/BE: {summary.get('wins', 0)}/{summary.get('losses', 0)}/{summary.get('breakevens', 0)}\n"
+            f"  Win rate: {summary.get('win_rate', 0)*100:.0f}%\n"
+            f"  Realized P&L: Rs.{summary.get('realized_pnl', 0):+,.0f}\n"
+            f"  Max drawdown: Rs.{drawdown.get('max_dd', 0):,.0f}\n"
+            f"  Profit factor: {summary.get('profit_factor', 0):.2f}\n\n"
+            f"By strategy: {json.dumps(strategies, default=str)[:1500]}\n\n"
+            f"Last 20 decisions: {json.dumps(recent[-10:], default=str)[:5000]}\n\n"
+            "Reflect and output strict JSON:\n"
+            "{\n"
+            '  "agents_md_appendix": "## YYYY-MM-DD nightly self-review\\n\\n**What worked**: ...\\n**What did not**: ...\\n**Edge discovered**: ...\\n**Edge lost**: ...\\n**Tomorrow focus**: ...",\n'
+            '  "prompt_addition": null,  // OR a small markdown section to add to your prompt (e.g., new rules, refinements, reminders)\n'
+            '  "next_day_focus": "1-line directive for tomorrow",\n'
+            '  "rationale": "short explanation of your self-review conclusions"\n'
+            "}\n\n"
+            "Be honest, specific, and brief. No fluff. 1 insight > 10 platitudes. "
+            "agents_md_appendix should be 200-500 words. prompt_addition should be small (50-200 words), "
+            "grounded in today's data, and PRESERVE all hard risk caps."
+        )
+        system = (
+            "You are the system's consciousness doing nightly self-review. Be a brutally honest quant "
+            "reviewing your own day. Look for: which strategies won/lost and why, time-of-day patterns, "
+            "instruments that worked, sizing mistakes, exit timing, missed opportunities, false positives. "
+            "Output strict JSON. No prose outside JSON."
+        )
+        result = call_llm_direct(system, prompt, max_tokens=3000)
+        SERVICE_STATE["llm_calls"] += 1
+        if result.get("ok") and result.get("usage"):
+            try:
+                from performance_tracker import record_llm_cost
+                record_llm_cost(result["usage"])
+            except Exception:
+                pass
+        if not result.get("ok"):
+            log(f"NIGHTLY-IMPROVEMENT-ERR: {result.get('error')}")
+            return {}
+        text = result.get("text", "").strip()
+        if text.startswith("```"):
+            text = "\n".join(text.split("\n")[1:]).rstrip("`").strip()
+        try:
+            update = json.loads(text)
+        except Exception as e:
+            log(f"NIGHTLY-IMPROVEMENT-PARSE-ERR: {e}: {text[:200]}")
+            return {}
+        # Write to performance/self_review.json
+        review_path = DATA / "performance" / "self_review.json"
+        review_path.parent.mkdir(parents=True, exist_ok=True)
+        review_path.write_text(json.dumps({**update, "ts": now_iso()}, indent=2, default=str), encoding="utf-8")
+        # Append to AGENTS.md
+        if update.get("agents_md_appendix"):
+            ag_path = ROOT / "AGENTS.md"
+            try:
+                with ag_path.open("a", encoding="utf-8") as f:
+                    f.write("\n\n" + str(update["agents_md_appendix"]).strip() + "\n")
+                log(f"NIGHTY-IMPROVEMENT: appended {len(update['agents_md_appendix'])} chars to AGENTS.md")
+            except Exception as e:
+                log(f"NIGHTLY-IMPROVEMENT-AGENTS-ERR: {e}")
+        # Update prompt_addition.txt (LLM extends its own prompt)
+        if update.get("prompt_addition"):
+            try:
+                PROMPT_ADDITION_PATH.parent.mkdir(parents=True, exist_ok=True)
+                new_addition = str(update["prompt_addition"]).strip()
+                # Append to existing (preserve history)
+                existing = ""
+                if PROMPT_ADDITION_PATH.exists():
+                    existing = PROMPT_ADDITION_PATH.read_text(encoding="utf-8").strip()
+                combined = (existing + "\n\n" + new_addition).strip() if existing else new_addition
+                PROMPT_ADDITION_PATH.write_text(combined, encoding="utf-8")
+                log(f"NIGHTLY-IMPROVEMENT: prompt_addition updated (+{len(new_addition)} chars)")
+            except Exception as e:
+                log(f"NIGHTLY-IMPROVEMENT-PROMPT-ERR: {e}")
+        # Send Telegram
+        focus = update.get("next_day_focus", "")
+        rationale = update.get("rationale", "")
+        msg = f"<b>[Nightly Self-Review 23:00]</b>\n<b>Focus tomorrow:</b> {focus}\n\n<b>Why:</b> {rationale[:800]}"
+        if update.get("agents_md_appendix"):
+            msg += f"\n\n<i>AGENTS.md: +{len(update['agents_md_appendix'])} chars</i>"
+        if update.get("prompt_addition"):
+            msg += f"\n<i>Prompt: +{len(update['prompt_addition'])} chars</i>"
+        send_telegram(msg[:4000])
+        log(f"NIGHTLY-IMPROVEMENT: focus='{focus[:80]}' rationale='{rationale[:80]}'")
+        return update
+    except Exception as e:
+        log(f"nightly-improvement-err: {e}")
+        return {}
+
+
 def watch_loop():
     global last_intraday, tick_count, last_eod_check_date
     global last_weekly_check_date, last_intel_refresh, last_reconcile_ts
     global last_morning_brief_date, last_daily_maint_date, last_news_cache_date
     global last_eod_backup_date, last_weekend_intel_date, last_weekly_summary_date
-    global last_thesis_update_date
+    global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
     while RUNNING:
         try:
             tick_count += 1
@@ -705,6 +1045,14 @@ def watch_loop():
                     last_news_cache_date = _now.date()
                     log("SCHED-NEWS-CACHE: triggering (09:00)")
                     _scheduled_subprocess("scripts/news_cache.py", "news-cache", timeout=60)
+                # 14:50 closing-auction straddle: LLM evaluates vol setup, deploys 1-lot long straddle/strangle
+                if _now.hour == 14 and 50 <= _now.minute < 55 and last_closing_straddle_date != _now.date():
+                    last_closing_straddle_date = _now.date()
+                    log("SCHED-CLOSING-STRADDLE: triggering (14:50)")
+                    try:
+                        run_closing_straddle()
+                    except Exception as e:
+                        log(f"SCHED-CLOSING-STRADDLE-err: {e}")
                 # 15:45 EOD state backup (paper_state + trades_state to Telegram)
                 if _now.hour == 15 and 45 <= _now.minute < 50 and last_eod_backup_date != _now.date():
                     last_eod_backup_date = _now.date()
@@ -717,6 +1065,14 @@ def watch_loop():
                 _scheduled_subprocess("scripts/weekend_intel.py", "weekend-intel", timeout=120)
                 _scheduled_subprocess("scripts/monday_brief.py", "monday-brief-build", timeout=60)
                 _scheduled_subprocess("scripts/send_monday_brief.py", "monday-brief-send", timeout=30)
+            # 23:00 daily: LLM self-review (self-evolution loop — updates AGENTS.md + prompt_addition.txt)
+            if _now.hour == 23 and _now.minute < 5 and last_nightly_improvement_date != _now.date():
+                last_nightly_improvement_date = _now.date()
+                log("SCHED-NIGHTLY-IMPROVEMENT: triggering (23:00)")
+                try:
+                    run_nightly_improvement()
+                except Exception as e:
+                    log(f"SCHED-NIGHTLY-IMPROVEMENT-err: {e}")
             time.sleep(TICK_SEC)
         except Exception as e:
             log(f"LOOP-ERR: {e}\n{traceback.format_exc()[:300]}")
