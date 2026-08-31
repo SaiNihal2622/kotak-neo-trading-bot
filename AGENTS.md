@@ -65,12 +65,21 @@ The bot does NOT have its own LLM call. The cron IS the brain.
 | `kotak-bot-watchdog`           | every 5 min             | NSSM-aware health check + restart if dead |
 | `kotak-bot-heartbeat`          | every 5 min             | Wrapper heartbeat (uses temp PS files) |
 | `kotak-trader-desk`            | every 5 min 09:00-15:00 Mon-Fri | **The LLM brain** — reads state, decides |
-| `kotak-bot-morning-brief`      | 08:15 Mon-Fri           | Telegram pre-market brief |
-| `kotak-bot-daily-maintenance`  | 08:25 Mon-Fri           | Power plan, self-test, re-auth |
-| `kotak-bot-state-backup`       | 15:45 Mon-Fri           | EOD backup of paper_state.json to Telegram |
-| `kotak-bot-weekly-summary`     | Sun 18:00               | Weekly P&L recap |
-| `kotak-weekend-intel`          | Sun 21:00               | Weekend intel + Monday brief (NEW 2026-08-22) |
+| `kotak-bot-morning-brief`      | 08:15 Mon-Fri           | ~~Telegram pre-market brief~~ (2026-08-31: paused; in-process scheduler in `quant_service.py` covers it via `mavis_premarket.py`) |
+| `kotak-bot-daily-maintenance`  | 08:25 Mon-Fri           | ~~Power plan, self-test, re-auth~~ (2026-08-31: paused; in-process scheduler runs `daily_maintenance.py`) |
+| `kotak-bot-state-backup`       | 15:45 Mon-Fri           | ~~EOD backup of paper_state.json to Telegram~~ (2026-08-31: paused; in-process scheduler runs `daily_state_backup.py`) |
+| `kotak-bot-weekly-summary`     | Sun 18:00               | ~~Weekly P&L recap~~ (2026-08-31: paused; in-process scheduler runs `weekly_strategy_review.py`) |
+| `kotak-weekend-intel`          | Sun 21:00               | ~~Weekend intel + Monday brief~~ (2026-08-31: paused; in-process scheduler runs `weekend_intel.py` + `monday_brief.py` + `send_monday_brief.py`) |
 | `kotak-copilot`                | every 10 min 09:00-15:00 | Co-pilot analysis (runs co_pilot.py) |
+
+**As of 2026-08-31, all 23 Kotak Mavis crons are paused.** The daily-ops
+that crons previously handled (morning brief, daily maintenance, EOD
+backup, weekly summary, weekend intel) are now an in-process scheduler
+inside `scripts/quant_service.py` — see `_scheduled_subprocess()` and
+the `SCHED-*` log lines in the watch loop. Each fires once per day at
+its prescribed time, runs the existing script as a subprocess, sends its
+own success Telegram, and on failure logs + sends a terse error Telegram.
+No chat-spam, full coverage.
 | `kotak-bot-nightly-backtest`   | 01:00 daily             | Backtest sweep across all strategies |
 | `kotak-self-monitor` *(new)*   | every 15 min            | Off-hours self-audit (this file's project) |
 | `kotak-nightly-improvement` *(new)* | 23:00 daily         | Self-review + AGENTS.md updates |
