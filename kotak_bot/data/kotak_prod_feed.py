@@ -547,24 +547,46 @@ class KotakProdFeed:
             time.sleep(self.poll_interval)
 
     def _fetch_option_quotes(self, psyms: list[str]) -> None:
-        # Kotak allows comma-separated queries in one request
+        """Fetch option quotes in batches of <=50 (Kotak PROD hard limit).
+
+        A full option chain (15 strikes * 2 sides * 2 underlyings) is ~60 symbols;
+        the API rejects batches >50 with HTTP 400
+        "Please set the Neo symbol max value to 50." (root cause 2026-08-31
+        09:00+IST sustained error 6h+). We chunk into 50-symbol requests and
+        merge results.
+        """
+        if not psyms:
+            return
+        # Kotak allows comma-separated queries in one request, max 50 symbols
         queries = [f'nse_fo|{p}' for p in psyms]
-        encoded = ','.join(urllib.parse.quote(q, safe='') for q in queries)
-        url = f"{self.session.base_url}/script-details/1.0/quotes/neosymbol/{encoded}/all"
-        code, body = _http_get(url, {'Authorization': self.access_token})
-        if code == 401:
-            logger.warning("KotakProdFeed: 401 on quotes, will re-auth next cycle")
-            self.session = None  # force re-auth
+        BATCH_SIZE = 50
+        all_quotes: list = []
+        any_401 = False
+        for i in range(0, len(queries), BATCH_SIZE):
+            batch = queries[i:i + BATCH_SIZE]
+            encoded = ','.join(urllib.parse.quote(q, safe='') for q in batch)
+            url = f"{self.session.base_url}/script-details/1.0/quotes/neosymbol/{encoded}/all"
+            code, body = _http_get(url, {'Authorization': self.access_token})
+            if code == 401:
+                logger.warning("KotakProdFeed: 401 on quotes, will re-auth next cycle")
+                self.session = None  # force re-auth
+                any_401 = True
+                break
+            if code != 200:
+                # log once per failure (was firing 3/sec at the old warning rate)
+                logger.warning(f"KotakProdFeed: quotes HTTP {code} body={body[:200]} (batch {i // BATCH_SIZE + 1}/{(len(queries) + BATCH_SIZE - 1) // BATCH_SIZE})")
+                continue
+            try:
+                quotes = json.loads(body)
+                if isinstance(quotes, list):
+                    all_quotes.extend(quotes)
+                else:
+                    logger.warning(f"KotakProdFeed: unexpected quotes type {type(quotes)}")
+            except Exception as e:
+                logger.warning(f"KotakProdFeed: parse quotes batch {i // BATCH_SIZE}: {e}")
+        if any_401:
             return
-        if code != 200:
-            logger.warning(f"KotakProdFeed: quotes HTTP {code} body={body[:200]}")
-            return
-        try:
-            quotes = json.loads(body)
-        except Exception as e:
-            logger.warning(f"KotakProdFeed: parse quotes: {e}")
-            return
-        for q in quotes:
+        for q in all_quotes:
             ps = q.get('exchange_token', '')
             meta = self._pSymbol_to_meta.get(ps)
             if not meta:

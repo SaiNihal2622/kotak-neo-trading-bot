@@ -49,7 +49,17 @@ def download_latest_research_pdf(force: bool = False) -> Optional[Path]:
         return cache_path
     url = find_latest_pdf_url()
     if not url:
-        logger.warning("Could not find derivatives PDF URL")
+        # Demoted from warning to debug on 2026-08-31: kotakneo.com research
+        # page has been re-architected and find_latest_pdf_url() reliably
+        # returns None. The PDF is one-day-stale-tolerant (regime detector
+        # uses candle+macro+VIX; PDF is a supplement, not a gate). Spam at
+        # debug so it doesn't pollute Logs\bot.log.
+        logger.debug("Could not find derivatives PDF URL (kotakneo.com layout drift); using stale cache if present")
+        # Return the stale cache if we have one — better than no PDF
+        yesterday = (datetime.now() - __import__('datetime').timedelta(days=1)).strftime("%Y-%m-%d")
+        stale_path = CACHE_DIR / f"derivatives_daily_{yesterday}.pdf"
+        if stale_path.exists():
+            return stale_path
         return None
     try:
         r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
