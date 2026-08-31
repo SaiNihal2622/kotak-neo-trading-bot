@@ -26,8 +26,12 @@ COST_PATH = ROOT / "cost.json"
 
 
 def record_decision(decision_id: str, ts: str, action_type: str, strategy: str, underlying: str,
-                    rationale: str, max_hold_minutes: int = 240) -> None:
-    """Record a new LLM decision. status: 'pending' until outcome known."""
+                    rationale: str, max_hold_minutes: int = 240,
+                    tags: Optional[dict] = None) -> None:
+    """Record a new LLM decision. status: 'pending' until outcome known.
+
+    tags (optional): setup_type, iv_regime, dte (days to expiry), exit_reason, etc.
+    """
     rec = {
         "decision_id": decision_id,
         "ts": ts,
@@ -42,6 +46,7 @@ def record_decision(decision_id: str, ts: str, action_type: str, strategy: str, 
         "pnl": None,
         "outcome": None,  # "win" | "loss" | "breakeven"
         "close_ts": None,
+        "tags": tags or {},
     }
     with open(DECISIONS_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")

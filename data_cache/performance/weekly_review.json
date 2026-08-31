@@ -1,0 +1,42 @@
+{
+  "week": "2026-08-31 to 2026-09-06",
+  "trades": 1,
+  "closed": 1,
+  "wins": 1,
+  "losses": 0,
+  "win_rate": 1.0,
+  "realized_pnl": 1500,
+  "drawdown": {
+    "max_dd": 0.0,
+    "current_dd": 0.0,
+    "in_drawdown": false,
+    "peak_pnl": 1500.0,
+    "current_pnl": 1500.0
+  },
+  "cost_today": {
+    "calls": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0
+  },
+  "patterns": {
+    "strategies": {
+      "iron_condor": 1
+    },
+    "underlyings": {
+      "NIFTY": 1
+    },
+    "outcomes_by_strategy": {
+      "iron_condor": {
+        "win": 1,
+        "loss": 0,
+        "pnl": 1500
+      }
+    },
+    "trades_per_day": {
+      "2026-08-31": 1
+    }
+  },
+  "top_patterns": [],
+  "llm_review": "**Weekly Review (Aug 31 – Sep 6, 2026)**\n\n- **Sample size is meaningless:** One trade = 100% win rate. Don't read this as a strategy edge; treat it as noise. Need at least 20–30 trades before drawing conclusions.\n- **Iron condor worked, but untested:** Single winner of +Rs. 1,500. Need to verify the credit collected vs. margin used to assess actual ROI — on a notional basis, this may be low-yield for the risk locked up.\n- **No losing trades, so no pain points to fix** — but also no stress-tested execution. Did you hold to expiry, close early, or adjust? Document the exit rationale; it matters more than the P&L.\n- **No patterns logged = blind spot.** Start tagging every trade with setup type, IV regime, DTE, and exit reason. Without metadata, you can't tell if the win was skill or right-tail luck.\n- **Action for next week:** Diversify across at least 2 strategies (e.g., add a directional or spread setup) so you're not relying on a single theta-positive structure in an uncertain vol environment, and log every trade with tags."
+}

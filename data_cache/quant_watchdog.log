@@ -8,3 +8,13 @@
 [2026-08-31T17:38:56+05:30] RESTART: launching new quant_service instance
 [2026-08-31T17:38:56+05:30] start_service: launching quant_service
 [2026-08-31T17:38:56+05:30] start_service: launched PID 17532
+[2026-08-31T17:39:27+05:30] RECOVERED: service is alive again (was dead for 1 checks)
+[2026-08-31T17:50:04+05:30] DEAD: service not responding (consecutive=1)
+[2026-08-31T17:50:04+05:30] RESTART: launching new quant_service instance
+[2026-08-31T17:50:04+05:30] start_service: launching quant_service
+[2026-08-31T17:50:04+05:30] start_service: launched PID 12028
+[2026-08-31T17:50:36+05:30] RECOVERED: service is alive again (was dead for 1 checks)
+[2026-08-31T17:54:40+05:30] DEAD: service not responding (consecutive=1)
+[2026-08-31T17:54:40+05:30] RESTART: launching new quant_service instance
+[2026-08-31T17:54:40+05:30] start_service: launching quant_service
+[2026-08-31T17:54:40+05:30] start_service: launched PID 8776

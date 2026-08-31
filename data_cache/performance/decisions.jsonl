@@ -1,0 +1,1 @@
+{"decision_id": "test-1", "ts": "2026-08-31T17:47:46.614085", "action_type": "OPEN", "strategy": "iron_condor", "underlying": "NIFTY", "rationale": "test", "max_hold_minutes": 240, "status": "closed", "entry_premium": null, "exit_premium": null, "pnl": 1500, "outcome": "win", "close_ts": "2026-08-31T17:47:46.632089"}

@@ -1,0 +1,39 @@
+{
+  "ts": "2026-08-31T17:51:53.102495",
+  "technicals": {
+    "nifty": {},
+    "banknifty": {},
+    "ts": "2026-08-31T17:51:52.914174"
+  },
+  "news": [
+    {
+      "title": "Nifty 50, Sensex prediction today: Check how Indian stock market is expected to trade on 31 August - Livemint",
+      "published": "Mon, 31 Aug 2026 01:42:47 GMT",
+      "source": "google_news"
+    },
+    {
+      "title": "Share Market Today: Nifty 50, Bank Nifty | Aug 31, 2026 - Liquide Blog",
+      "published": "Mon, 31 Aug 2026 11:28:02 GMT",
+      "source": "google_news"
+    },
+    {
+      "title": "Indian Stock Market Ends Third Weekly Fall as Nifty IT Rallies 3.5%, Nifty Slips 0.3% - HDFC Sky",
+      "published": "Sat, 29 Aug 2026 06:19:28 GMT",
+      "source": "google_news"
+    },
+    {
+      "title": "Indian Stocks Fall as West Asia Tensions Push Crude Oil Higher - Rediff",
+      "published": "Mon, 31 Aug 2026 10:51:40 GMT",
+      "source": "google_news"
+    },
+    {
+      "title": "Sensex Today Ends 307 Points Lower | Nifty Below 24,100 | Precision Wires India Up 20% - Equitymaster",
+      "published": "Mon, 31 Aug 2026 10:26:51 GMT",
+      "source": "google_news"
+    }
+  ],
+  "trend": {
+    "available": false,
+    "note": "skipped to avoid rate limits"
+  }
+}

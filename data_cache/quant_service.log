@@ -20,3 +20,11 @@
 [2026-08-31T17:38:56+05:30]   LLM endpoint: https://agent.minimax.io/mavis/api/v1/llm/v1/messages
 [2026-08-31T17:38:56+05:30]   HTTP control: http://127.0.0.1:8503
 [2026-08-31T17:38:56+05:30] HTTP-API: listening on http://127.0.0.1:8503
+[2026-08-31T17:50:05+05:30] QUANT-SERVICE: starting (pid=18212)
+[2026-08-31T17:50:05+05:30]   LLM endpoint: https://agent.minimax.io/mavis/api/v1/llm/v1/messages
+[2026-08-31T17:50:05+05:30]   HTTP control: http://127.0.0.1:8503
+[2026-08-31T17:50:05+05:30] HTTP-API: listening on http://127.0.0.1:8503
+[2026-08-31T17:54:41+05:30] QUANT-SERVICE: starting (pid=3068)
+[2026-08-31T17:54:41+05:30]   LLM endpoint: https://agent.minimax.io/mavis/api/v1/llm/v1/messages
+[2026-08-31T17:54:41+05:30]   HTTP control: http://127.0.0.1:8503
+[2026-08-31T17:54:41+05:30] HTTP-API: listening on http://127.0.0.1:8503

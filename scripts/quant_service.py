@@ -419,6 +419,30 @@ def write_decision(decision: dict) -> None:
 last_intraday = {}
 tick_count = 0
 last_eod_check_date = None
+last_weekly_check_date = None
+last_intel_refresh = None
+
+
+def run_weekly_review() -> dict:
+    """Weekly strategy review (Sun 18:00 IST). The LLM reviews the week and suggests changes."""
+    try:
+        from weekly_strategy_review import run_weekly_review as _weekly, format_weekly_telegram
+        review = _weekly()
+        send_telegram(format_weekly_telegram(review)[:4000])
+        log(f"WEEKLY-REVIEW: {review.get('realized_pnl', 0):+,.0f} P&L, {review.get('wins', 0)}W/{review.get('losses', 0)}L")
+        return review
+    except Exception as e:
+        log(f"weekly-review-err: {e}")
+        return {}
+
+
+def refresh_live_intel() -> None:
+    """Refresh live intel (every 1h during market hours, 9:00-15:30)."""
+    try:
+        from live_intel import refresh_live_intel as _refresh
+        _refresh()
+    except Exception as e:
+        log(f"live-intel-err: {e}")
 
 
 def run_eod_self_eval() -> dict:
@@ -516,6 +540,17 @@ def watch_loop():
                     last_eod_check_date = _now.date()
                     log("EOD-SELF-EVAL: triggering daily review")
                     run_eod_self_eval()
+            # Weekly strategy review on Sun 18:00 IST
+            if _now.weekday() == 6 and _now.hour == 18 and _now.minute < 5:
+                if last_weekly_check_date != _now.date():
+                    last_weekly_check_date = _now.date()
+                    log("WEEKLY-REVIEW: triggering")
+                    run_weekly_review()
+            # Live intel refresh every 1h during market hours (9-15)
+            if 9 <= _now.hour <= 15 and _now.minute < 2:
+                if last_intel_refresh is None or (datetime.now() - last_intel_refresh).total_seconds() > 3600:
+                    last_intel_refresh = datetime.now()
+                    refresh_live_intel()
             time.sleep(TICK_SEC)
         except Exception as e:
             log(f"LOOP-ERR: {e}\n{traceback.format_exc()[:300]}")

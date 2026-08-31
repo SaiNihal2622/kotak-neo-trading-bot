@@ -1,6 +1,6 @@
 {
   "spot_cache": {
-    "ts": 1788178153.9547956,
+    "ts": 1788179107.6296115,
     "data": {
       "nifty": 0.0,
       "banknifty": 0.0,
@@ -9,7 +9,7 @@
     "source": "off_hours"
   },
   "current": {
-    "ts": "2026-08-31T17:39:16.989630+05:30",
+    "ts": "2026-08-31T17:55:07.613055+05:30",
     "nifty": 0.0,
     "banknifty": 0.0,
     "vix": 0.0,
@@ -17,7 +17,7 @@
     "mtm_total": 0.0,
     "by_underlying": {},
     "mavis_state": {
-      "ts": "2026-08-31T17:39:16.989630+05:30",
+      "ts": "2026-08-31T17:55:07.613055+05:30",
       "mkt_open": false,
       "mins_to_force_square": null,
       "is_watching": true,
