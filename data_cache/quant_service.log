@@ -1,0 +1,22 @@
+[2026-08-31T16:07:19+05:30] QUANT-SERVICE: starting (pid=2284)
+[2026-08-31T16:07:19+05:30]   LLM endpoint: https://agent.minimax.io/mavis/api/v1/llm/v1/messages
+[2026-08-31T16:07:19+05:30]   HTTP control: http://127.0.0.1:8503
+[2026-08-31T16:07:19+05:30] HTTP-API: listening on http://127.0.0.1:8503
+[2026-08-31T16:12:02+05:30] QUANT-SERVICE: starting (pid=7064)
+[2026-08-31T16:12:02+05:30]   LLM endpoint: https://agent.minimax.io/mavis/api/v1/llm/v1/messages
+[2026-08-31T16:12:02+05:30]   HTTP control: http://127.0.0.1:8503
+[2026-08-31T16:12:02+05:30] HTTP-API: listening on http://127.0.0.1:8503
+[2026-08-31T16:12:42+05:30] QUANT-SERVICE: starting (pid=5448)
+[2026-08-31T16:12:42+05:30]   LLM endpoint: https://agent.minimax.io/mavis/api/v1/llm/v1/messages
+[2026-08-31T16:12:42+05:30]   HTTP control: http://127.0.0.1:8503
+[2026-08-31T16:12:42+05:30] HTTP-API: listening on http://127.0.0.1:8503
+[2026-08-31T17:32:49+05:30] QUANT-SERVICE: starting (pid=9064)
+[2026-08-31T17:32:49+05:30]   LLM endpoint: https://agent.minimax.io/mavis/api/v1/llm/v1/messages
+[2026-08-31T17:32:49+05:30]   HTTP control: http://127.0.0.1:8503
+[2026-08-31T17:32:49+05:30] HTTP-API: listening on http://127.0.0.1:8503
+[2026-08-31T17:35:15+05:30] LLM-DECISION: OPEN NIFTY long_put legs=1
+[2026-08-31T17:38:44+05:30] LLM-DECISION: HOLD  custom legs=0
+[2026-08-31T17:38:56+05:30] QUANT-SERVICE: starting (pid=4452)
+[2026-08-31T17:38:56+05:30]   LLM endpoint: https://agent.minimax.io/mavis/api/v1/llm/v1/messages
+[2026-08-31T17:38:56+05:30]   HTTP control: http://127.0.0.1:8503
+[2026-08-31T17:38:56+05:30] HTTP-API: listening on http://127.0.0.1:8503

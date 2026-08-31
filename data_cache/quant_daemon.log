@@ -1,0 +1,4 @@
+[2026-08-31T15:54:50+05:30] QUANT-DAEMON: starting (pid=6468)
+[2026-08-31T15:54:53+05:30] SELF-IMPROVE-ERR: [WinError 2] The system cannot find the file specified
+[2026-08-31T15:54:53+05:30] EVENT-FIRED: 15 events: near_day_high:NIFTY|near_day_low:NIFTY|near_opening_range:NIFTY|near_day_high:BANKNIFTY|near_day_low:BANKNIFTY
+[2026-08-31T15:59:06+05:30] QUANT-DAEMON: starting (pid=12060)

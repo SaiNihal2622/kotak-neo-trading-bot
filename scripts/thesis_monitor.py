@@ -142,7 +142,13 @@ def monitor() -> dict:
     age_min = None
     try:
         from datetime import datetime as _dt
-        age_min = (_dt.now() - _dt.fromisoformat(thesis["ts"].replace("Z", "+00:00")).replace(tzinfo=None)).total_seconds() / 60
+        # thesis.ts is a local-ISO datetime (from thesis_engine, IST) without tz suffix.
+        # Compare against local now() — strip tz from parsed value if any.
+        ts_raw = thesis["ts"].replace("Z", "+00:00")
+        ts_parsed = _dt.fromisoformat(ts_raw)
+        if ts_parsed.tzinfo is not None:
+            ts_parsed = ts_parsed.replace(tzinfo=None)
+        age_min = (_dt.now() - ts_parsed).total_seconds() / 60
     except Exception:
         pass
     if age_min is None or age_min > 180:

@@ -1,22 +1,23 @@
-"""reset_paper.py — reset paper trading state for a clean Monday session.
+"""reset_paper.py — reset paper trading state for a clean session.
 
 Sets:
-  - cash = Rs.100,000 (1L, starting capital)
+  - cash = INITIAL_CAPITAL (default Rs.100,000; override with --capital)
   - realized_pnl = 0
-  - positions = {}  (clears 14 phantom positions from Friday 8/20 + 8/21 expiries)
+  - positions = {}  (clears phantom positions from previous expiry)
   - preserves orders[] history (audit trail of past paper trades)
 
 Also resets brain_state.json (last_decision=None, history=[]) and
-brain_actions.json (empty actions list) so the first Monday 09:00 tick
+brain_actions.json (empty actions list) so the first post-reset tick
 starts from a clean decision slate.
 
 Backs up the current state to data_cache/paper_state_pre_reset_<ts>.json
 before any mutation. Reports deltas to stdout and (optionally) Telegram.
 
 Usage:
-    python scripts/reset_paper.py             # reset only
-    python scripts/reset_paper.py --send-tg    # reset + Telegram confirmation
-    python scripts/reset_paper.py --dry-run    # show what would change, no writes
+    python scripts/reset_paper.py                          # reset only, Rs.1L default
+    python scripts/reset_paper.py --capital 113815.60     # custom starting capital
+    python scripts/reset_paper.py --send-tg                # reset + Telegram confirmation
+    python scripts/reset_paper.py --dry-run                # show what would change, no writes
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ ROOT = Path(__file__).parent.parent.resolve()
 STATE = ROOT / "data_cache" / "paper_state.json"
 BRAIN_STATE = ROOT / "data_cache" / "brain_state.json"
 BRAIN_ACTIONS = ROOT / "data_cache" / "brain_actions.json"
-INITIAL_CAPITAL = 100_000.0
+DEFAULT_CAPITAL = 100_000.0
 
 
 def _load(path: Path) -> dict:
@@ -80,7 +81,7 @@ def send_telegram(msg: str) -> bool:
         return False
 
 
-def compute_deltas(before: dict) -> dict:
+def compute_deltas(before: dict, initial_capital: float) -> dict:
     """Compute the deltas that will be applied. Returns a dict of before->after."""
     old_cash = float(before.get("cash", 0))
     old_pnl = float(before.get("realized_pnl", 0))
@@ -94,21 +95,21 @@ def compute_deltas(before: dict) -> dict:
             "total_positions": len(old_positions),
         },
         "after": {
-            "cash": INITIAL_CAPITAL,
+            "cash": initial_capital,
             "realized_pnl": 0.0,
             "open_positions": 0,
             "total_positions": 0,
         },
-        "delta_cash": INITIAL_CAPITAL - old_cash,
+        "delta_cash": initial_capital - old_cash,
         "delta_pnl": -old_pnl,
         "positions_cleared": n_open,
     }
 
 
-def apply_reset(before: dict, deltas: dict) -> dict:
+def apply_reset(before: dict, deltas: dict, initial_capital: float) -> dict:
     """Mutate a copy of `before` with the reset values + reset metadata."""
     after = dict(before)  # shallow copy — preserves orders[] entirely
-    after["cash"] = INITIAL_CAPITAL
+    after["cash"] = initial_capital
     after["realized_pnl"] = 0.0
     after["positions"] = {}
     # Add a reset marker so the audit trail is clear
@@ -116,12 +117,15 @@ def apply_reset(before: dict, deltas: dict) -> dict:
     after["_reset_history"].append({
         "ts": datetime.now().isoformat(),
         "type": "manual_paper_reset",
-        "reason": "pre_monday_clean_state",
-        "initial_capital": INITIAL_CAPITAL,
+        "reason": "clean_baseline_reset",
+        "note": "User directive: start as new with no complications. "
+                "Baseline set to clean round number Rs.1,00,000 — zero fractional P&L, "
+                "zero historical baggage, fresh slate for Wed 2026-08-26 open.",
+        "initial_capital": initial_capital,
         "old_cash": deltas["before"]["cash"],
         "old_pnl": deltas["before"]["realized_pnl"],
         "old_open_positions": deltas["before"]["open_positions"],
-        "new_cash": INITIAL_CAPITAL,
+        "new_cash": initial_capital,
         "new_pnl": 0.0,
     })
     return after
@@ -147,7 +151,7 @@ def reset_brain_actions() -> dict:
         "source": "mavis",
         "max_positions": 0,
         "actions": [],
-        "note": "pre_monday_reset",
+        "note": "clean_baseline_reset",
     }
 
 
@@ -156,14 +160,17 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true", help="Show deltas only, no writes")
     p.add_argument("--send-tg", action="store_true", help="Send Telegram confirmation after reset")
     p.add_argument("--no-backup", action="store_true", help="Skip backup (NOT recommended)")
+    p.add_argument("--capital", type=float, default=DEFAULT_CAPITAL,
+                   help=f"Starting capital in Rs (default {DEFAULT_CAPITAL:,.0f})")
     args = p.parse_args()
 
     if not STATE.exists():
         print(f"[reset_paper] no state file at {STATE}", file=sys.stderr)
         return 1
 
+    initial_capital = float(args.capital)
     before = _load(STATE)
-    deltas = compute_deltas(before)
+    deltas = compute_deltas(before, initial_capital)
     print("[reset_paper] DELTAS:")
     print(json.dumps(deltas, indent=2))
     if args.dry_run:
@@ -178,9 +185,9 @@ def main() -> int:
         print(f"[reset_paper] backed up to {backup.name}")
 
     # 2) Apply paper reset
-    after = apply_reset(before, deltas)
+    after = apply_reset(before, deltas, initial_capital)
     _save(STATE, after)
-    print(f"[reset_paper] wrote {STATE.name}: cash={INITIAL_CAPITAL}, pnl=0, positions cleared ({deltas['positions_cleared']} phantoms)")
+    print(f"[reset_paper] wrote {STATE.name}: cash={initial_capital}, pnl=0, positions cleared ({deltas['positions_cleared']} phantoms)")
 
     # 3) Reset brain state + actions
     _save(BRAIN_STATE, reset_brain_state())
@@ -191,15 +198,15 @@ def main() -> int:
     # 4) Telegram confirmation
     if args.send_tg:
         msg = (
-            "🔄 Paper state reset for Monday\n\n"
-            f"Capital: Rs.{deltas['before']['cash']:,.2f} → Rs.{INITIAL_CAPITAL:,.2f} (delta Rs.{deltas['delta_cash']:+,.2f})\n"
+            "🔄 Paper state reset\n\n"
+            f"Capital: Rs.{deltas['before']['cash']:,.2f} → Rs.{initial_capital:,.2f} (delta Rs.{deltas['delta_cash']:+,.2f})\n"
             f"Realized P&L: Rs.{deltas['before']['realized_pnl']:+,.2f} → Rs.0.00\n"
             f"Open positions: {deltas['before']['open_positions']} → 0 (phantoms cleared)\n"
             f"Orders history: kept (full audit trail)\n"
             f"Brain state: reset (last_decision=None)\n"
             f"Brain actions: reset to HOLD\n\n"
             f"Backup: data_cache/paper_state_pre_reset_*.json\n"
-            f"Ready for Mon 09:00 IST first live tick on the upgraded cron spec."
+            f"Ready for next session first live tick."
         )
         ok = send_telegram(msg)
         print(f"[reset_paper] telegram: {'sent' if ok else 'FAILED'}")

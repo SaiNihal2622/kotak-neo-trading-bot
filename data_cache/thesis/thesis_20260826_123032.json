@@ -1,0 +1,122 @@
+{
+  "ts": "2026-08-26T12:30:32+05:30",
+  "ist_time": "2026-08-26 12:30:32",
+  "regime": "range",
+  "bias": "neutral",
+  "confidence": 0.3,
+  "risk_budget_pct": 45,
+  "max_positions": 2,
+  "expected_move_pts": 166.26,
+  "expected_range": [
+    24107.085046972537,
+    24439.614171777463
+  ],
+  "preferred_strategies": [
+    "iron_condor",
+    "short_strangle"
+  ],
+  "avoid_strategies": [],
+  "specific_strikes": null,
+  "triggers": {
+    "force_square": false,
+    "no_new_trades": false,
+    "notes": "no special triggers"
+  },
+  "narrative": "**RANGE** regime, neutral (conf 30%). Spot ~24273 | VIX 10.9. Playbook: 45% capital, 2 max positions.",
+  "data": {
+    "oi": {
+      "ts": "2026-08-26T12:30:18.353020+05:30",
+      "available": false,
+      "resistance": null,
+      "support": null,
+      "max_pain": null,
+      "pcr": null,
+      "gex_total": null,
+      "strike_selection": null
+    },
+    "xmkt": {
+      "ts": "2026-08-26T12:30:20.311633+05:30",
+      "gift_nifty": null,
+      "dow_fut": 53684.0,
+      "dow_spot": 53577.3984375,
+      "crude_oil": 80.37000274658203,
+      "usdinr": 95.4020004272461,
+      "india_vix": 10.8725004196167,
+      "dxy": 99.00199890136719,
+      "global_cues": "crude hot (inflation pressure) | VIX compressed",
+      "nifty_spot": 24273.349609375,
+      "banknifty_spot": 57925.44921875
+    },
+    "macro": {
+      "ts": "2026-08-26T12:30:32.370738+05:30",
+      "next_event": {
+        "name": "monthly_expiry_NIFTY",
+        "datetime_ist": "2026-08-28 15:30:00",
+        "importance": 2,
+        "direction_hint": "neutral",
+        "minutes_to_event": 3059
+      },
+      "window_min": null
+    },
+    "research": {
+      "ts": "2026-08-26T12:30:32.390847+05:30",
+      "available": true,
+      "summary": null,
+      "bias": null,
+      "key_levels": {}
+    },
+    "news": {
+      "ts": "2026-08-26T12:30:32.732842+05:30",
+      "score": 0.0,
+      "n_items": 0,
+      "headlines": [],
+      "source": "keyword"
+    },
+    "paper": {
+      "ts": "2026-08-26T12:30:32.735838+05:30",
+      "cash": 106693.50000000003,
+      "realized": 229.00000000000068,
+      "open_count": 8,
+      "open": [
+        {
+          "id": "NIFTY26AUG2624450CE",
+          "symbol": "NIFTY26AUG2624450CE",
+          "qty": -65,
+          "pnl": null
+        },
+        {
+          "id": "NIFTY26AUG2624550CE",
+          "symbol": "NIFTY26AUG2624550CE",
+          "qty": 65,
+          "pnl": null
+        },
+        {
+          "id": "NIFTY26AUG2624250PE",
+          "symbol": "NIFTY26AUG2624250PE",
+          "qty": -65,
+          "pnl": null
+        },
+        {
+          "id": "NIFTY26AUG2624150PE",
+          "symbol": "NIFTY26AUG2624150PE",
+          "qty": 65,
+          "pnl": null
+        },
+        {
+          "id": "BANKNIFTY26AUG2658100CE",
+          "symbol": "BANKNIFTY26AUG2658100CE",
+          "qty": -30,
+          "pnl": null
+        },
+        {
+          "id": "BANKNIFTY26AUG2658200CE",
+          "symbol": "BANKNIFTY26AUG2658200CE",
+          "qty": 30,
+          "pnl": null
+        }
+      ]
+    }
+  },
+  "run_kind": "intraday",
+  "build_ms": 14414
+}

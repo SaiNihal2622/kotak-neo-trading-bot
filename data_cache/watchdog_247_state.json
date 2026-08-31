@@ -1,0 +1,31 @@
+﻿{
+    "ts":  "2026-08-28T14:46:50+05:30",
+    "istHHMM":  "14:46",
+    "istDate":  "2026-08-28",
+    "weekday":  "Friday",
+    "mktHours":  true,
+    "botAlive":  4,
+    "dashAlive":  true,
+    "logAgeMin":  0.05,
+    "logSize":  15623799,
+    "errCount":  10,
+    "tracebackFp":  [
+                        "L213628",
+                        "L213702",
+                        "L213781",
+                        "L213855",
+                        "L213934",
+                        "L214008",
+                        "L214087",
+                        "L214161",
+                        "L214241",
+                        "L214315"
+                    ],
+    "newTracebackFp":  [
+
+                       ],
+    "action":  "silent",
+    "reason":  "mktHours+bot-alive+dash-up+log-fresh+10-old-tracebacks-baselined-as-known-URLError-11001",
+    "baselinedAt":  "2026-08-28T14:46:50+05:30",
+    "tracebackType":  "urllib.error.URLError: [Errno 11001] getaddrinfo failed in kotak_prod_feed._poll_loop (known self-recovering per AGENTS.md known-issues register)"
+}

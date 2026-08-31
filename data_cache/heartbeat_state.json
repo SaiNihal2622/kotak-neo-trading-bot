@@ -1,0 +1,17 @@
+﻿{
+  "tc": "2026-08-31T11:16:30",
+  "alive4": 2,
+  "aliveAll": 4,
+  "action": "silent",
+  "logSize": 1867806,
+  "logAgeMin": 0,
+  "mktHours": true,
+  "dash": 200,
+  "err": 0,
+  "lastErrLines": [15766, 15854, 15926, 16005, 16077],
+  "lastErrPattern": "e22.kotaksecurities.com TimeoutError (kotak-prod-feed daemon 2276) - persistent known",
+  "botPid": 7332,
+  "botUptimeH": 2.74,
+  "mainThreadAlive": true,
+  "tick": 328
+}

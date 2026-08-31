@@ -1,0 +1,10 @@
+[2026-08-31T16:29:13+05:30] QUANT-WATCHDOG: starting (pid=17220)
+[2026-08-31T17:32:49+05:30] DEAD: service not responding (consecutive=1)
+[2026-08-31T17:32:49+05:30] RESTART: launching new quant_service instance
+[2026-08-31T17:32:49+05:30] start_service: launching quant_service
+[2026-08-31T17:32:49+05:30] start_service: launched PID 10248
+[2026-08-31T17:33:20+05:30] RECOVERED: service is alive again (was dead for 1 checks)
+[2026-08-31T17:38:56+05:30] DEAD: service not responding (consecutive=1)
+[2026-08-31T17:38:56+05:30] RESTART: launching new quant_service instance
+[2026-08-31T17:38:56+05:30] start_service: launching quant_service
+[2026-08-31T17:38:56+05:30] start_service: launched PID 17532

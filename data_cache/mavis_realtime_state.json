@@ -1,0 +1,40 @@
+{
+  "spot_cache": {
+    "ts": 1788178153.9547956,
+    "data": {
+      "nifty": 0.0,
+      "banknifty": 0.0,
+      "vix": 0.0
+    },
+    "source": "off_hours"
+  },
+  "current": {
+    "ts": "2026-08-31T17:39:16.989630+05:30",
+    "nifty": 0.0,
+    "banknifty": 0.0,
+    "vix": 0.0,
+    "open_positions": 0,
+    "mtm_total": 0.0,
+    "by_underlying": {},
+    "mavis_state": {
+      "ts": "2026-08-31T17:39:16.989630+05:30",
+      "mkt_open": false,
+      "mins_to_force_square": null,
+      "is_watching": true,
+      "last_thought": "Market closed. Standing by."
+    }
+  },
+  "last_event_per_type": {
+    "nifty_level_proximity::nifty_oi_put_wall": 24176,
+    "nifty_level_proximity::nifty_support_p1": 24071,
+    "nifty_level_proximity::nifty_support_p2": 24030
+  },
+  "last_event_ts": "2026-08-31T15:01:41.597444+05:30",
+  "last_event": {
+    "type": "nifty_level_proximity",
+    "level": "nifty_support_p1",
+    "value": 24071
+  },
+  "last_nifty": 24057.849609375,
+  "last_vix": 11.227499961853027
+}

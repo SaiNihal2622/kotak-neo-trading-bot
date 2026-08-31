@@ -1,0 +1,4 @@
+[Mavis pre-market 08:25] NIFTY 24175.65 | BANKNIFTY 57496.30 | VIX 10.68 | US -0.29%
+Regime: range | Bias: neutral | Confidence: 0.30
+Plan: EXECUTE_PLAN | range+neutral internally consistent; no force_square, no blackout; expected move 162pt within 24013-24338 band
+Key risk: OI data unavailable (no max_pain/PCR/GEX) — strikes selected blind; conf only 0.30; crude hot (85.4) = inflation pressure tail-risk

@@ -1,69 +1,111 @@
 $ErrorActionPreference = 'Continue'
-Set-Location "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot"
+$projectDir = "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot"
+Set-Location $projectDir
+$py = ".\.venv\Scripts\python.exe"
 
-# 1. Bot alive check (4h window)
-$alive4h = Get-Process python -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like '*kotak-neo-bot*' -and $_.StartTime -gt (Get-Date).AddHours(-4) } |
-    Measure-Object | Select-Object -ExpandProperty Count
-Write-Host "ALIVE_4H=$alive4h"
+# Step 1: Check bot alive (4h window)
+$alive4 = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' -and $_.StartTime -gt (Get-Date).AddHours(-4) } | Measure-Object | Select-Object -ExpandProperty Count
+$aliveAll = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' } | Measure-Object | Select-Object -ExpandProperty Count
 
-$aliveAll = Get-Process python -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like '*kotak-neo-bot*' } |
-    Measure-Object | Select-Object -ExpandProperty Count
-Write-Host "ALIVE_ALL=$aliveAll"
+# Get details of any bot procs
+$botProcs = Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*kotak-neo-bot*' } | Select-Object Id, StartTime, @{Name='AgeMin';Expression={[math]::Round(((Get-Date) - $_.StartTime).TotalMinutes,1)}}, Path
 
-# 2. Dashboard
-$dash = 'DOWN'
-try {
-    $resp = Invoke-WebRequest -Uri 'http://localhost:8501/_stcore/health' -UseBasicParsing -TimeoutSec 5
-    $dash = $resp.StatusCode
-} catch {}
-Write-Host "DASHBOARD=$dash"
-
-# 3. Active log
-$logFile = 'Logs\bot.log'
-if (Test-Path $logFile) {
-    $log = Get-Item $logFile
-    $age = (Get-Date) - $log.LastWriteTime
-    Write-Host "LOG_SIZE=$($log.Length) LOG_AGE=$([math]::Round($age.TotalSeconds,1))s"
-} else {
-    Write-Host "LOG=MISSING"
-}
-
-# 4. Stderr log
-$errFile = 'Logs\bot_stderr.log'
-if (Test-Path $errFile) {
-    $e = Get-Item $errFile
-    Write-Host "STDERR_SIZE=$($e.Length)"
-    $errs = Select-String -Path $errFile -Pattern 'Traceback|FATAL|Killed|Exception' -ErrorAction SilentlyContinue | Select-Object -Last 3
-    Write-Host "STDERR_ERR_SCAN=$($errs.Count)"
-} else {
-    Write-Host "STDERR=MISSING"
-}
-
-# 5. Bot log error scan
-if (Test-Path $logFile) {
-    $errBot = Select-String -Path $logFile -Pattern 'Traceback|FATAL|Killed' -ErrorAction SilentlyContinue | Select-Object -Last 3
-    Write-Host "BOT_LOG_ERR_SCAN=$($errBot.Count)"
-}
-
-# 6. Paper state
-$stateFile = 'data_cache\paper_state.json'
-if (Test-Path $stateFile) {
-    try {
-        $ps = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        Write-Host "PAPER_CASH=$($ps.cash) PNL=$($ps.realized_pnl) POS=$($ps.positions.Count) ORD=$($ps.orders.Count)"
-    } catch {
-        Write-Host "PAPER_STATE_PARSE_ERR"
-    }
-} else {
-    Write-Host "PAPER_STATE=MISSING"
-}
-
-# 7. Market hours check
+# Market hours check (9:00-15:30 IST Mon-Fri) - assume system clock is IST
 $now = Get-Date
 $hour = $now.Hour
-$dow = $now.DayOfWeek
-$isWeekday = ($dow -ne 'Saturday' -and $dow -ne 'Sunday')
-$isMarketHours = $isWeekday -and ($hour -ge 9) -and ($hour -lt 15 -or ($hour -eq 15 -and $now.Minute -le 30))
-Write-Host "MKT_HOURS=$isMarketHours DOW=$dow"
+$min = $now.Minute
+$isWeekday = $now.DayOfWeek -ge [System.DayOfWeek]::Monday -and $now.DayOfWeek -le [System.DayOfWeek]::Friday
+$marketMinutes = $hour * 60 + $min
+$mktOpen = 9 * 60
+$mktClose = 15 * 60 + 30
+$mktHours = $isWeekday -and ($marketMinutes -ge $mktOpen) -and ($marketMinutes -lt $mktClose)
+
+Write-Host "=== HEARTBEAT $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ==="
+Write-Host "Hour: $hour Min: $min Weekday: $isWeekday MktHours: $mktHours"
+Write-Host "Alive4h: $alive4 AliveAll: $aliveAll"
+Write-Host "Bot Procs:"
+if ($botProcs) { $botProcs | Format-Table -AutoSize | Out-String | Write-Host } else { Write-Host "  (none)" }
+
+# Step 2: stderr log check
+$errLog = "bot_stderr.log"
+$errCount = 0
+$errLines = ""
+if (Test-Path $errLog) {
+    $errSize = (Get-Item $errLog).Length
+    $errAgeMin = [math]::Round(((Get-Date) - (Get-Item $errLog).LastWriteTime).TotalMinutes, 1)
+    Write-Host "Stderr log: size=$errSize age=${errAgeMin}m"
+    $errs = Select-String -Path $errLog -Pattern 'Traceback|FATAL|Killed|Exception' | Select-Object -Last 3
+    if ($errs) {
+        Write-Host "ERRORS FOUND:"
+        $errs | ForEach-Object { Write-Host "  $($_.LineNumber): $($_.Line)" }
+        $errCount = $errs.Count
+        $errLines = ($errs | ForEach-Object { $_.Line }) -join " | "
+    } else {
+        Write-Host "Stderr: clean (no Traceback/FATAL/Killed/Exception)"
+    }
+} else {
+    Write-Host "Stderr log: not found"
+}
+
+# Step 3: Dashboard health
+$dashCode = 0
+try {
+    $dashResp = Invoke-WebRequest -Uri 'http://localhost:8501/_stcore/health' -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    $dashCode = [int]$dashResp.StatusCode
+} catch {
+    $dashCode = 0
+}
+Write-Host "Dashboard: HTTP $dashCode"
+
+# Step 3b: Restart dashboard if down
+if ($dashCode -ne 200) {
+    Write-Host "Dashboard down -> RESTART dashboard"
+    Start-Process -FilePath ".\.venv\Scripts\python.exe" -ArgumentList "-u", "-m", "streamlit", "run", "dashboard\app.py", "--server.port=8501", "--server.headless=true" -WindowStyle Hidden
+}
+
+# Step 4 & 5: Restart decision
+$action = "silent"
+$restartPid = $null
+if ($alive4 -eq 0) {
+    if ($aliveAll -eq 0) {
+        if ($mktHours) {
+            Write-Host "MARKET HOURS + 0 bot procs (double-check) -> RESTART"
+            $proc = Start-Process -FilePath ".\.venv\Scripts\python.exe" -ArgumentList "-u", "-m", "kotak_bot", "paper" -RedirectStandardOutput "bot_stdout.log" -RedirectStandardError "bot_stderr.log" -WindowStyle Hidden -PassThru
+            $restartPid = $proc.Id
+            $action = "restart"
+        } else {
+            Write-Host "After-hours + 0 bot procs (double-check) -> NO RESTART (silent)"
+            $action = "silent_afterhours_down"
+        }
+    } else {
+        Write-Host "First check 0 but second check found procs (false zero) -> NO RESTART"
+        $action = "silent_false_zero"
+    }
+}
+
+# Step 5: Telegram on restart
+if ($action -eq "restart" -and $restartPid) {
+    Write-Host "TELEGRAM: Bot was down, restarted. PID: $restartPid"
+} else {
+    Write-Host "Action: $action (no telegram)"
+}
+
+# Update state file
+$stateDir = "data_cache"
+if (-not (Test-Path $stateDir)) { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null }
+$ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+$state = @{
+    ts = $ts
+    err = $errCount
+    alive4 = $alive4
+    aliveAll = $aliveAll
+    dash = $dashCode
+    mktHours = $mktHours
+    action = $action
+    botPid = if ($botProcs) { ($botProcs | Select-Object -First 1).Id } else { 0 }
+    botAge = if ($botProcs) { ($botProcs | Select-Object -First 1).AgeMin } else { 0 }
+    restartPid = $restartPid
+    lastErrLines = $errLines
+}
+$state | ConvertTo-Json | Set-Content -Path "$stateDir/heartbeat_state.json" -Encoding UTF8
+Write-Host "State file updated."

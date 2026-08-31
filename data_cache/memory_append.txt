@@ -1,0 +1,17 @@
+﻿
+### Heartbeat — Mon 04:30 IST, traceback_tg (2026-08-31 04:30)
+Type: status
+- 04:30 cron tick. Bot alive (alive4=4: 13340,12608,21028,20784). DASH 8501: HTTP 200 OK.
+- bot.log: 889506B, age=0.79min (FRESH, lastWrite 04:30:25). Log grew from 724257B (04:10) to 889506B (04:30) = +165KB in 20min, ~8KB/min.
+- 3 NEW Tracebacks not in lastErrLines=[]: lines 10843, 10922, 10996. All same root cause.
+- Root cause: socket.gaierror: [Errno 11001] getaddrinfo failed for e22.kotaksecurities.com (DNS resolution failure). urllib.error.URLError wrapping. Origin: kotak_bot.data.kotak_prod_feed:_poll_loop (daemon thread kotak-prod-feed). First error timestamp 2026-08-31 03:56:43 IST.
+- Trace 1 (L10842-10920): _fetch_option_quotes → _http_get → urlopen → URLError
+- Trace 2 (L10921-10995): spot quotes 
+se_cm|Nifty 50,nse_cm|Nifty Bank → _http_get → gaierror
+- Trace 3 (L10995+): same _poll_loop → _fetch_spot_quotes → URLError (during-handling chain)
+- ACTION: sent Telegram CRITICAL to chat 8537408638, msg_id=2192. Text: "3 NEW Tracebacks... DNS failure for e22.kotaksecurities.com... Bot PID 13340 ALIVE, DASH 200 OK, pre-market. CRITICAL=true."
+- State file data_cache/heartbeat_state.json updated: err=3, tc=2026-08-31T04:33:13, alive4=4, aliveAll=4, dash=200, mktHours=false, action=traceback_tg, botPid=13340, alivePids="13340(512m),12608(512m),21028(190m),20784(190m)", logSize=889506, logAgeMin=0.79, lastErrLines=["L10843","L10922","L10996"], tgStatus=200 (field rejected by PS - file is JSON, not PSCustomObject schema).
+- Note: previous 04:10 tick had lastErrLines=[] and logSize=724257. Log has been ACTIVE since 04:00-04:05 (was "frozen" 04:00→04:05 due to apparent log rotation, now confirmed active growth 724257→889506 between 04:10 and 04:30).
+- DNS failure analysis: getaddrinfo 11001 = "Name or service not known". Could be local DNS resolver issue or e22.kotaksecurities.com domain unreachable. Three retries in 30 min, same host. Bot's kotak-prod-feed thread is in a retry loop.
+- Apply when: next cron tick. If Tracebacks persist or new ones appear with different hosts, escalate (network or DNS issue). If bot becomes unresponsive, restart per market-hours rule.
+- Next tick: per cron schedule (15 min).

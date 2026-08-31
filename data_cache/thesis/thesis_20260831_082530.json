@@ -1,0 +1,85 @@
+{
+  "ts": "2026-08-31T08:25:30+05:30",
+  "ist_time": "2026-08-31 08:25:30",
+  "regime": "range",
+  "bias": "neutral",
+  "confidence": 0.3,
+  "risk_budget_pct": 45,
+  "max_positions": 2,
+  "expected_move_pts": 162.66,
+  "expected_range": [
+    24012.98693988869,
+    24338.31384136131
+  ],
+  "preferred_strategies": [
+    "iron_condor",
+    "short_strangle"
+  ],
+  "avoid_strategies": [],
+  "specific_strikes": null,
+  "triggers": {
+    "force_square": false,
+    "no_new_trades": false,
+    "notes": "no special triggers"
+  },
+  "narrative": "**RANGE** regime, neutral (conf 30%). Spot ~24175 | VIX 10.7. Playbook: 45% capital, 2 max positions.",
+  "data": {
+    "oi": {
+      "ts": "2026-08-31T08:25:22.898450+05:30",
+      "available": false,
+      "resistance": null,
+      "support": null,
+      "max_pain": null,
+      "pcr": null,
+      "gex_total": null,
+      "strike_selection": null
+    },
+    "xmkt": {
+      "ts": "2026-08-31T08:25:23.706287+05:30",
+      "gift_nifty": null,
+      "dow_fut": 53406.0,
+      "dow_spot": 53559.98828125,
+      "crude_oil": 85.41999816894531,
+      "usdinr": 95.36000061035156,
+      "india_vix": 10.680000305175781,
+      "dxy": 99.5989990234375,
+      "global_cues": "crude hot (inflation pressure) | VIX compressed",
+      "nifty_spot": 24175.650390625,
+      "banknifty_spot": 57496.30078125
+    },
+    "macro": {
+      "ts": "2026-08-31T08:25:30.018286+05:30",
+      "next_event": {
+        "name": "us_cpi",
+        "datetime_ist": "2026-09-11 18:30:00",
+        "importance": 2,
+        "direction_hint": "neutral",
+        "minutes_to_event": 16444
+      },
+      "window_min": null
+    },
+    "research": {
+      "ts": "2026-08-31T08:25:30.019409+05:30",
+      "available": true,
+      "summary": null,
+      "bias": null,
+      "key_levels": {}
+    },
+    "news": {
+      "ts": "2026-08-31T08:25:30.949009+05:30",
+      "score": 0.0,
+      "n_items": 0,
+      "headlines": [],
+      "source": "keyword"
+    },
+    "paper": {
+      "ts": "2026-08-31T08:25:30.972008+05:30",
+      "cash": 109977.95000000004,
+      "realized": 9977.949999999997,
+      "open_count": 0,
+      "open": []
+    }
+  },
+  "run_kind": "premarket",
+  "build_ms": 8090
+}

@@ -1,0 +1,85 @@
+{
+  "ts": "2026-08-26T14:30:41+05:30",
+  "ist_time": "2026-08-26 14:30:41",
+  "regime": "range",
+  "bias": "neutral",
+  "confidence": 0.3,
+  "risk_budget_pct": 45,
+  "max_positions": 2,
+  "expected_move_pts": 165.72,
+  "expected_range": [
+    24111.582711668703,
+    24443.018850831297
+  ],
+  "preferred_strategies": [
+    "iron_condor",
+    "short_strangle"
+  ],
+  "avoid_strategies": [],
+  "specific_strikes": null,
+  "triggers": {
+    "force_square": false,
+    "no_new_trades": false,
+    "notes": "no special triggers"
+  },
+  "narrative": "**RANGE** regime, neutral (conf 30%). Spot ~24277 | VIX 10.8 | news -0.20. Playbook: 45% capital, 2 max positions.",
+  "data": {
+    "oi": {
+      "ts": "2026-08-26T14:30:34.158299+05:30",
+      "available": false,
+      "resistance": null,
+      "support": null,
+      "max_pain": null,
+      "pcr": null,
+      "gex_total": null,
+      "strike_selection": null
+    },
+    "xmkt": {
+      "ts": "2026-08-26T14:30:36.559512+05:30",
+      "gift_nifty": null,
+      "dow_fut": 53712.0,
+      "dow_spot": 53577.3984375,
+      "crude_oil": 79.75,
+      "usdinr": 95.4020004272461,
+      "india_vix": 10.835000038146973,
+      "dxy": 98.94300079345703,
+      "global_cues": "VIX compressed",
+      "nifty_spot": 24277.30078125,
+      "banknifty_spot": 57859.75
+    },
+    "macro": {
+      "ts": "2026-08-26T14:30:41.642261+05:30",
+      "next_event": {
+        "name": "monthly_expiry_NIFTY",
+        "datetime_ist": "2026-08-28 15:30:00",
+        "importance": 2,
+        "direction_hint": "neutral",
+        "minutes_to_event": 2939
+      },
+      "window_min": null
+    },
+    "research": {
+      "ts": "2026-08-26T14:30:41.645785+05:30",
+      "available": true,
+      "summary": null,
+      "bias": null,
+      "key_levels": {}
+    },
+    "news": {
+      "ts": "2026-08-26T14:30:41.895552+05:30",
+      "score": -0.2,
+      "n_items": 2,
+      "headlines": [],
+      "source": "keyword"
+    },
+    "paper": {
+      "ts": "2026-08-26T14:30:41.899547+05:30",
+      "cash": 106661.10000000003,
+      "realized": 6661.099999999999,
+      "open_count": 0,
+      "open": []
+    }
+  },
+  "run_kind": "intraday",
+  "build_ms": 7776
+}

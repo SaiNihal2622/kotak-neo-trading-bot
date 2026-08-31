@@ -1,0 +1,185 @@
+{
+  "ts": "2026-08-31 15:59:10",
+  "instruments": {
+    "NIFTY": {
+      "symbol": "NIFTY",
+      "open": 24080.4,
+      "current": 24080.4,
+      "day_high": 24080.4,
+      "day_low": 24080.4,
+      "vwap": 0.0,
+      "opening_range": {
+        "high": 24080.4,
+        "low": 24080.4
+      },
+      "swing_30m": {
+        "high": 24080.4,
+        "low": 24080.4
+      },
+      "dist_from_vwap": null,
+      "dist_from_day_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_day_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "vol_total": 1,
+      "tick_count_today": 1,
+      "last_ts": "2026-08-31 15:59:10"
+    },
+    "BANKNIFTY": {
+      "symbol": "BANKNIFTY",
+      "open": 58024.95,
+      "current": 58024.95,
+      "day_high": 58024.95,
+      "day_low": 58024.95,
+      "vwap": 0.0,
+      "opening_range": {
+        "high": 58024.95,
+        "low": 58024.95
+      },
+      "swing_30m": {
+        "high": 58024.95,
+        "low": 58024.95
+      },
+      "dist_from_vwap": null,
+      "dist_from_day_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_day_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "vol_total": 1,
+      "tick_count_today": 1,
+      "last_ts": "2026-08-31 15:59:10"
+    },
+    "FINNIFTY": {
+      "symbol": "FINNIFTY",
+      "open": 26293.65,
+      "current": 26293.65,
+      "day_high": 26293.65,
+      "day_low": 26293.65,
+      "vwap": 0.0,
+      "opening_range": {
+        "high": 26293.65,
+        "low": 26293.65
+      },
+      "swing_30m": {
+        "high": 26293.65,
+        "low": 26293.65
+      },
+      "dist_from_vwap": null,
+      "dist_from_day_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_day_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "vol_total": 1,
+      "tick_count_today": 1,
+      "last_ts": "2026-08-31 15:59:10"
+    },
+    "MIDCPNIFTY": {
+      "symbol": "MIDCPNIFTY",
+      "open": 64224.75,
+      "current": 64224.75,
+      "day_high": 64224.75,
+      "day_low": 64224.75,
+      "vwap": 0.0,
+      "opening_range": {
+        "high": 64224.75,
+        "low": 64224.75
+      },
+      "swing_30m": {
+        "high": 64224.75,
+        "low": 64224.75
+      },
+      "dist_from_vwap": null,
+      "dist_from_day_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_day_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "vol_total": 1,
+      "tick_count_today": 1,
+      "last_ts": "2026-08-31 15:59:10"
+    },
+    "INDIAVIX": {
+      "symbol": "INDIAVIX",
+      "open": 11.19,
+      "current": 11.19,
+      "day_high": 11.19,
+      "day_low": 11.19,
+      "vwap": 0.0,
+      "opening_range": {
+        "high": 11.19,
+        "low": 11.19
+      },
+      "swing_30m": {
+        "high": 11.19,
+        "low": 11.19
+      },
+      "dist_from_vwap": null,
+      "dist_from_day_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_day_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_high": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "dist_from_or_low": {
+        "pct": 0.0,
+        "abs": 0.0
+      },
+      "vol_total": 1,
+      "tick_count_today": 1,
+      "last_ts": "2026-08-31 15:59:10"
+    }
+  }
+}

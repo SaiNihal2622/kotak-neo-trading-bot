@@ -76,8 +76,12 @@ def main() -> int:
         return 2
 
     if plan.get("valid_for_date") != today_str:
-        print(f"  [info] plan valid_for={plan.get('valid_for_date')}, today={today_str}. no plan to refresh.")
-        return 0
+        # Stale plan (from a previous day). Update valid_for_date and refresh —
+        # the existing plan structure (primary_plan, strategy) is reusable; we're
+        # just re-running the conditions check against today's market state.
+        plan["valid_for_date"] = today_str
+        plan["valid_for_session"] = f"{now.strftime('%a %d-%b-%Y')} NSE regular session"
+        print(f"  [info] plan valid_for={plan.get('valid_for_date')}, today={today_str}. refreshing stale plan.")
 
     # Refresh research
     spot, vix = _fetch_spot_and_vix()

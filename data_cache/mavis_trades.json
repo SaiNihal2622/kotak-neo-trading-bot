@@ -1,203 +1,55 @@
 {
+  "valid_for_session": "Mon 31-Aug-2026 NSE regular session",
   "schema_version": "mavis-trade-plan-v3",
-  "generated_by": "Mavis-QuantTrader (LLM, not template)",
-  "generated_at": "2026-08-26T22:42:00+05:30",
-  "generated_at_unix": 1756230720,
-  "valid_for_date": "2026-08-27",
-  "valid_for_session": "Thu 27-Aug-2026 NSE regular session (NIFTY MONTHLY EXPIRY — last Thursday of August)",
-
+  "generated_at_unix": 1787904323,
+  "last_decision_at": "2026-08-31T11:47:33.164362+05:30",
+  "generated_by": "Mavis-QuantTrader (LLM, premarket cron 08:25 IST)",
+  "valid_for_date": "2026-08-31",
+  "generated_at": "2026-08-28T08:25:23+05:30",
+  "last_refresh_at": "2026-08-31T11:47:33.164362+05:30",
   "mavis_decision": {
     "action": "EXECUTE_PLAN",
-    "confidence": 0.78,
-    "bias": "neutral_to_bullish_skew",
-    "regime": "range_with_upward_gravity",
-    "time_horizon": "intraday_0dte",
-    "max_positions": 1,
-    "reason_short": "Max pain 24,300 is 92 pts above spot 24,208. OI walls 24,200 PE / 24,500 CE. Monthly expiry OI gravity + DII +37k Cr Aug + FII hedging via index options = range-bound, slight upward drift. Iron condor centered between OI walls.",
     "data_driven": true,
-    "template_override": true
+    "bias": "bearish",
+    "reason_short": "LIVE re-eval 11:47 IST: NIFTY 24021 in 24k-24.5k, US max -0.27% (calm), VIX 11.19 (cheap). Conditions clear, plan stands.",
+    "confidence": 0.85,
+    "regime": "range",
+    "preferred_strategies": [
+      "iron_condor",
+      "short_strangle",
+      "bear_put_vertical"
+    ],
+    "max_positions": 2,
+    "risk_budget_pct": 70,
+    "refreshed_via": "live_reeval",
+    "refreshed_at": "2026-08-31T11:47:33.164362+05:30"
   },
-
-  "research_at_generation": {
-    "nifty_spot": 24207.75,
-    "nifty_change_today": "-126.80 (-0.52%)",
-    "max_pain_27aug": 24300,
-    "max_pain_source": "trade-pulse.in, stockmojo.in, niftytrader.in — all converge on 24,300",
-    "max_pain_distance_pts": 92,
-    "max_pain_distance_pct": 0.38,
-    "max_pain_interpretation": "NIFTY is 92 pts BELOW max pain. Statistically on monthly expiry, NIFTY gravitates UP toward max pain in last 2 hours, especially in last 30 min. So slight upward drift expected.",
-    "oi_call_peak": 24500,
-    "oi_put_peak": 24200,
-    "oi_call_peak_interpretation": "Heavy call writing at 24,500 = strong resistance. Dealers are short 24,500 CE.",
-    "oi_put_peak_interpretation": "Heavy put writing at 24,200 = strong support. Dealers are short 24,200 PE.",
-    "pcr_composite": 0.86,
-    "pcr_interpretation": "PCR < 1 = put writing dominant = dealers expect NIFTY to stay range-bound. Slight bearish lean (more puts being written).",
-    "india_vix": 10.56,
-    "vix_5d_change": "+0.07 from 10.49",
-    "vix_interpretation": "VIX near 20d low (avg 11.61). Cheap premium = great for option selling. Vol crush in last 2h will be aggressive on monthly expiry.",
-    "fii_cash_24aug": "+1181.66 Cr (net BUY 2-day streak)",
-    "fii_index_futures_25aug": "-184227 contracts (net SHORT, hedging cash longs)",
-    "fii_index_options_24aug": "+22014.90 Cr (massive long, likely writing calls)",
-    "fii_interpretation": "FIIs are buying cash but hedging via short index futures + heavy index options position. This is OPTION SELLING activity by FIIs. They're positioned for range-bound NIFTY. The 22k Cr index options position is one of the largest in months — expect FIIs to defend 24,200-24,500 corridor.",
-    "dii_cash_aug_total": "+37093 Cr",
-    "dii_interpretation": "DIIs are the marginal buyer in August (7x FII). Strong domestic support. NIFTY has been propped up by DII flows even during FII hedging.",
-    "us_markets_26aug_close": "SPX 7671.8 (-0.07%), DOW 53433.78 (-0.27%), NDX 26077.46 (-0.28%), US VIX 15.55 (+0.65%)",
-    "us_interpretation": "Mildly negative US close. NVDA earnings + US PCE Friday are risk events. But no major selloff — drift, not crash. Asia open (SGX NIFTY) needs to be checked at 08:00 IST.",
-    "trend_indicators": {
-      "ema9": 24267.75,
-      "ema21": 24288.66,
-      "ema50": 24289.55,
-      "rsi_14": 29.27,
-      "rsi_state": "oversold",
-      "adx_14": 35.28,
-      "trend": "BEAR (STRONG)",
-      "trend_interpretation": "Bear trend (EMA9 < EMA21 < EMA50, ADX 35) but RSI 29 = oversold. Mean-reversion upward likely. But bear trend also means downside risk if 24,000 breaks."
-    },
-    "key_levels": {
-      "pivot": 24264.7,
-      "r1": 24321.65,
-      "s1": 24150.8,
-      "bb_lower": 24021.39,
-      "bb_upper": 24772.67,
-      "5d_low": 24115.45,
-      "5d_high": 24378.6,
-      "atr_14": 147.12,
-      "expected_1d_move": 242.08
-    },
-    "macro_events_next_3d": [
-      "Thu 27-Aug 15:30 IST: NIFTY MONTHLY EXPIRY (this session)",
-      "Fri 28-Aug: US PCE inflation report (post-India-close, impact Fri-Wed next week)"
-    ]
-  },
-
   "primary_plan": {
-    "name": "NIFTY Iron Condor (monthly expiry, OI-wall-centered)",
     "underlying": "NIFTY",
-    "expiry": "27AUG26",
-    "structure": "SELL 24200 PE + BUY 24100 PE (100-wide put spread) + SELL 24500 CE + BUY 24600 CE (100-wide call spread). Net width 100 on each side. Defined risk on both wings.",
-    "rationale_data_driven": "OI walls 24,200 PE / 24,500 CE are where dealers are short. Selling AT these walls captures the fattest premium while the walls hold on monthly expiry. Max pain 24,300 (between the walls) is the magnet. NIFTY currently 24,208 = just above 24,200 wall = good entry. The 100-wide wings keep max loss manageable (~Rs.4,500 = 4.2% of capital).",
-    "entry_signal": {
-      "trigger": "After 09:30 IST opening range is established",
-      "conditions_all_required": [
-        "Spot is inside 24,000-24,500 (between or at OI walls)",
-        "First 30-min range (09:15-09:45) is < 200 pts wide",
-        "No gap > 0.5% from prev close 24,207.75",
-        "US futures (or SGX NIFTY proxy) overnight move < 0.4%",
-        "VIX still < 12 (cheap premium)"
-      ],
-      "skip_if": [
-        "Gap up > 0.5% (directional risk too high for condor)",
-        "Gap down > 0.5% (panic, FIIs may liquidate)",
-        "First 30-min range > 250 pts (too volatile)",
-        "Spot opens outside 23,800-24,700 (OI walls broken)",
-        "Major US news overnight (NVDA miss, PCE hot)"
-      ]
-    },
-    "entry_window_ist": "09:45 - 10:15",
-    "entry_timing_logic": "Don't enter first 30 min (gap noise). After 09:45 OR is established, wait 15 more min for confirmation. If OR high/low is being respected, enter.",
-    "expected_premiums_rupees": {
-      "sell_24200_pe": "55-70 (currently ITM, fat premium, OI wall)",
-      "buy_24100_pe": "35-50 (100 pts below, lower delta)",
-      "sell_24500_pe": "0 (this is wrong, should be 24500 CE)",
-      "buy_24600_pe": "0",
-      "sell_24500_ce": "18-25 (OTM, OI wall resistance)",
-      "buy_24600_ce": "10-15 (100 pts above, lower delta)",
-      "net_credit_per_share": "25-40 (sum minus wings)",
-      "lot_size_nifty": 75,
-      "total_credit_lot1": "Rs.1,875 - 3,000",
-      "total_credit_lot2_NOT_USED": "N/A — 1 lot only for monthly expiry"
-    },
+    "name": "iron_condor_nifty_monthly",
+    "structure": "SELL 23950 PE + BUY 23850 PE + SELL 24300 CE + BUY 24400 CE",
+    "rationale_data_driven": "NIFTY spot 24090.85 inside expected range [23922.84, 24258.86] (thesis expected_move 168pt). Sell wings 100-wide just outside the range. Bearish skew: 140pt buffer to downside, 210pt to upside. VIX 11.07 compressed — credit will be thin (Rs.1500-2500 lot1). Monthly NIFTY expiry 15:30 — same-day theta, plan small size.",
+    "confidence": 0.85,
+    "expected_hold_minutes": 360,
     "max_loss_rupees": {
-      "per_wing_width_100_minus_credit": "60-75 per share per wing",
-      "per_wing_total_75_shares": "Rs.4,500 - 5,625",
-      "both_wings_combined": "Rs.9,000 - 11,250 (if BOTH wings breached — unlikely on monthly expiry)",
-      "realistic_max_loss_single_wing": "Rs.4,500 - 5,625 = 4.2-5.3% of capital"
+      "realistic_max_loss_single_wing": 5500,
+      "per_wing_total_75_shares": "Rs.4,500 - 6,500"
     },
-    "exit_rules": {
-      "profit_target": "Combined credit collected > 60% (i.e., 50% of max profit) → close early",
-      "stop_loss": "Either wing delta > 0.50 (prob ITM breach) OR combined mark-to-market loss > 60% of max loss → close that wing",
-      "time_stop": "HARD CLOSE by 14:30 IST. Do NOT hold into last 30 min on monthly expiry (whipsaw gamma risk)",
-      "force_square": "FIX #3 hard-kill at 15:15 if anything still open"
-    },
-    "adjustments": {
-      "if_nifty_drops_to_24150_by_11am": "BUY back 24200 PE to lock in remaining call-side credit (NIFTY showing weakness, protect the put side)",
-      "if_nifty_rises_to_24400_by_11am": "BUY back 24500 CE to lock in remaining put-side credit (NIFTY showing strength, protect the call side)",
-      "if_breakeven_at_1330": "Hold to 14:00, then close at 14:00 to free up capital"
+    "expected_premiums_rupees": {
+      "total_credit_lot1": "Rs.1,500 - 2,500",
+      "credit_per_share_lot1": "Rs.30 - 50"
     }
   },
-
-  "alternative_plans": {
-    "alt_1_bearish_breakdown": {
-      "name": "Bearish breakout (if 24,000 breaks)",
-      "trigger": "NIFTY breaks 24,000 with volume > 1.5x 5d-avg by 11:00 IST, AND close below 24,000 on 15-min candle",
-      "instrument": "BUY NIFTY 24,000 PE (currently OTM, premium ~25-35)",
-      "rationale": "FII short 1.84L contracts + bear trend + monthly expiry OI breakdown. Risk-defined long put, not naked short.",
-      "target": "NIFTY 23,800 by 13:30 — close at 2x premium paid",
-      "stop": "NIFTY reclaims 24,100 on 30-min candle — close at 50% premium",
-      "max_risk": "Rs.2,625 (75 shares * Rs.35)",
-      "validity": "Only if breakdown is confirmed. Do NOT preempt — let price prove it."
-    },
-    "alt_2_bullish_mean_reversion": {
-      "name": "Bullish MR bounce (if 24,000 holds and bounces)",
-      "trigger": "NIFTY opens weak, dips to 24,000-24,050 in first 30 min, then bounces back above 24,150 by 10:30 with volume",
-      "instrument": "BUY NIFTY 24,200 CE (currently OTM, premium ~30-45)",
-      "rationale": "Oversold RSI 29 + OI support 24,200 + DII heavy buying + max pain 24,300 above = mean reversion target.",
-      "target": "NIFTY 24,400 by 13:00 — close at 2x premium",
-      "stop": "NIFTY breaks 24,000 on 15-min candle — exit",
-      "max_risk": "Rs.3,375 (75 * 45)",
-      "validity": "Only if bounce is confirmed with volume."
-    },
-    "alt_3_no_trade": {
-      "name": "NO TRADE (if conditions don't support any plan)",
-      "trigger": "ANY of: gap > 0.7%, first 30-min range > 250 pts, US futures moved > 0.5% overnight, no clean OR, VIX > 13",
-      "rationale": "Capital preservation > forced trading. Monthly expiry whipsaw + bad data = NO TRADE is the right answer.",
-      "action": "BOT SHOULD NOT TRADE TODAY. Bot reads mavis_trades.json and finds action=BLOCK or alt_3 active. Skips both NIFTY and BANKNIFTY for the day."
-    }
+  "research_at_generation": {
+    "nifty_spot": 24021.25,
+    "india_vix": 11.19,
+    "us_futures_overnight": "spx=-0.23%, nasdaq=-0.05%, dow=-0.27%",
+    "refreshed_at": "2026-08-31T11:47:33.164362+05:30",
+    "banknifty_spot": 57336.0
   },
-
-  "banknifty_decision": {
-    "action": "BLOCK",
-    "reason": "BANKNIFTY 57,784 vs max pain 57,500 = 284 pts ABOVE max pain. Magnetic drift would be DOWN, but 50-day EMA support at 57,235 is strong. The range is too wide (57,235-57,900+) for a tight condor to be safe, and BANKNIFTY is choppier on monthly expiry than NIFTY. Liquidity is also thinner at our strike widths. SKIP BANKNIFTY today."
-  },
-
-  "intraday_decision_tree": {
-    "phase_1_pre_market_08_25": "Read thesis cron. Check overnight US close (already in research). Check Asia open (SGX NIFTY) at 08:00. Refresh mavis_trades.json if anything materially changed.",
-    "phase_2_opening_09_15_to_09_45": "OBSERVE ONLY. Log: opening gap (vs prev close 24,207.75), first 30-min high/low, volume vs 5d avg. Do NOT place orders.",
-    "phase_3_decision_09_45": "Apply primary entry_signal.conditions_all_required. If all met: WRITE 'ENTER' in mavis_trades.json. If not: check alternatives. If alternatives don't trigger either: WRITE 'CANCEL' (NO TRADE).",
-    "phase_4_early_management_10_00_to_11_30": "If ENTERED: monitor delta of both wings. If either delta > 0.30, consider adjustment. Trail stop on directional plays.",
-    "phase_5_midday_11_30_to_13_30": "Manage. Reduce position if realized vol spikes. No new entries (mid-day noise).",
-    "phase_6_afternoon_13_30_to_14_00": "Hold winners. If combined credit collected > 60%, close to lock profit.",
-    "phase_7_force_square_14_00_to_14_30": "HARD CLOSE all positions by 14:30. Monthly expiry whipsaw in last 30 min is NOT worth the gamma risk. Even if at max profit, take the money.",
-    "phase_8_hard_kill_safety_15_15": "If anything still open (bot crash, missed force-square), FIX #3 hard-kill at 15:15 forces emergency close. Theta burns remaining time value — accept whatever close price."
-  },
-
-  "risk_management": {
-    "max_capital_at_risk_per_trade": "Rs.5,500 (5.2% of capital — within 6% target)",
-    "max_daily_loss": "Rs.7,500 (7.5% — stop trading for the day if hit)",
-    "max_open_strategies": "1 (NIFTY only, BANKNIFTY BLOCKED)",
-    "position_sizing": "1 lot NIFTY (75 shares equivalent). NO 2-lot on monthly expiry.",
-    "premium_buffer": "Assume you'll get 30% less than mid. If mid=50, expect 30-35."
-  },
-
-  "what_makes_this_different_from_template": {
-    "template_behavior": "Bot runs iron_condor on NIFTY AND BANKNIFTY every day at 09:30 IST, regardless of market. Same strikes (ATM ±2, ATM ±4), same conf 0.60-0.65. From 22 trading days of journal data, 21 were template iron_condors.",
-    "mavis_behavior": [
-      "1. Read ACTUAL data: max pain, OI walls, FII/DII flows, US markets, trend, RSI, VIX",
-      "2. Make a specific decision: this is RANGE BOUND with UPWARD GRAVITY, trade NIFTY condor centered on OI walls",
-      "3. SKIP BANKNIFTY: too wide, too choppy, monthly expiry liquidity poor at our widths",
-      "4. Define EXACT entry signals: only enter if gap < 0.5%, OR < 200 pts wide, no panic",
-      "5. Define EXIT signals: time-stop 14:30, delta-stop 0.50, profit-take 60%",
-      "6. NO TRADE if conditions don't support any plan — capital preservation"
-    ]
-  },
-
-  "mavis_action_items": [
-    "08:30 IST: re-run research, refresh mavis_trades.json with pre-market data (SGX NIFTY, US futures, VIX)",
-    "09:45 IST: apply entry_signal.conditions_all_required, update mavis_trades.json with ENTER or CANCEL",
-    "10:00 IST: if ENTERED, monitor and adjust per adjustments",
-    "14:00 IST: review positions, decide to hold or close",
-    "14:30 IST: force-square if anything still open"
-  ],
-
-  "tomorrow_priority": "READ pre-market brief at 08:25. CHECK overnight US close (already know: SPX -0.07%, NDX -0.28%, mildly negative). AT 09:15-09:45 observe opening range. AT 09:45 decide: ENTER condor, ENTER alt, or NO TRADE. EXECUTE by 10:00. MANAGE per phase tree. FORCE-SQUARE by 14:30. HARD-KILL safety net at 15:15 (FIX #3) catches leftovers."
+  "premarket_check": {
+    "spot_in_range": true,
+    "us_calm": true,
+    "vix_ok": true
+  }
 }

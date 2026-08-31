@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "ts": 1788170656054,
+  "ts_iso": "2026-08-31T15:34:16+05:30",
+  "thresholds": {
+    "warn_big_msg_mb": 0.5,
+    "warn_total_mb": 4.0,
+    "fail_big_msg_mb": 1.5,
+    "fail_total_mb": 6.0
+  },
+  "compaction_fail_count_7d": 13,
+  "active_session_count": 138,
+  "findings": []
+}

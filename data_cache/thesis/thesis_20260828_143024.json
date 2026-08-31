@@ -1,0 +1,85 @@
+{
+  "ts": "2026-08-28T14:30:24+05:30",
+  "ist_time": "2026-08-28 14:30:24",
+  "regime": "range",
+  "bias": "neutral",
+  "confidence": 0.3,
+  "risk_budget_pct": 45,
+  "max_positions": 2,
+  "expected_move_pts": 165.45,
+  "expected_range": [
+    23955.203837412813,
+    24286.096943837187
+  ],
+  "preferred_strategies": [
+    "iron_condor",
+    "short_strangle"
+  ],
+  "avoid_strategies": [],
+  "specific_strikes": null,
+  "triggers": {
+    "force_square": false,
+    "no_new_trades": false,
+    "notes": "no special triggers"
+  },
+  "narrative": "**RANGE** regime, neutral (conf 30%). Spot ~24120 | VIX 10.9 | news -0.10. Playbook: 45% capital, 2 max positions.",
+  "data": {
+    "oi": {
+      "ts": "2026-08-28T14:30:19.953464+05:30",
+      "available": false,
+      "resistance": null,
+      "support": null,
+      "max_pain": null,
+      "pcr": null,
+      "gex_total": null,
+      "strike_selection": null
+    },
+    "xmkt": {
+      "ts": "2026-08-28T14:30:20.892359+05:30",
+      "gift_nifty": null,
+      "dow_fut": 53706.0,
+      "dow_spot": 53569.44140625,
+      "crude_oil": 83.22000122070312,
+      "usdinr": 95.44999694824219,
+      "india_vix": 10.887499809265137,
+      "dxy": 99.1989974975586,
+      "global_cues": "crude hot (inflation pressure) | VIX compressed",
+      "nifty_spot": 24120.650390625,
+      "banknifty_spot": 57429.0
+    },
+    "macro": {
+      "ts": "2026-08-28T14:30:23.640684+05:30",
+      "next_event": {
+        "name": "monthly_expiry_NIFTY",
+        "datetime_ist": "2026-08-28 15:30:00",
+        "importance": 2,
+        "direction_hint": "neutral",
+        "minutes_to_event": 59
+      },
+      "window_min": null
+    },
+    "research": {
+      "ts": "2026-08-28T14:30:23.642815+05:30",
+      "available": true,
+      "summary": null,
+      "bias": null,
+      "key_levels": {}
+    },
+    "news": {
+      "ts": "2026-08-28T14:30:23.946138+05:30",
+      "score": -0.1,
+      "n_items": 1,
+      "headlines": [],
+      "source": "keyword"
+    },
+    "paper": {
+      "ts": "2026-08-28T14:30:24.066383+05:30",
+      "cash": 109977.95000000004,
+      "realized": 9977.949999999997,
+      "open_count": 0,
+      "open": []
+    }
+  },
+  "run_kind": "intraday",
+  "build_ms": 4135
+}

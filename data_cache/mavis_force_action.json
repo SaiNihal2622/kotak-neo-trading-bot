@@ -1,0 +1,1 @@
+{"action": "CLOSE_UNDERLYING=BANKNIFTY", "reason": "mavis_1226_bnf_condor_120pt_below_57700_strike_force_action_channel_fix_attempt_no_bom", "requested_by": "mavis_trader_desk", "created_at": "2026-08-27T12:26:01+05:30", "consumed": true, "consumed_at": "2026-08-27T20:30:40.654450+05:30", "consumed_cycle": 1}

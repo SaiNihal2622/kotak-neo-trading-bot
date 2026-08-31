@@ -1197,8 +1197,7 @@ function render(s) {
     'Trades today': {value: bot.trades_today || 0, color: 'muted'},
     'Open positions': {value: bot.open_positions, color: 'accent'},
     'Paused': {value: bot.is_paused ? 'YES' : 'no', color: bot.is_paused ? 'yellow' : 'green'},
-    'Risk preset': {value: bot.risk_preset || 'base', color: 'muted'}
-    'Risk preset': bot.risk_preset || '--',
+    'Risk preset': {value: bot.risk_preset || 'base', color: 'muted'},
   });
 
   // market kv (live from bot :8502)
@@ -1229,7 +1228,7 @@ function render(s) {
     const macroLine = macroEvt.name
       ? (macroEvt.name + ' · ' + (macroEvt.datetime_ist || '?') + ' · ' + (macroEvt.minutes_to_event ? Math.round(macroEvt.minutes_to_event/60) + 'h away' : ''))
       : 'none scheduled';
-    $('thesisKv').innerHTML =
+    $('brainKv').innerHTML =
       '<div class="kv-row"><span class="kv-k">NIFTY</span><span class="kv-v accent">' + (t.nifty_spot ? t.nifty_spot.toFixed(2) : '--') + '</span></div>' +
       '<div class="kv-row"><span class="kv-k">BANKNIFTY</span><span class="kv-v accent">' + (t.banknifty_spot ? t.banknifty_spot.toFixed(2) : '--') + '</span></div>' +
       '<div class="kv-row"><span class="kv-k">VIX</span><span class="kv-v cyan">' + (t.india_vix ? t.india_vix.toFixed(2) : '--') + '</span></div>' +
@@ -1245,7 +1244,7 @@ function render(s) {
       (t.narrative ? '<div style="margin-top:6px;font-size:11px;color:var(--muted);line-height:1.4">' + t.narrative + '</div>' : '') +
       '<div class="sub">updated ' + (t.ist_time || '--') + ' (refreshes every 30m via thesis cron)</div>';
   } else {
-    $('thesisKv').innerHTML = '<span class="muted">no thesis yet — premarket 08:25 cron hasn\'t run today</span>';
+    $('brainKv').innerHTML = '<span class="muted">no thesis yet — premarket 08:25 cron hasn\'t run today</span>';
   }
 
   // brain
@@ -1322,14 +1321,17 @@ function render(s) {
     + '<td class="num">' + p.session + '</td><td class="num">' + (p.uptime_min || 0).toFixed(0) + 'm</td></tr>').join('')
     || '<tr><td colspan="4" class="muted">no kotak procs</td></tr>';
 
-  // reset history
-  const rh = s.reset_history || [];
-  if (rh.length) {
-    $('resetBody').innerHTML = rh.slice(-5).map(r => '<div class="kv"><span class="k">' + r.at + '</span><span class="v">'
-      + (r.reason || '?') + ' · capital ₹' + (r.capital || 0).toLocaleString('en-IN') + '</span></div>').join('')
-      + (rh.length > 5 ? '<div class="sub">…+' + (rh.length - 5) + ' more</div>' : '');
-  } else {
-    $('resetBody').innerHTML = '<span class="muted">no resets recorded</span>';
+  // reset history (null-safe — element optional)
+  const resetEl = $('resetBody');
+  if (resetEl) {
+    const rh = s.reset_history || [];
+    if (rh.length) {
+      resetEl.innerHTML = rh.slice(-5).map(r => '<div class="kv"><span class="k">' + r.at + '</span><span class="v">'
+        + (r.reason || '?') + ' · capital ₹' + (r.capital || 0).toLocaleString('en-IN') + '</span></div>').join('')
+        + (rh.length > 5 ? '<div class="sub">…+' + (rh.length - 5) + ' more</div>' : '');
+    } else {
+      resetEl.innerHTML = '<span class="muted">no resets recorded</span>';
+    }
   }
 
   // ---- TRADING TERMINAL ----

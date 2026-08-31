@@ -281,6 +281,21 @@ RULES (hard):
 You may pick any of 28 instruments (4 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not."""
 
 
+def compute_position_greeks(legs: list, spot: float, sigma: float = 0.15) -> dict:
+    """Compute aggregate position greeks for a multi-leg trade. Used for risk validation."""
+    if not legs:
+        return {"delta": 0, "gamma": 0, "theta": 0, "vega": 0, "notional": 0}
+    try:
+        from datetime import date as _date
+        from option_greeks import position_greeks as _pg
+        # Estimate time to expiry: 5 days for weekly
+        t_years = 5.0 / 365.0
+        return _pg(legs, spot, r=0.065, sigma=sigma, t_years=t_years)
+    except Exception as e:
+        log(f"greek-calc-err: {e}")
+        return {"delta": 0, "gamma": 0, "theta": 0, "vega": 0, "notional": 0}
+
+
 def _normalize_decision(d: dict) -> dict:
     """Normalize LLM output to bot-compatible schema.
     Accepts various LLM key conventions (action/type, instrument/underlying, etc.)
@@ -324,11 +339,26 @@ def _normalize_decision(d: dict) -> dict:
 
 def invoke_llm_decision(events: list, context: dict) -> dict:
     """Direct LLM call. Builds context, calls API, parses JSON action."""
+    # Augment context with Greeks for the LLM (so it understands position-level risk)
+    if context.get("chains_summary"):
+        spot = next((c.get("spot") for c in context["chains_summary"].values() if c.get("spot")), 0)
+        if spot:
+            try:
+                greeks_summary = {}
+                for sym, ch in list(context["chains_summary"].items())[:5]:
+                    atm = ch.get("atm_strike")
+                    if atm and sym in ("NIFTY", "BANKNIFTY"):
+                        sample_legs = [{"side": "BUY", "qty": 1, "strike": atm, "opt_type": "CE", "underlying": sym}]
+                        greeks_summary[sym] = compute_position_greeks(sample_legs, spot, sigma=0.12)
+                if greeks_summary:
+                    context["sample_greeks"] = greeks_summary
+            except Exception:
+                pass
     user_content = (
         f"EVENT(S) DETECTED: {json.dumps(events, default=str)[:2000]}\n\n"
         f"FULL STATE: {json.dumps(context, default=str)[:10000]}\n\n"
         f"RECENT HISTORY (last {len(HISTORY)} decisions): {json.dumps(list(HISTORY)[-5:], default=str)[:2000]}\n\n"
-        "Decide now. Output ONE JSON object only."
+        "Decide now. Output ONE JSON object only. Pay attention to delta (directional risk) and gamma (convexity). Iron condors should be delta-neutral (delta < 5). Long options should have positive delta for CE, negative for PE."
     )
     result = call_llm_direct(PROFESSIONAL_QUANT_SYSTEM, user_content)
     SERVICE_STATE["llm_calls"] += 1

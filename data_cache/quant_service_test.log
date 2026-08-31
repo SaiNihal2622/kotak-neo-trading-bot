@@ -1,0 +1,4 @@
+[2026-08-31T16:07:19+05:30] QUANT-SERVICE: starting (pid=2284)
+[2026-08-31T16:07:19+05:30]   LLM endpoint: https://agent.minimax.io/mavis/api/v1/llm/v1/messages
+[2026-08-31T16:07:19+05:30]   HTTP control: http://127.0.0.1:8503
+[2026-08-31T16:07:19+05:30] HTTP-API: listening on http://127.0.0.1:8503

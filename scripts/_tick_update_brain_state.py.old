@@ -1,0 +1,151 @@
+#!/usr/bin/env python
+"""One-shot brain_state.json updater for 13:35 tick."""
+import json
+from datetime import datetime, timezone, timedelta
+
+path = r'C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\data_cache\brain_state.json'
+with open(path, 'r', encoding='utf-8') as f:
+    state = json.load(f)
+
+# Compute IST time (UTC+5:30)
+ist = timezone(timedelta(hours=5, minutes=30))
+now_utc = datetime.now(timezone.utc)
+now_ist = now_utc.astimezone(ist)
+ist_str = now_ist.strftime('%Y-%m-%d %H:%M:%S')
+ts_str = now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+# New last_decision for 13:35 tick
+new_last_decision = {
+    'ts': ts_str,
+    'ist_time': ist_str,
+    'bias': 'cautious',
+    'source': 'mavis',
+    'max_positions': 2,
+    'actions': [
+        {
+            'id': 'act-13-35-001',
+            'type': 'CLOSE',
+            'strategy': 'BANKNIFTY_IRON_CONDOR_PE_SIDE',
+            'underlying': 'BANKNIFTY',
+            'expiry': '2026-08-25',
+            'legs': [
+                {'side': 'BUY', 'strike': 57400, 'option_type': 'PE', 'qty': 30, 'price': None},
+                {'side': 'SELL', 'strike': 57300, 'option_type': 'PE', 'qty': 30, 'price': None}
+            ],
+            'rationale': 'HARD TRIGGER STILL MET \u2014 BN<57350 sustained 17+ consecutive refreshes. Latest reading 13:35:08 BN=57282.75 (vs 57286.35 at 13:30, -3.6 pts FURTHER DETERIORATION). 57300 WING BREACHED 17.25 pts (WORSENED from 13.65 at 13:30). Short 57400 PE now 117.25 pts ITM (vs 113.65, +3.6 deeper). Long 57300 PE now 17.25 pts ITM (vs 13.65, +3.6 deeper). PE SPREAD STILL LOCKED AT FULL MAX LOSS \u2014 spread width = 100 = max loss = 1936.5 INR (unchanged). CE side 57600 still ~317 OTM (vs 314 at 13:30, narrowed 3 pts as BN drifted -3.6 \u2014 still very safe). NIFTY 24128.90 (vs 24127.80 at 13:30, +1.10) = 28.90 OTM from 24100 PE, 13.75 pts above 24115 hard trigger (slight improvement from 12.80 buffer). 13:30 no-new-entries cutoff in force, blocks new entries but does not block this CLOSE. 1h40m to 15:15 square-off, 55 min to 14:30 force-square. EXECUTOR DEAD 3d \u2014 re-emitting for rule-based correctness + audit trail + in case executor wakes. Force-square at 14:30 (55 min away) is the working backstop. Decision unchanged from 13:30 (CLOSE PE side re-emit #5 of day, prev re-emits at 13:11, 13:15, 13:20, 13:25, 13:30). The 3.6 pt slide WORSE does NOT change the action \u2014 position still locked at max loss. CE side keeps decaying theta toward 14:30. NIFTY IB both buffers safe (CE 172 OTM, PE 13.75 above 24115).',
+            'ttl_sec': 60
+        }
+    ],
+    'note': 'hard_trigger_still_met_BN_57282.75_below_57350_17plus_consecutive_readings_57300_wing_BREACHED_17.25pts_at_13_35_WORSENED_from_13.65_PE_SPREAD_STILL_at_FULL_MAX_LOSS_NIFTY_24128.90_13.75_buffer_safe_force_square_14_30_backstop_55min_re_emit_5_CLOSE_PE_side',
+    'reasoning': 'Tick at 13:35 IST on Tue 2026-08-25 [0DTE MONTHLY expiry day]. 5 min after 13:30 tick, 275 min into regular session, 1h40m to 15:15 square-off, 55 min to 14:30 force-square. 13:30 no-new-entries cutoff in force (blocks new entries, does not block this CLOSE). Market in regular session. VIX 11.31 [calm, <12]. Range regime confirmed for both underlyings [NIFTY conf=0.7 range=0.34%, BANKNIFTY conf=0.7 range=0.74%]. Macro: no events next 7d, no blackout. Research: still unavailable [41st consecutive tick]. Live positions: 2 strategies [NIFTY IB + BANKNIFTY IC] at max_positions=2. KEY STATE vs 13:30 tick: BN DRIFTED -3.6 pts from 57286.35 to 57282.75 in 5 min (SLIGHT FURTHER DETERIORATION \u2014 opposite direction of the 13:25->13:30 bounce). Last 5 refreshes (13:30:00 -> 13:35:08): 57286.35 -> 57281.70 -> 57287.60 -> 57289.40 -> 57286.40 -> 57282.90 -> 57285.10 -> 57282.75 \u2014 all still <57350. 57300 wing breached 17.25 pts (WORSENED from 13.65 at 13:30 by -3.6 pts as BN drifted down). Short 57400 PE now 117.25 pts ITM (was 113.65, +3.6 deeper). Long 57300 PE now 17.25 pts ITM (was 13.65, +3.6 deeper). PE SPREAD WIDTH STILL LOCKED at 100 = MAX LOSS = 1936.5 INR (unchanged). CE side 57600 still ~317 OTM (was 314, narrowed 3 pts as BN drifted -3.6 \u2014 still very safe). NIFTY 24128.90 (vs 24127.80 at 13:30) = +1.10 pts, 28.90 OTM from 24100 PE, 13.75 pts above 24115 hard trigger (slight improvement from 12.80 buffer). Short 24300 CE 171.10 OTM (was 172.20). DECISION: RE-EMIT CLOSE PE SIDE OF BN IC [55th tick of day, 5th CLOSE re-emit]. Hard trigger STILL MET [BN<57350 sustained 17+ readings, 57300 wing still breached by 17.25 pts, PE spread still at FULL MAX LOSS]. The 3.6 pt deterioration is consistent with continued grinding pressure on the BN PE spread. The position is still locked at max loss because both PE legs are still ITM and spread width is still 100. UNREALIZED PNL [live est at 13:35]: NIFTY IB ~+1750 INR [up ~+50 from 13:30 as theta + small NIFTY improvement helped], BN IC NET ~-580 INR [PE spread still at full max loss -1936.5 INR, CE side now ~1356 INR credit [declined ~20 INR from 13:30 due to 3.6 pt BN drift narrowing CE distance 3 pts], net -580 vs -560 at 13:30 -20 INR deterioration], TOTAL ~+1170 INR on 0DTE monthly [+30 vs 13:30]. SAFEGUARD: force-square at 14:30 IST [55 min] will auto-square regardless. PE side locked at max loss \u2014 closing now vs force-square gives same PnL if BN stays put. CE side keeps gaining from theta decay. WHY NOT close NIFTY IB or CE side of BN IC: only BN IC PE hard trigger met. NIFTY 13.75 buffer safe (improved). CE side 317 OTM safe. NEXT TICK TRIGGERS: BN<57250 sustained 2+ = deeper emergency; BN>57450 sustained 2+ = potential unwind; NIFTY<24115 sustained 2+ = close NIFTY IB PE; NIFTY>24300 sustained 2+ = close NIFTY IB CE.',
+    'candle_regime_evidence': {
+        'NIFTY': {
+            'regime': 'range',
+            'confidence': 0.7,
+            'reason': 'range=0.34% tight + vix=11.3 low',
+            '5d_change_pct': 0.22,
+            'range_pct': 0.34,
+            'today_move_pts': -45.4
+        },
+        'BANKNIFTY': {
+            'regime': 'range',
+            'confidence': 0.7,
+            'reason': 'range=0.74% tight + vix=11.3 low',
+            '5d_change_pct': 0.09,
+            'range_pct': 0.74,
+            'today_move_pts': -97.0
+        }
+    },
+    'macro_evidence': {
+        'in_blackout': False,
+        'next_event': None,
+        'events_next_7d': []
+    },
+    'research_evidence': {
+        'available': False,
+        'note': 'research not available [Kotak PDF download failed, 41st consecutive tick], skipped research bias'
+    },
+    'monday_brief_evidence': {
+        'applicable': False,
+        'note': 'Tuesday - Monday brief not consulted'
+    },
+    'position_evidence': [
+        {
+            'strategy': 'NIFTY Iron Butterfly [HOLD \u2014 NIFTY 24128.90 up 1.10pts from 13:30, 28.90 above 24100 PE strike, 13.75 above 24115 hard trigger (slight improvement from 12.80 buffer). Both buffers mostly intact, theta working. NIFTY has been in 24122-24134 range for 20 min.]',
+            'spot': 24128.9,
+            'distance_to_short_ce_pts': 171.1,
+            'distance_to_short_pe_pts': 28.9,
+            'distance_to_wing_ce_pts': 271.1,
+            'distance_to_wing_pe_pts': 128.9,
+            'expiry': '2026-08-25',
+            '0dte': True,
+            'monthly_expiry': True,
+            'net_credit': 3767.25,
+            'max_loss': 3732.75,
+            'unrealized_pnl_inr': 1750.0,
+            'pct_of_max_profit': 47.0,
+            'status': 'CE_171pts_OTM_GREEN_PE_29pts_OTM_GREEN_NIFTY_24128.90_bounce_13.75_above_24115_hard_trigger_improved_from_12.80_unrealized_+1750_HOLD_force_square_14_30_55min',
+            'tight_side_watch': 'PE_24100_29pts_OTM_13.75pts_above_24115_close_trigger_safe_CE_24300_171pts_OTM_safe'
+        },
+        {
+            'strategy': 'BANKNIFTY Iron Condor [HARD TRIGGER STILL MET \u2014 CLOSE PE side re-emitted [5th time]. PE side short 57400 PE now 117.25 pts ITM [deepened from 113.65 by -3.6 pt BN drift], 57300 wing breached 17.25 pts below [deepened from 13.65 by -3.6 pt BN drift]. PE SPREAD STILL AT FULL MAX LOSS = 1936.5 INR [100%]. CE side 57600 still 317 OTM safe [narrowed from 314 by 3 pt BN drift]. Executor dead 3d, force-square 14:30 backstop [55 min].]',
+            'spot': 57282.75,
+            'distance_to_short_ce_pts': 317.25,
+            'distance_to_short_pe_pts': -117.25,
+            'distance_to_wing_ce_pts': 417.25,
+            'distance_to_wing_pe_pts': -17.25,
+            'expiry': '2026-08-25',
+            '0dte': True,
+            'monthly_expiry': True,
+            'net_credit': 2325.3,
+            'max_loss': 3674.7,
+            'unrealized_pnl_inr': -580.0,
+            'pct_of_max_profit': -15.8,
+            'status': 'PE_117.25pts_ITM_DEEP_RED_PE_SPREAD_LOCKED_at_100_FULL_MAX_LOSS_CE_317pts_OTM_GREEN_force_square_14_30_backstop_55min_executor_dead_3d_CE_side_1356INR_credit',
+            'tight_side_watch': 'PE_57300_wing_BREACHED_17.25pts_at_13_35_short_57400_PE_117.25_ITM_PE_spread_LOCKED_at_100_max_loss_CE_57700_wing_417_away_safe'
+        }
+    ],
+    'executor_status': {
+        'standalone_executor': 'dead_3d_no_orders_since_2026-08-22',
+        'in_process_resilient': 'not_processing_brain_actions',
+        'force_square_backstop': '14_30_IST_55min_away',
+        'working_exit': 'force_square_only'
+    },
+    'tick_summary_13_35': '55th tick of day, CLOSE PE side RE-EMITTED [5th time, prev re-emits at 13:11, 13:15, 13:20, 13:25, 13:30]. Bias=cautious. KEY STATE vs 13:30: BN DRIFTED -3.6 pts from 57286.35 to 57282.75 in 5 min (further deterioration, opposite of 13:25->13:30 bounce). Last 5 refreshes all <57350. 57300 wing breached 17.25 pts (WORSENED from 13.65 at 13:30 by -3.6). Short 57400 PE now 117.25 pts ITM (vs 113.65, deepened 3.6). Long 57300 PE now 17.25 pts ITM (vs 13.65, deepened 3.6). PE SPREAD STILL AT MAX LOSS = 1936.5 INR [100%]. CE side 57600 still 317 OTM [narrowed from 314 by 3]. NIFTY +1.10 pts to 24128.90 [from 24127.80], 13.75 buffer above 24115 [slight improvement from 12.80]. Hard trigger STILL MET, 17+ consecutive readings. CLOSE action re-emitted with same structure. Force-square at 14:30 [55 min] primary backstop. UNREALIZED PNL est: TOTAL ~+1170 INR [+30 vs 13:30 as NIFTY IB improved +50 INR to +1750, BN IC deteriorated -20 INR to -580 due to 3.6 pt BN drift narrowing CE distance 3 pts]. NIFTY 13.75 buffer safe. The 3.6 pt deterioration does not change the action \u2014 position still locked at max loss. Lesson: on 0DTE monthly with PE spread locked at max loss, theta on CE side is the only remaining edge. Force-square at 14:30 is the right backstop regardless. The decision to re-emit is for rule-based correctness + audit trail, not for execution since executor is dead.'
+}
+
+state['last_decision'] = new_last_decision
+state['call_count_today'] = state.get('call_count_today', 0) + 1
+
+history_entry = {
+    'ist_time': ist_str,
+    'bias': 'cautious',
+    'note': 'HARD_TRIGGER_STILL_MET_BN_57282.75_below_57350_17plus_consecutive_readings_57300_wing_BREACHED_17.25pts_WORSENED_from_13.65_PE_spread_LOCKED_at_100_full_max_loss_NIFTY_24128.90_13.75_buffer_safe_force_square_14_30_55min_re_emit_5_CLOSE_PE_side',
+    'actions': [
+        {
+            'id': 'act-13-35-001',
+            'type': 'CLOSE',
+            'strategy': 'BANKNIFTY_IRON_CONDOR_PE_SIDE',
+            'underlying': 'BANKNIFTY',
+            'expiry': '2026-08-25',
+            'legs': [
+                {'side': 'BUY', 'strike': 57400, 'option_type': 'PE', 'qty': 30, 'price': None},
+                {'side': 'SELL', 'strike': 57300, 'option_type': 'PE', 'qty': 30, 'price': None}
+            ]
+        }
+    ]
+}
+
+if 'history' not in state:
+    state['history'] = []
+state['history'].append(history_entry)
+
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(state, f, indent=2, ensure_ascii=False)
+
+print('OK: brain_state.json updated')
+print(f'call_count_today: {state["call_count_today"]}')
+print(f'history length: {len(state["history"])}')
+print(f'last_decision ist_time: {state["last_decision"]["ist_time"]}')
+print(f'last_decision bias: {state["last_decision"]["bias"]}')
+print(f'actions: {len(state["last_decision"]["actions"])}')

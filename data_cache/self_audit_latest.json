@@ -1,45 +1,45 @@
 {
-  "ts": "2026-08-24T01:22:36.302146+05:30",
-  "epoch": 1787514756,
+  "ts": "2026-08-31T15:15:38.694998+05:30",
+  "epoch": 1788169538,
   "liveness": {
     "available": true,
-    "age_sec": 19.9,
+    "age_sec": 10.0,
     "fresh": true,
-    "pid": 15204,
-    "tick": 3195,
-    "uptime_sec": 95995.0,
+    "pid": 1176,
+    "tick": 21,
+    "uptime_sec": 632.24,
     "main_thread_alive": true,
     "state": "running"
   },
   "log": {
     "available": true,
     "path": "C:\\Users\\saini\\.minimax-agent\\projects\\kotak-neo-bot\\Logs\\bot_stderr.log",
-    "age_sec": 46.0,
+    "age_sec": 18.3,
     "fresh": true,
-    "size_bytes": 569655
+    "size_bytes": 12419
   },
   "crash_history": {
-    "count": 18,
+    "count": 66,
     "latest": {
-      "ts": "2026-08-23T13:54:46.327346+05:30",
-      "event": "atexit",
-      "reason": "atexit_normal",
-      "uptime_sec": 13.29,
-      "last_ping_age_sec": 13.28,
-      "main_thread_alive": false,
-      "python_version": "3.12.10",
-      "pid": 18844,
-      "ppid": 2272,
-      "platform": "Windows-11-10.0.26200-SP0"
+      "ts": "2026-08-31T09:33:33.660097+00:00",
+      "pid": 10544,
+      "reason": "signal",
+      "cycle": 39435,
+      "last_cycle_ts": "2026-08-31T09:33:28.887907+00:00",
+      "loop_uptime_sec": 325985.312964,
+      "signal_name": "SIGINT"
     }
   },
   "paper_state": {
     "available": true,
-    "cash": 100000.0,
-    "realized_pnl": 0.0,
+    "cash": 109977.95000000004,
+    "realized_pnl": 9977.949999999997,
     "open_positions": 0,
-    "open_orders": 288
+    "open_orders": 352
   },
-  "anomalies": [],
-  "telegram_sent": false
+  "anomalies": [
+    "new crash within last hour: signal pid=10544 uptime=0.0s"
+  ],
+  "telegram_sent": true,
+  "last_telegram_at": 1788169539.6572268
 }

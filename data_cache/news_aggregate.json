@@ -1,0 +1,18 @@
+{
+  "ts": "2026-08-31T15:36:14+05:30",
+  "score": 0.08514319809069214,
+  "n": 0,
+  "headlines": [
+    "2026-08-31 15:05:06.949 | ERROR   | kotak_bot.data.kotak_prod_feed:_download_scrip_master:518 | KotakProdFeed: scrip master download error: [Errno 22] Invalid argument: 'data_cache\\\\nse_fo.csv'",
+    "2026-08-31 15:05:06.952 | WARNING | kotak_bot.data.kotak_prod_feed:_load_scrip_master:450 | KotakProdFeed: scrip master download failed, using whatever is cached",
+    "2026-08-31 15:05:08.230 | INFO    | kotak_bot.data.kotak_prod_feed:_load_scrip_master:488 | KotakProdFeed: scrip master loaded \u2014 6184 active NIFTY/BN options (6184 strategy symbols mapped)",
+    "2026-08-31 15:05:18.359 | INFO    | kotak_bot.data.live_feed:_live_india_loop:664 | LiveIndia refresh: NIFTY=24052.55 BANKNIFTY=57384.05 VIX=11.02",
+    "2026-08-31 15:05:49.726 | INFO    | kotak_bot.data.live_feed:_live_india_loop:664 | LiveIndia refresh: NIFTY=24060.35 BANKNIFTY=57403.60 VIX=11.21",
+    "2026-08-31 15:06:21.590 | INFO    | kotak_bot.data.live_feed:_live_india_loop:664 | LiveIndia refresh: NIFTY=24059.05 BANKNIFTY=57413.05 VIX=11.21",
+    "2026-08-31 15:06:52.286 | INFO    | kotak_bot.data.live_feed:_live_india_loop:664 | LiveIndia refresh: NIFTY=24064.05 BANKNIFTY=57424.40 VIX=11.21",
+    "2026-08-31 15:07:23.421 | INFO    | kotak_bot.data.live_feed:_live_india_loop:664 | LiveIndia refresh: NIFTY=24066.15 BANKNIFTY=57416.50 VIX=11.22",
+    "2026-08-31 15:07:54.811 | INFO    | kotak_bot.data.live_feed:_live_india_loop:664 | LiveIndia refresh: NIFTY=24064.95 BANKNIFTY=57412.10 VIX=11.21",
+    "2026-08-31 15:08:25.792 | INFO    | kotak_bot.data.live_feed:_live_india_loop:664 | LiveIndia refresh: NIFTY=24065.50 BANKNIFTY=57410.05 VIX=11.22"
+  ],
+  "source": "llm_judge"
+}

@@ -1,0 +1,537 @@
+{
+  "today_date": "2026-08-27",
+  "call_count_today": 24,
+  "last_decision": {
+    "ts": "2026-08-27T06:40:54Z",
+    "ist_time": "2026-08-27 12:10:54",
+    "bias": "neutral",
+    "source": "mavis",
+    "max_positions": 2,
+    "actions": [
+      {
+        "id": "act-1210BNFCL",
+        "type": "CLOSE",
+        "strategy": "iron_condor",
+        "underlying": "BANKNIFTY",
+        "expiry": "2026-08-27",
+        "legs": [
+          {"side": "BUY", "strike": 57900, "option_type": "CE", "qty": 30, "price": null},
+          {"side": "SELL", "strike": 58000, "option_type": "CE", "qty": 30, "price": null},
+          {"side": "BUY", "strike": 57700, "option_type": "PE", "qty": 30, "price": null},
+          {"side": "SELL", "strike": 57600, "option_type": "PE", "qty": 30, "price": null}
+        ],
+        "rationale": "Hard escalation trigger fired: BNF spot 57665.80 (LiveIndia 12:10:47) breached 57700 short PE strike by 34.20pt, short PE now ITM. 12:01 last_decision explicitly defined 57700 as the hard escalation trigger ('Hard escalation trigger: BNF spot breaches 57700'). This is also a new intraday low vs prior 57685-57704 floor that held 8+ times all morning - first actual break, not another compression test. Asymmetric patience logic from 12:01 no longer dominates: BNF momentum is down, this is the first time the 11th compression has actually broken through the floor, and 2h19m of trading time is more than the Aug 26 13:20 incident (1h10m from close). Lock in remaining ~1629 INR profit. Close all 4 BNF legs at market. NIFTY condor: PE buffer 39.30pt, still comfortable, HOLD.",
+        "ttl_sec": 300
+      }
+    ],
+    "note": "close_bnf_condor_hard_escalation_trigger_57700_breached_1210_lock_profit_hold_nifty_pe_buffer_39pt_comfortable",
+    "market_session": "regular",
+    "vix": 11.2,
+    "macro_in_blackout": false,
+    "candle_regime_evidence": {
+      "NIFTY": {
+        "regime": "range",
+        "confidence": 0.7,
+        "last_close": 24157.4,
+        "trend_5d": "flat",
+        "change_5d_pct": -0.39,
+        "range_pct": 0.62,
+        "reason": "range=0.62% tight + vix=11.20 calm (1.0x multiplier); spot 24139.30 (LiveIndia 12:10:47) between shorts 24100/24300. -15.65pt DOWN from 12:01 tick (was 24154.95); PE buffer 54.95 -> 39.30pt (-15.65pt, still 24.30pt above 15pt trigger, COMFORTABLE), CE buffer 145.05 -> 160.70pt (+15.65pt, very safe). Both legs OTM, range regime well-centered. NIFTY 5d trend flat (-0.39% over 5d), no directional pressure."
+      },
+      "BANKNIFTY": {
+        "regime": "range",
+        "confidence": 0.7,
+        "last_close": 57717.65,
+        "trend_5d": "flat",
+        "change_5d_pct": -0.08,
+        "range_pct": 0.54,
+        "reason": "range=0.54% tight + vix=11.20 calm (1.0x multiplier); spot 57665.80 (LiveIndia 12:10:47) BREAKS BELOW 57700 short PE strike by 34.20pt - SHORT PE NOW ITM. -46.50pt DOWN from 12:01 tick (was 57712.30); PE buffer 12.30 -> -34.20pt (BREACHED 57700, NEW INTRADAY LOW vs prior 57685-57704 floor held 8+ times). CE buffer 167.70 -> 234.20pt (+46.50pt, very safe). 12th BNF compression event but THIS ONE BROKE THE FLOOR - qualitatively different from prior 10/10 recoveries. Asymmetric patience logic (max loss 201 INR) no longer dominates after actual break. Brain issues CLOSE per 12:01 escalation framework."
+      }
+    },
+    "macro_evidence": {
+      "in_blackout": false,
+      "upcoming_events": [
+        {
+          "name": "monthly_expiry_NIFTY",
+          "datetime_ist": "2026-08-28 15:30",
+          "importance": 2,
+          "minutes_away": 1639
+        },
+        {
+          "name": "india_gdp",
+          "datetime_ist": "2026-08-29 17:30",
+          "importance": 2,
+          "minutes_away": 3199
+        }
+      ],
+      "interpretation": "No near-term event risk. Monthly NIFTY expiry tomorrow 27h19m away (NOT today's 0DTE; today is 27AUG26 weekly expiry, force square-off 14:30 IST). GDP 53h19m away, both well outside 60min blackout window. No RBI/Fed/CPI within 4h. Macro quiet, no defensive bias needed. ~2h19m to 14:30 force square-off, ~1h19m to 13:30 no-new-entries cutoff."
+    },
+    "research_evidence": {
+      "available": false,
+      "fallback": "Research PDF download still failing (kotak_research.download_latest_research_pdf:52 WARNING, fired again at 12:10:54). Candle+macro+VIX-only mode. VIX 11.20 (up 0.07pt from 11.13 at 12:01, still well in calm range, 1.0x multiplier). Both underlyings in tight range regime but BNF has broken 57700 floor for the first time today."
+    },
+    "open_positions_summary": {
+      "count": 2,
+      "details": [
+        "NIFTY 0DTE iron condor: short 24300CE/24100PE, long 24400CE/24000PE, width 100, 65 qty per leg, opened 09:30:32 IST at net credit 55.70/unit (max profit 3620 INR, max loss 2880 INR) - HOLD",
+        "BANKNIFTY 0DTE iron condor: short 57900CE/57700PE, long 58000CE/57600PE, width 100, 30 qty per leg, opened 09:30:32 IST at net credit 93.29/unit (max profit 2799 INR, max loss 201 INR) - CLOSE per escalation trigger"
+      ],
+      "spot_vs_strikes": {
+        "nifty": "spot 24139.30 (LiveIndia 12:10:47) between shorts 24100/24300 -- 39.30pt from short PE, 160.70pt from short CE -- -15.65pt DOWN from 12:01 (was 54.95/145.05) -- PE buffer 54.95->39.30pt (-15.65pt, 24.30pt above 15pt trigger, COMFORTABLE), CE buffer 145.05->160.70pt (+15.65pt, very safe). NIFTY dip from 12:01 high, both legs still OTM.",
+        "banknifty": "spot 57665.80 (LiveIndia 12:10:47) BELOW short PE strike 57700 by 34.20pt -- 234.20pt from short CE -- -46.50pt DOWN from 12:01 (was 12.30/167.70) -- PE buffer 12.30 -> -34.20pt (BREACHED 57700 strike by 34.20pt, short PE ITM), CE buffer 167.70 -> 234.20pt (+46.50pt, very safe). 12th BNF compression - FIRST ACTUAL BREAK of 57685-57704 floor. Brain CLOSES this condor per 12:01 escalation framework."
+      },
+      "unrealized_pnl_inr_estimate": {
+        "nifty_condor_ltp_based": "~1800",
+        "banknifty_condor_ltp_based": "~1629 (closing now)",
+        "total_approx_before_close": "~3429 -> ~1800 after BNF close",
+        "note": "NIFTY condor still solidly in green, ~+1800 INR LTP-based mark (DOWN from 12:01 +1600 by ~+200 INR on -15.65pt spot move which is roughly delta-neutral for symmetric condor, slight theta positive). BNF condor: -46.50pt move toward short PE compresses BNF PE leg significantly. At 57665.80, short 57700 PE intrinsic 34.20pt (plus small time value), long 57600 PE still OTM (worth just time value). Estimated close cost ~1170 INR (mostly PE side). Lock in ~1629 INR profit by closing now. After BNF close, NIFTY condor remains with 39.30pt PE buffer, 24.30pt above trigger, comfortable."
+      },
+      "max_reached": true,
+      "max_positions_limit": 2,
+      "note": "Issuing CLOSE on BNF condor (4 legs at market) per 12:01 hard escalation trigger that has now fired (BNF 57665.80 < 57700 strike). After close, 1/2 cap reached (NIFTY only). No new entry planned (1h19m to 13:30 cutoff insufficient for new setup + opening buffer). NIFTY condor HOLD: PE buffer 39.30pt (24.30pt above 15pt trigger), comfortable, range regime intact."
+    },
+    "bias_decision": "neutral",
+    "risk_budget_pct": 0.0,
+    "risk_budget_reasoning": "Risk budget = 0% for new capital because no new entry (1h19m to 13:30 cutoff, 2h19m to 14:30 force-square-off, would need 30-60min in trade). BNF condor CLOSE issued to lock in ~1629 INR profit before potential further adverse move. NIFTY condor HOLD with PE buffer 39.30pt (24.30pt above 15pt trigger). Combined max loss on NIFTY condor only 2880 INR (2.5% of 113K cash) - acceptable for 0DTE under calm VIX 11.20. Bot stop-loss is primary defense for NIFTY, 14:30 force-square-off is ultimate backstop. BNF break was the trigger; lock the profit.",
+    "planned_setup": null,
+    "decision_summary": "CLOSE BNF condor (HOLD NIFTY) at 12:10 IST, regular session, ~2h19m to 14:30 force square-off, ~1h19m to 13:30 no-new-entries cutoff. Tick-over-tick vs 12:01: VIX 11.13 -> 11.20 (+0.07, still calm 1.0x), NIFTY 24154.95 -> 24139.30 (-15.65pt, PE buffer 54.95->39.30pt [-15.65pt, 24.30pt above 15pt trigger, COMFORTABLE], CE buffer 145.05->160.70pt [+15.65pt, very safe]), BANKNIFTY 57712.30 -> 57665.80 (-46.50pt, PE buffer 12.30 -> -34.20pt [BREACHED 57700 STRIKE BY 34.20pt, SHORT PE ITM, NEW INTRADAY LOW vs prior 57685-57704 floor held 8+ times today], CE buffer 167.70 -> 234.20pt [+46.50pt, very safe]). 12:01 last_decision explicitly defined 57700 as 'hard escalation trigger' for BNF condor. Trigger has fired. This is qualitatively different from prior 10 morning compressions that all recovered (10/10 held the 57685-57704 floor) - this 12th compression BROKE the floor. Asymmetric patience logic (max loss 201 INR) no longer dominates after actual break with 2h19m of time remaining. Lock in ~1629 INR remaining profit by closing all 4 BNF legs at market. NIFTY condor HOLD: PE buffer 39.30pt (24.30pt above 15pt trigger), range regime intact, both legs OTM, comfortable. After BNF close: 1/2 cap, no new entry planned (13:30 cutoff too close). Bot stop-loss + 14:30 force-square-off remain primary defenses for NIFTY condor."
+  },
+  "history": [
+    {
+      "ts": "2026-08-27T06:40:54Z",
+      "ist_time": "2026-08-27 12:10:54",
+      "bias": "neutral",
+      "actions": [
+        {
+          "id": "act-1210BNFCL",
+          "type": "CLOSE",
+          "strategy": "iron_condor",
+          "underlying": "BANKNIFTY",
+          "expiry": "2026-08-27"
+        }
+      ],
+      "note": "close_bnf_condor_hard_escalation_trigger_57700_breached_1210_lock_profit_hold_nifty_pe_buffer_39pt_comfortable"
+    },
+    {
+      "ts": "2026-08-27T06:31:30Z",
+      "ist_time": "2026-08-27 12:01:30",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1202_nifty_pe_55pt_comfortable_bnf_pe_12pt_11th_bnf_compression_below_15pt_trigger_but_floor_57700_not_breached_max_loss_201_aug26_pattern_patience_to_force_sq_off_1430_2h28m"
+    },
+    "note": "hold_continuation_dual_0dte_condors_1202_nifty_pe_55pt_comfortable_bnf_pe_12pt_11th_bnf_compression_below_15pt_trigger_but_floor_57700_not_breached_max_loss_201_aug26_pattern_patience_to_force_sq_off_1430_2h28m",
+    "market_session": "regular",
+    "vix": 11.13,
+    "macro_in_blackout": false,
+    "candle_regime_evidence": {
+      "NIFTY": {
+        "regime": "range",
+        "confidence": 0.7,
+        "last_close": 24151.35,
+        "trend_5d": "flat",
+        "change_5d_pct": -0.42,
+        "range_pct": 0.66,
+        "reason": "range=0.66% tight + vix=11.13 calm (1.0x multiplier); spot 24154.95 (live 12:01:45 LiveIndia refresh from bot log) between shorts 24100/24300; intraday range ~160 pts (open 24277.6 high 24297.45 low 24137.15 close 24151.35). -3pt DOWN from 11:56 tick (was 24157.95); PE buffer 57.95->54.95pt (-3pt, still 39.95pt above 15pt trigger, VERY COMFORTABLE), CE buffer 142.05->145.05pt (+3pt, very safe). Both legs OTM, range regime well-centered. NIFTY 5d trend flat (-0.42% over 5d), no directional pressure. Yfinance 1d confirms last 5 sessions in 24100-24300 zone."
+      },
+      "BANKNIFTY": {
+        "regime": "range",
+        "confidence": 0.7,
+        "last_close": 57711.95,
+        "trend_5d": "flat",
+        "change_5d_pct": -0.09,
+        "range_pct": 0.57,
+        "reason": "range=0.57% tight + vix=11.13 calm (1.0x multiplier); spot 57712.30 (live 12:01:45 LiveIndia refresh from bot log) between shorts 57700/57900; intraday range ~327 pts (open 57985 high 58012.40 low 57685.10 close 57711.95). -19.80pt DOWN from 11:56 tick (was 57732.10); PE buffer 32.10->12.30pt (-19.80pt, NEW TIGHTEST OF DAY, now 2.70pt BELOW 15pt mental escalation trigger but still 12.30pt above 57700 short PE strike), CE buffer 167.90->187.70pt (+19.80pt, very safe). 11th BNF compression event -- TIGHTEST of the day so far (prior tightest was 13pt @ 11:01 and 14pt @ 11:27, both recovered). 57685-57704 floor has held 8+ times today. BNF condor max loss only Rs.201 (asymmetric payoff STRONGLY favors patience). Aug 26 precedent: BNF PE at 18pt @ 14:00 = HELD to 14:30 force-square-off even when BNF PE went ITM 30pt at 13:20. Brain stays out of bot exit management. Bot's stop-loss + 14:30 force-square-off are primary defenses. Escalation trigger: BNF spot breaches 57700 (short PE ITM, currently 12.30pt above this -- still OTM with 12.30pt clearance)."
+      }
+    },
+    "macro_evidence": {
+      "in_blackout": false,
+      "upcoming_events": [
+        {
+          "name": "monthly_expiry_NIFTY",
+          "datetime_ist": "2026-08-28 15:30",
+          "importance": 2,
+          "minutes_away": 1648
+        },
+        {
+          "name": "india_gdp",
+          "datetime_ist": "2026-08-29 17:30",
+          "importance": 2,
+          "minutes_away": 3208
+        }
+      ],
+      "interpretation": "No near-term event risk. Monthly expiry tomorrow 27h28m away (NOT today NIFTY 0DTE -- today is 27AUG26 weekly expiry, force square-off 14:30 IST). GDP 53h28m away, both well outside 60min blackout window. No RBI/Fed/CPI within 4h. Macro quiet, no defensive bias needed. ~2h28m to 14:30 force square-off, ~1h28m to 13:30 no-new-entries cutoff (we're 1h28m before cutoff but at cap 2/2 so no new entries possible anyway)."
+    },
+    "research_evidence": {
+      "available": false,
+      "fallback": "Research PDF download still failing (same 'Could not find derivatives PDF URL' error from kotak_research.download_latest_research_pdf:52, fired again at 12:01:52). Candle+macro+VIX-only mode. VIX 11.13 (up 0.03pt from 11.10 at 11:56, still well in calm range, 1.0x multiplier). Both underlyings in tight range, no directional signal. Stay neutral."
+    },
+    "open_positions_summary": {
+      "count": 2,
+      "details": [
+        "NIFTY 0DTE iron condor: short 24300CE/24100PE, long 24400CE/24000PE, width 100, 65 qty per leg, opened 09:30:32 IST at net credit 55.70/unit (max profit 3620 INR, max loss 2880 INR)",
+        "BANKNIFTY 0DTE iron condor: short 57900CE/57700PE, long 58000CE/57600PE, width 100, 30 qty per leg, opened 09:30:32 IST at net credit 93.29/unit (max profit 2799 INR, max loss 201 INR -- very tight spread)"
+      ],
+      "spot_vs_strikes": {
+        "nifty": "spot 24154.95 (live 12:01:45) between shorts 24100/24300 -- 54.95pt from short PE, 145.05pt from short CE -- -3pt DOWN from 11:56 (was 57.95/142.05) -- PE buffer 57.95->54.95pt (-3pt, still 39.95pt above 15pt trigger, VERY COMFORTABLE), CE buffer 142.05->145.05pt (+3pt, very safe). NIFTY minor dip from 11:56 high, both legs still OTM, range regime well-centered.",
+        "banknifty": "spot 57712.30 (live 12:01:45) between shorts 57700/57900 -- 12.30pt from short PE, 187.70pt from short CE -- -19.80pt DOWN from 11:56 (was 32.10/167.90) -- PE buffer 32.10->12.30pt (-19.80pt, NEW TIGHTEST OF DAY, 2.70pt BELOW 15pt trigger but still 12.30pt above 57700 short PE strike), CE buffer 167.90->187.70pt (+19.80pt, very safe). 11th BNF compression event -- TIGHTER than prior tightest (13pt @ 11:01, 14pt @ 11:27, both recovered). 57685-57704 floor has held 8+ times today. BNF condor max loss only Rs.201. Aug 26 pattern: PE at 18pt @ 14:00 = HELD to 14:30 force-square-off even when BNF PE went ITM 30pt at 13:20. Brain stays out of bot exit management. Bot's stop-loss + 14:30 force-square-off are primary defenses. Escalation trigger: BNF spot breaches 57700 (currently 12.30pt above)."
+      },
+      "unrealized_pnl_inr_estimate": {
+        "nifty_condor_ltp_based": "~1600",
+        "banknifty_condor_ltp_based": "~700",
+        "total_approx": "~2300",
+        "note": "Both condors still in green on aggregate, ~+2300 INR LTP-based mark (DOWN from 11:56 +2700 INR by ~-400 INR on NIFTY -3pt + BNF -19.80pt). NIFTY condor: -3pt spot move is roughly delta-neutral for symmetric condor, slight theta positive. BNF condor: -19.80pt move toward short PE compresses BNF PE leg, hurts the short PE position, but BNF condor is so tight (max loss Rs.201) that the worst case is still trivial. Total solidly green ~+2300. Combined max loss still 3081 INR (~2.7% of 113K cash). Bot's stop-loss and 14:30 force-square-off are primary defenses. Asymmetric payoff (BNF condor max loss Rs.201 only) means patience has near-zero downside if BNF doesn't breach 57700."
+      },
+      "max_reached": true,
+      "max_positions_limit": 2,
+      "note": "At cap 2/2. Both 0DTE condors ~152 min after entry (09:30:32 -> 12:01:30), still in profit zone on aggregate, slightly DOWN from 11:56. NIFTY PE buffer at 54.95pt -- DOWN from 57.95pt at 11:56 by -3pt, still 39.95pt above 15pt escalation trigger, VERY COMFORTABLE. BNF PE buffer at 12.30pt -- DOWN from 32.10pt at 11:56 by -19.80pt, NEW TIGHTEST of day, 2.70pt BELOW 15pt escalation trigger, BUT still 12.30pt above 57700 short PE strike. Both legs OTM on both condors. BNF morning oscillation pattern (10 prior compressions today, 10/10 all recovered, 11th now in progress). BNF condor max loss only Rs.201 (very tight spread, asymmetric payoff STRONGLY favors patience). Aug 26 pattern (BNF PE at 18pt @ 14:00 = HELD to 14:30 force-square-off despite BNF PE going ITM 30pt at 13:20) is the established precedent. Decision: HOLD, let bot's stop-loss + 14:30 force-square-off manage. Final exit: bot force-square-off at 14:30 IST (~2h28m)."
+    },
+    "bias_decision": "neutral",
+    "risk_budget_pct": 0.0,
+    "risk_budget_reasoning": "Risk budget = 0% for NEW capital because at cap 2/2. Both 0DTE condors sized within the 1-2% envelope. Combined max loss ~3081 INR on 113K cash = 2.7% (acceptable for 0DTE under calm VIX 11.13). Current LTP-based unrealized ~+2300 INR (DOWN from 11:56 +2700 by ~-400 INR on NIFTY -3pt + BNF -19.80pt). NIFTY PE buffer 54.95pt -- DOWN from 57.95pt at 11:56 by -3pt, still 39.95pt above 15pt escalation trigger, VERY COMFORTABLE. BNF PE buffer 12.30pt -- DOWN from 32.10pt at 11:56 by -19.80pt, NEW TIGHTEST of day, 2.70pt BELOW 15pt mental escalation trigger, but still 12.30pt above 57700 short PE strike -- brain does NOT escalate. Both legs OTM on both condors. BNF has been oscillating 13-58pt all morning around 57685-57704 floor; floor has held 8+ times. 10/10 prior compressions recovered today, 11th now in progress at 12.30pt. BNF condor max loss only Rs.201 (asymmetric payoff STRONGLY favors patience). Aug 26 pattern (BNF PE at 18pt @ 14:00): HELD to force-square-off at 14:30 even when PE went ITM 30pt. Following same pattern. Bot stop-loss is primary defense. Hard escalation trigger: BNF spot breaches 57700 (short PE ITM, currently 12.30pt above this -- still OTM with 12.30pt clearance). Brain does NOT issue CLOSE actions on BNF condor: (a) condor max loss trivial, (b) bot has stop-loss, (c) 14:30 force-square-off in 2h28m, (d) Aug 26 precedent strong.",
+    "planned_setup": null,
+    "decision_summary": "HOLD (regular session 12:01 IST, ~2h28m to 14:30 force square-off, ~1h28m to 13:30 no-new-entries cutoff, but at cap 2/2 anyway). Tick-over-tick vs 11:56: VIX 11.10 -> 11.13 (+0.03, still calm 1.0x), NIFTY 24157.95 -> 24154.95 (-3pt, PE buffer 57.95->54.95pt [-3pt, 39.95pt above 15pt trigger, VERY COMFORTABLE], CE buffer 142.05->145.05pt [+3pt, very safe]), BANKNIFTY 57732.10 -> 57712.30 (-19.80pt, PE buffer 32.10->12.30pt [-19.80pt, NEW TIGHTEST OF DAY, 2.70pt BELOW 15pt trigger but still 12.30pt above 57700 strike, OTM], CE buffer 167.90->187.70pt [+19.80pt, very safe]). Both underlyings still in range regime (0.7 conf). Macro not in blackout, no event within 4h. Research PDF still unavailable. Both 0DTE condors slightly DOWN on aggregate (~+2300 INR LTP-based, down from 11:56 +2700 by ~-400). At cap 2/2 -- no new entries possible. NIFTY PE buffer at 54.95pt (39.95pt above 15pt trigger, very comfortable). BNF PE buffer at 12.30pt (NEW TIGHTEST of day, 2.70pt below 15pt mental trigger but still 12.30pt above 57700 short PE strike, OTM with 12.30pt clearance). BNF morning oscillation pattern (10/10 prior compressions recovered today, 11th now in progress). BNF condor max loss only Rs.201. Aug 26 pattern: BNF PE at 18pt @ 14:00 = HELD to 14:30 force-square-off even when BNF PE went ITM 30pt at 13:20. Following same precedent. Decision: HOLD, let bot's own stop-loss + 14:30 force-square-off manage. Brain does NOT issue CLOSE actions. Hard escalation trigger: BNF spot breaches 57700 (currently 12.30pt above this). Next review window: 12:05-12:10 tick. Final exit: bot force-square-off at 14:30 IST (~2h28m)."
+  },
+  "history": [
+    {
+      "ts": "2026-08-27T06:31:30Z",
+      "ist_time": "2026-08-27 12:01:30",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1202_nifty_pe_55pt_comfortable_bnf_pe_12pt_11th_bnf_compression_below_15pt_trigger_but_floor_57700_not_breached_max_loss_201_aug26_pattern_patience_to_force_sq_off_1430_2h28m"
+    },
+    {
+      "ts": "2026-08-27T06:26:00Z",
+      "ist_time": "2026-08-27 11:56:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1156_nifty_pe_58pt_bnf_pe_32pt_both_recovered_both_legs_otm_vix_11_10_calm_2h34m_to_force_sq_off_1430_aug26_pattern_hold_to_bot_exit"
+    },
+    {
+      "ts": "2026-08-27T06:21:00Z",
+      "ist_time": "2026-08-27 11:51:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1151_nifty_pe_47pt_bnf_pe_22pt_10th_bnf_compression_bnf_7pt_above_15pt_trigger_aug26_pattern_patience_to_force_sq_off_1430_2h39m"
+    },
+    {
+      "ts": "2026-08-27T06:11:52Z",
+      "ist_time": "2026-08-27 11:41:52",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1141_nifty_pe_54pt_bnf_pe_39pt_both_comfortable_2h49m_to_force_sq_off_1430_aug26_pattern_hold_to_bot_exit"
+    },
+    {
+      "ts": "2026-08-27T06:06:41Z",
+      "ist_time": "2026-08-27 11:36:41",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1136_nifty_pe_56pt_bnf_pe_50pt_both_far_comfortable_2h54m_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T06:02:30Z",
+      "ist_time": "2026-08-27 11:32:30",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1132_nifty_pe_52pt_bnf_pe_34pt_both_recovered_both_legs_otm_2h58m_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T06:02:30Z",
+      "ist_time": "2026-08-27 11:32:30",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1132_nifty_pe_52pt_bnf_pe_34pt_both_recovered_both_legs_otm_2h58m_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T05:57:33Z",
+      "ist_time": "2026-08-27 11:27:33",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1127_bnf_pe_buffer_recompressed_to_14pt_below_15pt_trigger_but_above_57700_escalation_floor_aug26_pattern_patience_to_force_sq_off_1430_3h02m"
+    },
+    {
+      "ts": "2026-08-27T05:51:09Z",
+      "ist_time": "2026-08-27 11:21:09",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1121_nifty_pe_45pt_compressed_bnf_pe_27pt_recovered_out_of_watch_zone_above_15pt_trigger_vix_11_09_calm_3h09m_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T05:46:30Z",
+      "ist_time": "2026-08-27 11:16:30",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_hold_bnf_pe_buffer_23_55pt_8_55pt_above_15pt_trigger_aug26_pattern_hold_to_force_sq_off_1430_3h14m_to_exit_ltp_unrealized_+2595"
+    },
+    {
+      "ts": "2026-08-27T05:40:30Z",
+      "ist_time": "2026-08-27 11:10:30",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_hold_bnf_pe_buffer_compressed_29pt_57758_57728_still_28_7pt_above_15pt_trigger_aug26_pattern_hold_to_force_sq_off_1430_3h20m_to_exit"
+    },
+    {
+      "ts": "2026-08-27T05:35:45Z",
+      "ist_time": "2026-08-27 11:05:45",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_hold_bnf_bounced_45pt_floor_57698_confirmed_support_pe_buffer_recovered_58pt_aug26_pattern_hold_to_force_sq_off_1430_3h25m_to_exit"
+    },
+    {
+      "ts": "2026-08-27T05:31:00Z",
+      "ist_time": "2026-08-27 11:01:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_hold_bnf_pe_13pt_crossed_15pt_trigger_but_max_loss_only_201_inr_bnf_bounced_from_57703_95_twice_following_aug26_pattern_let_bot_manage_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T05:26:00Z",
+      "ist_time": "2026-08-27 10:56:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_hold_bnf_pe_16_85pt_2_15pt_tighter_than_10_51_still_3_15pt_above_15pt_escalation_trigger_following_aug26_pattern_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T05:21:10Z",
+      "ist_time": "2026-08-27 10:51:10",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_hold_bnf_pe_19pt_tightest_leg_following_aug26_pattern_let_bot_manage_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T05:15:43Z",
+      "ist_time": "2026-08-27 10:45:43",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_bnf_pe_58pt_tightest_leg_still_2x_stop"
+    },
+    {
+      "ts": "2026-08-27T05:10:49Z",
+      "ist_time": "2026-08-27 10:40:49",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-27T05:05:46Z",
+      "ist_time": "2026-08-27 10:35:46",
+      "bias": "neutral",
+      "actions": [],
+      "note": "no_setup"
+    },
+    {
+      "ts": "2026-08-26T08:30:51.000000Z",
+      "timestamp": "2026-08-26T08:30:51.000000Z",
+      "ist_time": "2026-08-26 14:00:51",
+      "bias": "neutral",
+      "actions": [],
+      "note": "hold_continuation_dual_0dte_condors_1400_nifty_pe_12pt_bnf_18pt_30m_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-26T07:50:22.000000Z",
+      "timestamp": "2026-08-26T07:50:22.000000Z",
+      "ist_time": "2026-08-26 13:20:22",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_bnf_pe_itm_breach_30pt_still_profitable_hold_to_force_square_off"
+    },
+    {
+      "ts": "2026-08-26T07:45:55.000000Z",
+      "timestamp": "2026-08-26T07:45:55.000000Z",
+      "ist_time": "2026-08-26 13:15:55",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_bnf_pe_critical_hold"
+    },
+    {
+      "ts": "2026-08-26T07:35:00.000000Z",
+      "ist_time": "2026-08-26 13:05:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T07:30:00.000000Z",
+      "ist_time": "2026-08-26 13:00:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T07:25:00.000000Z",
+      "ist_time": "2026-08-26 12:55:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T07:20:00.000000Z",
+      "ist_time": "2026-08-26 12:50:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T07:10:00.000000Z",
+      "ist_time": "2026-08-26 12:40:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T07:05:00.000000Z",
+      "ist_time": "2026-08-26 12:35:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T07:00:00.000000Z",
+      "ist_time": "2026-08-26 12:30:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T06:55:00.000000Z",
+      "ist_time": "2026-08-26 12:25:00",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T06:45:27.000000Z",
+      "ist_time": "2026-08-26 12:15:27",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T06:40:55.000000Z",
+      "ist_time": "2026-08-26 12:10:55",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T06:40:20.858487Z",
+      "ist_time": "2026-08-26 12:10:20",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T06:37:11.000000",
+      "ist_time": "2026-08-26 12:07:11",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T05:06:11.000000",
+      "ist_time": "2026-08-26 10:36:11",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T04:56:30.000000",
+      "ist_time": "2026-08-26 10:26:30",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T04:51:48.000000",
+      "ist_time": "2026-08-26 10:21:48",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ts": "2026-08-26T04:36:18.000000",
+      "ist_time": "2026-08-26 10:06:18",
+      "bias": "neutral",
+      "actions": [],
+      "note": "at_cap_dual_0dte_condors_managed_no_new_entries"
+    },
+    {
+      "ist_time": "2026-08-26 14:27:25",
+      "bias": "neutral",
+      "actions_count": 0,
+      "note": "hold_continuation_dual_0dte_condors_1425_5m_to_force_sq_off_1430_nifty_pe_24pt_comfortable_bnf_pe_28pt_itm_long_72pt_protecting"
+    },
+    {
+      "ts": "2026-08-26T09:00:30.000000Z",
+      "ist_time": "2026-08-26 14:30:30",
+      "bias": "neutral",
+      "actions_count": 0,
+      "note": "hold_post_force_sq_off_1430_0dte_condors_closed_no_new_entries_30min_to_close"
+    },
+    {
+      "ts": "2026-08-27T04:15:19.000000Z",
+      "timestamp": "2026-08-27T04:15:19.000000Z",
+      "ist_time": "2026-08-27 09:45:19",
+      "bias": "neutral",
+      "actions": [],
+      "actions_count": 0,
+      "note": "hold_at_cap_dual_0dte_condors_0945_nifty_bnf_in_range_low_vix_let_bot_manage_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T04:20:48.000000Z",
+      "timestamp": "2026-08-27T04:20:48.000000Z",
+      "ist_time": "2026-08-27 09:50:48",
+      "bias": "neutral",
+      "actions": [],
+      "actions_count": 0,
+      "note": "hold_at_cap_dual_0dte_condors_0950_nifty_bnf_in_range_low_vix_let_bot_manage_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T04:30:31.000000Z",
+      "timestamp": "2026-08-27T04:30:31.000000Z",
+      "ist_time": "2026-08-27 10:00:31",
+      "bias": "neutral",
+      "actions": [],
+      "actions_count": 0,
+      "note": "hold_at_cap_dual_0dte_condors_1000_nifty_24188_bnf_57806_in_range_low_vix_let_bot_manage_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T04:45:48Z",
+      "timestamp": "2026-08-27T04:45:48Z",
+      "ist_time": "2026-08-27 10:15:48",
+      "bias": "neutral",
+      "actions": [],
+      "actions_count": 0,
+      "note": "hold_at_cap_dual_0dte_condors_1015_nifty_24187_bnf_57799_in_range_low_vix_unrealized_2594_let_bot_manage_to_force_sq_off_1430"
+    },
+    {
+      "ts": "2026-08-27T04:50:30Z",
+      "timestamp": "2026-08-27T04:50:30Z",
+      "ist_time": "2026-08-27 10:20:30",
+      "bias": "neutral",
+      "actions": [],
+      "actions_count": 0,
+      "note": "hold_at_cap_dual_0dte_condors_1020_nifty_24189_bnf_57820_in_range_low_vix_bnf_ce_buffer_tightened_to_80pt_let_bot_manage"
+    },
+    {
+      "ts": "2026-08-27T04:56:19Z",
+      "ist_time": "2026-08-27 10:26:19",
+      "bias": "neutral",
+      "note": "no_setup"
+    },
+    {
+      "ts": "2026-08-27T05:00:30Z",
+      "ist_time": "2026-08-27 10:30:30",
+      "bias": "neutral",
+      "note": "no_setup"
+    },
+    {
+      "ts": "2026-08-27T05:30:00Z",
+      "ist_time": "2026-08-27 11:00:00",
+      "bias": "neutral",
+      "actions": [],
+      "actions_count": 0,
+      "note": "hold_at_cap_dual_0dte_condors_1100_bnf_pe_13pt_below_15pt_trigger_but_spot_unbreached_aug26_pattern_hold_to_force_sq_off_1430_tightened_trigger_lt_8pt"
+    }
+  ],
+  "last_updated_ist": "2026-08-27 11:32:30"
+}

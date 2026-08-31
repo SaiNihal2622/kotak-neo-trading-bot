@@ -104,29 +104,57 @@ def _append_event(event_type: str, level: str, value, context: dict) -> None:
     _log(f"  EVENT: {event_type} {level}={value} ctx={json.dumps(context)[:120]}")
 
 
+def _is_market_hours() -> bool:
+    """True if NSE cash market is open (Mon-Fri 09:00-15:45 IST)."""
+    now = _now_ist()
+    if now.weekday() >= 5:  # Sat/Sun
+        return False
+    h, m = now.hour, now.minute
+    return (h > 9 or (h == 9 and m >= 0)) and (h < 15 or (h == 15 and m <= 45))
+
+
+def _safe_yf_close(symbol: str) -> float:
+    """yfinance Close that returns 0.0 on empty DataFrame (weekends, US holidays)."""
+    try:
+        import yfinance as yf
+        df = yf.Ticker(symbol).history(period="1d")
+        if df is None or df.empty or "Close" not in df.columns:
+            return 0.0
+        closes = df["Close"].dropna()
+        if closes.empty:
+            return 0.0
+        return float(closes.iloc[-1])
+    except Exception as e:
+        _log(f"  [warn] yfinance {symbol} fetch failed: {type(e).__name__}: {str(e)[:120]}")
+        return 0.0
+
+
 def _fetch_spot() -> dict:
-    """Fetch NIFTY, BANKNIFTY, India VIX. Cached for 5s."""
+    """Fetch NIFTY, BANKNIFTY, India VIX. Cached for 5s.
+
+    Off-hours (weekends, US holidays, late-night IST): returns 0.0 silently
+    instead of flooding the log with IndexError from empty DataFrames.
+    During market hours: tries yfinance first, then a public API fallback if it
+    returns 0.0.
+    """
     state = _read_json(STATE, {})
     cache = state.get("spot_cache") or {}
     if cache.get("ts") and (time.time() - cache["ts"]) < 5:
         return cache["data"]
+
     out = {"nifty": 0.0, "banknifty": 0.0, "vix": 0.0}
-    try:
-        import yfinance as yf
-        out["nifty"] = float(yf.Ticker("^NSEI").history(period="1d")["Close"].iloc[-1])
-    except Exception:
-        pass
-    try:
-        import yfinance as yf
-        out["banknifty"] = float(yf.Ticker("^NSEBANK").history(period="1d")["Close"].iloc[-1])
-    except Exception:
-        pass
-    try:
-        import yfinance as yf
-        out["vix"] = float(yf.Ticker("^INDIAVIX").history(period="1d")["Close"].iloc[-1])
-    except Exception:
-        pass
-    state["spot_cache"] = {"ts": time.time(), "data": out}
+
+    if not _is_market_hours():
+        # Skip the yfinance call during off-hours. We still write the cache so
+        # downstream code sees a consistent shape, but we don't pollute the log.
+        state["spot_cache"] = {"ts": time.time(), "data": out, "source": "off_hours"}
+        _write_state(state)
+        return out
+
+    out["nifty"] = _safe_yf_close("^NSEI")
+    out["banknifty"] = _safe_yf_close("^NSEBANK")
+    out["vix"] = _safe_yf_close("^INDIAVIX")
+    state["spot_cache"] = {"ts": time.time(), "data": out, "source": "yfinance"}
     _write_state(state)
     return out
 

@@ -1,0 +1,14 @@
+import json
+with open(r'C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\data_cache\brain_actions.json','r',encoding='utf-8') as f:
+    a = json.load(f)
+with open(r'C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\data_cache\brain_state.json','r',encoding='utf-8') as f:
+    s = json.load(f)
+print('brain_actions.json:')
+print('  ts=' + a['ts'] + '  ist=' + a['ist_time'] + '  bias=' + a['bias'] + '  actions=' + str(len(a['actions'])))
+for act in a['actions']:
+    print('    ' + act['id'] + ' ' + act['type'] + ' ' + act['strategy'] + ' legs=' + str(len(act['legs'])))
+print()
+print('brain_state.json:')
+print('  call_count_today=' + str(s['call_count_today']) + '  history_len=' + str(len(s['history'])))
+print('  last_decision ist=' + s['last_decision']['ist_time'] + '  bias=' + s['last_decision']['bias'] + '  actions=' + str(len(s['last_decision']['actions'])))
+print('  last history ist=' + s['history'][-1]['ist_time'] + '  bias=' + s['history'][-1]['bias'])

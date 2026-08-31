@@ -1,47 +1,35 @@
 {
-  "as_of": "2026-08-23T21:00:27.828698",
-  "next_session_open_ist": "2026-08-24T09:15:00",
-  "weekend_summary": "Regime: risk_off, Gap: gap_up · NIFTY: 24252 · Posture: conservative (max risk 1.0%)",
+  "as_of": "2026-08-30T21:01:10.021231",
+  "next_session_open_ist": "2026-08-31T09:15:00",
+  "weekend_summary": "Regime: risk_on, Gap: gap_up · NIFTY: 24091 · Posture: normal (max risk 2.0%)",
   "key_risks": [
-    "Oil +3.9% this week — India import bill widens, INR pressure",
-    "News: FPIs invest Rs 23,544 crore in Indian equities in Aug on earnings revival, rupee stability"
+    "News: Bullion braces for fresh swings as US jobs data, Iran tensions take centre stage: Analysts",
+    "News: Mcap of 7 of top-10 most-valued firms falls by  ₹1.13 lakh crore; Bharti Airtel, RIL bigge"
   ],
   "key_catalysts": [
-    "Dollar index -0.84% — weaker USD = EM tailwind",
-    "India VIX 11.2 — calm, premium-selling favorable"
+    "S&P +0.72% Friday — US tailwind for Monday Asia open",
+    "Nasdaq +1.57% Friday — tech rally spillover",
+    "India VIX 11.1 — calm, premium-selling favorable"
   ],
-  "regime_hint": "risk_off",
+  "regime_hint": "risk_on",
   "india_open_gap_signal": "gap_up",
   "macro_blackout_soon": false,
   "macro_blackout_event": null,
-  "macro_events_next_7d": [
-    {
-      "name": "monthly_expiry_NIFTY",
-      "datetime_ist": "2026-08-28T15:30:00",
-      "importance": 2,
-      "direction_hint": "neutral"
-    },
-    {
-      "name": "india_gdp",
-      "datetime_ist": "2026-08-29T17:30:00",
-      "importance": 2,
-      "direction_hint": "neutral"
-    }
-  ],
-  "recommended_posture": "conservative",
-  "max_risk_per_trade_pct": 1.0,
-  "skip_first_30min": true,
+  "macro_events_next_7d": [],
+  "recommended_posture": "normal",
+  "max_risk_per_trade_pct": 2.0,
+  "skip_first_30min": false,
   "preferred_strategies": [
-    "short_strangle",
+    "bull_call_vertical",
     "iron_condor"
   ],
-  "rationale": "regime_hint=risk_off → conservative | gap_signal=gap_up → skip 30min | crude +3% → India import bill risk",
-  "nifty_last_close": 24252.0,
-  "banknifty_last_close": 57761.9492,
-  "india_vix": 11.2,
-  "usdinr": 95.68,
-  "wti_crude_5d_pct": 3.03,
-  "sp500_5d_pct": -0.91,
-  "intel_source_as_of": "2026-08-23T21:00:15.444097+05:30",
+  "rationale": "regime_hint=risk_on → normal/aggressive | gap_signal=gap_up → skip 30min",
+  "nifty_last_close": 24090.8496,
+  "banknifty_last_close": 57509.9492,
+  "india_vix": 11.07,
+  "usdinr": 95.36,
+  "wti_crude_5d_pct": -1.89,
+  "sp500_5d_pct": 0.74,
+  "intel_source_as_of": "2026-08-30T21:00:46.449299+05:30",
   "news_count": 32
 }

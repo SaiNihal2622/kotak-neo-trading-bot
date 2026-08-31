@@ -13,3 +13,17 @@ timestamp,trade_id,underlying,strategy,entry_chart,exit_chart,pnl,hold_minutes,t
 2026-08-21T03:30:48.416061,T-9AD1565A8D,NIFTY,iron_condor,data_cache\journal\entry_T-9AD1565A8D_033048.png,,0.00,0,conf=0.65|preset=base
 2026-08-21T03:31:01.269482,T-FB543EF5F8,BANKNIFTY,iron_condor,data_cache\journal\entry_T-FB543EF5F8_033100.png,,0.00,0,conf=0.60|preset=base
 2026-08-21T03:31:06.858381,T-DF6B7887C7,BANKNIFTY,iron_condor,data_cache\journal\entry_T-DF6B7887C7_033106.png,,0.00,0,conf=0.60|preset=base
+2026-08-24T03:30:37.784908,T-DD7CE9013D,NIFTY,iron_condor,data_cache\journal\entry_T-DD7CE9013D_033037.png,,0.00,0,conf=0.65|preset=base
+2026-08-24T03:30:44.193894,T-7829A3001F,BANKNIFTY,iron_condor,data_cache\journal\entry_T-7829A3001F_033043.png,,0.00,0,conf=0.60|preset=base
+2026-08-25T03:30:12.095076,T-3CD7024F31,NIFTY,iron_condor,data_cache\journal\entry_T-3CD7024F31_033010.png,,0.00,0,conf=0.60|preset=base
+2026-08-25T03:30:21.497482,T-BED00984D6,BANKNIFTY,iron_condor,data_cache\journal\entry_T-BED00984D6_033020.png,,0.00,0,conf=0.60|preset=base
+2026-08-25T03:30:38.640404,T-BE1F2774CE,NIFTY,iron_condor,data_cache\journal\entry_T-BE1F2774CE_033037.png,,0.00,0,conf=0.60|preset=base
+2026-08-25T03:30:46.338135,T-C86B1B6C48,BANKNIFTY,iron_condor,data_cache\journal\entry_T-C86B1B6C48_033045.png,,0.00,0,conf=0.60|preset=base
+2026-08-26T04:00:50.025751+00:00,T-53296648BE,NIFTY,iron_condor,data_cache\journal\entry_T-53296648BE_040046.png,,0.00,0,conf=0.60|preset=base
+2026-08-26T04:00:52.914199+00:00,T-EEB7C07523,NIFTY,iron_condor,data_cache\journal\entry_T-EEB7C07523_040048.png,,0.00,0,conf=0.60|preset=base
+2026-08-26T04:01:11.040870+00:00,T-C67CF5466F,BANKNIFTY,iron_condor,data_cache\journal\entry_T-C67CF5466F_040107.png,,0.00,0,conf=0.60|preset=base
+2026-08-26T04:01:12.674833+00:00,T-21F533494E,BANKNIFTY,iron_condor,data_cache\journal\entry_T-21F533494E_040108.png,,0.00,0,conf=0.60|preset=base
+2026-08-27T04:00:38.353743+00:00,T-477E58B1A1,NIFTY,iron_condor,data_cache\journal\entry_T-477E58B1A1_040038.png,,0.00,0,conf=0.60|preset=base
+2026-08-27T04:00:38.501948+00:00,T-70A5205F4D,NIFTY,iron_condor,data_cache\journal\entry_T-70A5205F4D_040038.png,,0.00,0,conf=0.60|preset=base
+2026-08-27T04:00:44.766229+00:00,T-E00B36E5B0,BANKNIFTY,iron_condor,data_cache\journal\entry_T-E00B36E5B0_040044.png,,0.00,0,conf=0.60|preset=base
+2026-08-27T04:00:45.412426+00:00,T-7C91AA5F37,BANKNIFTY,iron_condor,data_cache\journal\entry_T-7C91AA5F37_040044.png,,0.00,0,conf=0.60|preset=base

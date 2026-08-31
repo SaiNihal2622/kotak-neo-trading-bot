@@ -29,7 +29,43 @@ YFINANCE_TICKERS = {
     "BANKNIFTY": "^NSEBANK",
     "SENSEX": "^BSESN",
     "INDIA VIX": "^INDIAVIX",
+    "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+    "MIDCPNIFTY": "NIFTY_MID_SELECT.NS",
+    # NSE equity tickers (yfinance uses .NS suffix for NSE stocks)
+    "RELIANCE": "RELIANCE.NS",
+    "HDFCBANK": "HDFCBANK.NS",
+    "ICICIBANK": "ICICIBANK.NS",
+    "INFY": "INFY.NS",
+    "TCS": "TCS.NS",
+    "HINDUNILVR": "HINDUNILVR.NS",
+    "ITC": "ITC.NS",
+    "SBIN": "SBIN.NS",
+    "BHARTIARTL": "BHARTIARTL.NS",
+    "KOTAKBANK": "KOTAKBANK.NS",
+    "LT": "LT.NS",
+    "AXISBANK": "AXISBANK.NS",
+    "INDUSINDBK": "INDUSINDBK.NS",
+    "BAJFINANCE": "BAJFINANCE.NS",
+    "ASIANPAINT": "ASIANPAINT.NS",
+    "MARUTI": "MARUTI.NS",
+    "M&M": "M&M.NS",
+    "TATAMOTORS": "TATAMOTORS.NS",
+    "TATASTEEL": "TATASTEEL.NS",
+    "SUNPHARMA": "SUNPHARMA.NS",
+    "HCLTECH": "HCLTECH.NS",
+    "POWERGRID": "POWERGRID.NS",
+    "NTPC": "NTPC.NS",
+    "TITAN": "TITAN.NS",
 }
+
+
+def _yfinance_ticker(symbol: str) -> str:
+    """Resolve yfinance ticker for a symbol. Adds .NS for NSE stocks if not in map."""
+    s = symbol.upper().strip()
+    if s in YFINANCE_TICKERS:
+        return YFINANCE_TICKERS[s]
+    # Fallback: try .NS suffix for NSE stocks
+    return f"{s}.NS"
 
 
 class HistoricalData:
@@ -95,7 +131,7 @@ class HistoricalData:
         """Fetch from yfinance (free, no key)."""
         try:
             import yfinance as yf
-            ticker = YFINANCE_TICKERS.get(symbol.upper(), symbol)
+            ticker = _yfinance_ticker(symbol)
             # yfinance limit: 1m = 7d, 5m = 60d, 15m = 60d, 1h = 730d, 1d = unlimited
             period = f"{days}d" if interval == "1d" else f"{min(days, 60)}d"
             df = yf.download(ticker, period=period, interval=interval, progress=False)
