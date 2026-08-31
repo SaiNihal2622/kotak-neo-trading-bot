@@ -19,6 +19,16 @@ function Write-LoopLog([string]$msg) {
     "[$ts] $msg" | Out-File -FilePath $loopLog -Append -Encoding utf8
 }
 
+# Cached check: is kotak_supervisor.py present at project root?
+# As of 2026-08-31, the bot lifecycle is managed by NSSM services
+# (KotakBotPaper / KotakDashboard / KotakHttpServer) plus watchdog.ps1;
+# kotak_supervisor.py was moved to _archive\legacy_orchestrators\.
+# If the file is missing, back off for $missingBackoffSec instead of
+# spinning every 5s (which used to generate ~3MB/day of noise).
+$missingBackoffSec = 3600
+$supervisorScript = Join-Path $root "kotak_supervisor.py"
+$missingLoggedAt = $null
+
 function Test-SupervisorAlive {
     # Check if a supervisor is already running by looking at its pidfile
     if (-not (Test-Path $supPidFile)) { return $false }
@@ -36,12 +46,29 @@ function Test-SupervisorAlive {
     }
 }
 
+function Test-SupervisorScriptPresent {
+    return (Test-Path $supervisorScript)
+}
+
 Write-LoopLog "supervisor_loop: starting wrapper (pid=$PID)"
 
 while ($true) {
     if (Test-SupervisorAlive) {
         # Supervisor already healthy, just wait and re-check
         Start-Sleep -Seconds 30
+        continue
+    }
+
+    if (-not (Test-SupervisorScriptPresent)) {
+        # kotak_supervisor.py is not at project root. Bot is now managed by
+        # NSSM + watchdog.ps1. Back off so we don't spam the log; the
+        # wrapper itself stays alive (vbs shim restarts it on reboot)
+        # in case the file is restored later.
+        if ($null -eq $missingLoggedAt -or ((Get-Date) - $missingLoggedAt).TotalSeconds -ge $missingBackoffSec) {
+            Write-LoopLog "supervisor_loop: kotak_supervisor.py not found at $supervisorScript - bot is managed by NSSM (KotakBotPaper/KotakDashboard) + watchdog.ps1. Sleeping $missingBackoffSec s before re-check. (This is expected - do not start kotak_supervisor.py manually.)"
+            $missingLoggedAt = Get-Date
+        }
+        Start-Sleep -Seconds $missingBackoffSec
         continue
     }
 
