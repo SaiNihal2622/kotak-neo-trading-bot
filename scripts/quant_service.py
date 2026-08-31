@@ -89,6 +89,22 @@ def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def send_telegram(msg: str) -> None:
+    """Best-effort Telegram alert. No Mavis — direct API call."""
+    token = ENV.get('TELEGRAM_BOT_TOKEN', '')
+    chat = ENV.get('TELEGRAM_CHAT_ID', '')
+    if not token or not chat:
+        return
+    try:
+        httpx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True},
+            timeout=8,
+        )
+    except Exception as e:
+        log(f"tg-err: {e}")
+
+
 def log(msg: str) -> None:
     line = f"[{now_iso()}] {msg}"
     print(line, flush=True)
@@ -269,6 +285,14 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         return {"action": "HOLD", "note": f"parse-err: {text[:80]}"}
     HISTORY.append({"ts": now_iso(), "events": events, "decision": decision})
     log(f"LLM-DECISION: {decision.get('action', '?')} {decision.get('instrument', '?')} {decision.get('strategy', '?')}")
+    # Telegram the decision
+    if decision.get("action") in ("OPEN", "CLOSE"):
+        send_telegram(
+            f"<b>[Quant {decision.get('action')}]</b> {decision.get('instrument','?')} {decision.get('strategy','?')}\n"
+            f"Legs: {len(decision.get('legs',[]))}\n"
+            f"Target: {decision.get('target','?')} Stop: {decision.get('stop','?')}\n"
+            f"Rationale: {decision.get('rationale','')[:300]}"
+        )
     return decision
 
 

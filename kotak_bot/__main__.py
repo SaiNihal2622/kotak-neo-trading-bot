@@ -953,6 +953,54 @@ def run_paper() -> None:
                             pass
             except Exception as _ba_err:
                 logger.warning(f"brain-action check failed: {_ba_err}")
+            # 1c) Quant actions channel (the standalone quant_service writes here).
+            # The LLM (running in the service, not Mavis) writes a full action
+            # with leg specifications. We support CLOSE (via square_off_all) and
+            # OPEN (logged + Telegram + pending file for user approval — the
+            # bot's templated strategy selector doesn't auto-accept LLM OPENs).
+            try:
+                _qa_path = Path("data_cache/quant_actions.json")
+                if _qa_path.exists():
+                    _qa = _read_json(_qa_path, {})
+                    if isinstance(_qa, dict) and _qa.get("actions") and not _qa.get("consumed"):
+                        _qa_ts = _qa.get("ts", "")
+                        _qa_actions = _qa.get("actions", [])
+                        for _qa_a in _qa_actions:
+                            try:
+                                _qa_type = str(_qa_a.get("action", _qa_a.get("type", ""))).upper()
+                                _qa_inst = str(_qa_a.get("instrument", _qa_a.get("underlying", ""))).upper()
+                                _qa_reason = f"quant_service:{_qa_a.get('rationale', '')[:80]}"
+                                if _qa_type == "CLOSE":
+                                    n = order_mgr.square_off_all(reason=_qa_reason)
+                                    logger.info(f"[QUANT-ACTION] CLOSE executed (instrument={_qa_inst or 'ALL'}): {n} trades.")
+                                    alerter.send(f"[Quant service] CLOSE {_qa_inst or 'ALL'}. {n} trades. {_qa_a.get('rationale', '')[:100]}")
+                                elif _qa_type == "OPEN":
+                                    # Log + Telegram + write to pending file for review
+                                    _qa_legs = _qa_a.get("legs", [])
+                                    _qa_summary = f"OPEN {_qa_a.get('strategy','?')} {_qa_inst} expiry={_qa_a.get('expiry','?')} legs={len(_qa_legs)}"
+                                    logger.info(f"[QUANT-ACTION] {_qa_summary} target={_qa_a.get('target')} stop={_qa_a.get('stop')}")
+                                    alerter.send(f"[Quant service] {_qa_summary}\nRationale: {_qa_a.get('rationale','')[:200]}\nMax hold: {_qa_a.get('max_hold_minutes','?')}m")
+                                    # Write full action to pending for manual review
+                                    try:
+                                        _pending_path = Path("data_cache/quant_pending.jsonl")
+                                        with open(_pending_path, "a", encoding="utf-8") as _pf:
+                                            _pf.write(json.dumps({"ts": now.isoformat(), "action": _qa_a, "cycle": cycle_counter}, ensure_ascii=False) + "\n")
+                                    except Exception:
+                                        pass
+                            except Exception as _qa_a_err:
+                                logger.warning(f"quant-action sub-process failed: {_qa_a_err}")
+                        # Mark consumed
+                        _qa["consumed"] = True
+                        _qa["consumed_at"] = now.isoformat()
+                        _qa["consumed_cycle"] = cycle_counter
+                        try:
+                            with open(_qa_path, "w", encoding="utf-8") as _qw:
+                                json.dump(_qa, _qw, ensure_ascii=False)
+                        except Exception:
+                            pass
+            except Exception as _qa_err:
+                logger.warning(f"quant-action check failed: {_qa_err}")
+                logger.warning(f"brain-action check failed: {_ba_err}")
             # 1) EOD report
             if (now.hour, now.minute) >= (15, 30) and (last_eod_report is None or last_eod_report.date() != now.date()):
                 positions = broker.get_positions()
