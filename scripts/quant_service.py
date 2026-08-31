@@ -315,7 +315,27 @@ STRATEGY PLAYBOOK (consider these proactively, not just reactively — guidance,
    - If you hold a long option and premium drops 50% in < 30 min, CUT LOSS (no averaging down)
    - If your straddle/strangle is in profit > 50% of max at 15:00, consider taking profit
 
-5. **REGIME-AWARE SIZING**:
+5. **TECHNICAL ANALYSIS** (you see real-time 1-min OHLCV + indicators in your context under `candles`):
+   - **RSI-14** (`rsi_14`): > 70 = overbought, < 30 = oversold. Mean-reversion setups when combined with VWAP deviation.
+   - **MACD** (`macd_hist`): positive histogram = bullish momentum, negative = bearish. Histogram turning up = entry signal.
+   - **Bollinger Bands** (`bb_pct_b`): > 1.0 = above upper band (stretched), < 0.0 = below lower band. Bandwidth (`bb_bw`) low = squeeze (breakout setup).
+   - **EMA 9/21/50** (`ema_9/21/50`, `ema_trend`): up = 9>21>50 (uptrend), down = 9<21<50 (downtrend), sideways = mixed. Trade WITH the trend, not against.
+   - **ATR-14** (`atr_14`): current volatility. Use to size stops (2× ATR from entry is a common stop).
+   - **VWAP deviation** (`vwap_dev_pct`): > +1% = extended above VWAP (fade-able), < -1% = extended below (bounce candidate). Institutions use VWAP as fair value.
+
+6. **CANDLESTICK PATTERNS** (you see `patterns` array per symbol in your context):
+   - **Reversal setups (high conviction)**: hammer (after downtrend), shooting_star (after uptrend), bullish_engulfing, bearish_engulfing, morning_star, evening_star
+   - **Continuation setups (medium conviction)**: marubozu_bull/bear, three_white_soldiers, three_black_crows
+   - **Indecision / wait**: doji, spinning_top
+   - **Always confirm patterns with**: (a) location (at support/resistance?), (b) volume (volume confirm? — currently n_ticks proxy), (c) trend (with or against?)
+   - A hammer at a Bollinger lower band with RSI<30 is a much stronger signal than a hammer in the middle of nowhere.
+
+7. **VOLUME PROFILE** (`poc` in your context):
+   - POC (point of control) = price with most traded volume. Acts as magnet + S/R.
+   - If price > POC: bullish bias. If price < POC: bearish bias.
+   - Distance from POC tells you the trend's strength.
+
+8. **REGIME-AWARE SIZING**:
    - VIX < 11: aggressive, larger sizes allowed (1.5% risk/trade)
    - VIX 11-14: normal, 1% risk/trade
    - VIX 14-18: cautious, 0.7% risk/trade, prefer defined-risk structures
@@ -359,6 +379,80 @@ def compute_position_greeks(legs: list, spot: float, sigma: float = 0.15) -> dic
 
 
 PROMPT_ADDITION_PATH = DATA / "performance" / "prompt_addition.txt"
+
+
+# ---------- Candle engine (OHLCV + indicators + patterns) ----------
+
+CANDLE_AGG_PATH = DATA / "candles_aggregate.json"
+_CANDLE_SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'] + [
+    'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'ITC', 'SBIN',
+    'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK', 'ASIANPAINT', 'MARUTI',
+    'SUNPHARMA', 'TATAMOTORS', 'TATASTEEL', 'POWERGRID', 'NTPC', 'HINDUNILVR',
+    'INDUSINDBK', 'BAJFINANCE', 'M&M', 'HCLTECH', 'TITAN',
+]
+
+
+def _candle_refresh() -> int:
+    """Refresh candle engine from live ticks + write aggregate. Returns number of ticks ingested."""
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from candle_engine import get_engine, fetch_live_prices
+        eng = get_engine()
+        prices = fetch_live_prices()
+        if prices:
+            eng.tick_many(prices)
+        eng.aggregate_to_file()
+        return len(prices)
+    except Exception as e:
+        log(f"candle-refresh-err: {e}")
+        return 0
+
+
+def read_candles() -> dict:
+    """Read the latest candle aggregate for the LLM."""
+    if not CANDLE_AGG_PATH.exists():
+        return {}
+    try:
+        return json.loads(CANDLE_AGG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def get_candle_context_for_llm(symbols: Optional[list] = None) -> dict:
+    """Build a compact candle context for the LLM. Includes LTP, latest 1m bar,
+    indicators (RSI, MACD, Bollinger, EMA, ATR, VWAP dev), and patterns."""
+    candles = read_candles()
+    if not candles or not candles.get("symbols"):
+        return {}
+    syms = symbols or _CANDLE_SYMBOLS
+    out = {}
+    for sym in syms:
+        c = candles["symbols"].get(sym)
+        if not c:
+            continue
+        ind = c.get("indicators", {}) or {}
+        pat = c.get("patterns", []) or []
+        latest = (c.get("latest_bars") or {}).get("1m") or {}
+        out[sym] = {
+            "ltp": c.get("ltp"),
+            "bar_1m": {"o": latest.get("o"), "h": latest.get("h"), "l": latest.get("l"),
+                       "c": latest.get("c"), "n_ticks": latest.get("n_ticks")},
+            "rsi_14": ind.get("rsi_14"),
+            "macd_hist": (ind.get("macd") or {}).get("hist"),
+            "bb_pct_b": (ind.get("bollinger") or {}).get("pct_b"),
+            "bb_bw": (ind.get("bollinger") or {}).get("bandwidth"),
+            "ema_trend": ind.get("ema_trend"),
+            "ema_9": ind.get("ema_9"),
+            "ema_21": ind.get("ema_21"),
+            "ema_50": ind.get("ema_50"),
+            "atr_14": ind.get("atr_14"),
+            "vwap": ind.get("vwap"),
+            "vwap_dev_pct": ind.get("vwap_dev_pct"),
+            "patterns": [p["name"] for p in pat],
+            "poc": (c.get("volume_profile") or {}).get("poc"),
+            "n_bars": c.get("n_bars_1m", 0),
+        }
+    return out
 
 
 def get_prompt_addition() -> str:
@@ -480,6 +574,15 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             context["portfolio_delta"] = pd
     except Exception:
         pass
+    # Augment context with candle data (OHLCV + indicators + patterns) for the symbols in events
+    try:
+        event_syms = list({(e.get("symbol") or "").upper() for e in (events or []) if e.get("symbol")})
+        if event_syms:
+            ctx_candles = get_candle_context_for_llm(event_syms)
+            if ctx_candles:
+                context["candles"] = ctx_candles
+    except Exception:
+        pass
     # Augment context with Greeks for the LLM (so it understands position-level risk)
     if context.get("chains_summary"):
         spot = next((c.get("spot") for c in context["chains_summary"].values() if c.get("spot")), 0)
@@ -576,6 +679,7 @@ last_weekly_summary_date = None   # Sun 18:00: weekly P&L recap (was kotak-bot-w
 last_thesis_update_date = None    # Mon 08:00: thesis brief (was implicit via thesis_monitor cron)
 last_closing_straddle_date = None # 14:50 Mon-Fri: closing-auction straddle/strangle (self-evolved: capture 15:00-15:15 vol)
 last_nightly_improvement_date = None # 23:00 daily: LLM self-review, updates AGENTS.md + prompt_addition.txt (the self-evolution loop)
+last_candle_refresh_ts = 0          # 60s during market hours: candle engine pulls live ticks, computes indicators/patterns
 
 
 def _scheduled_subprocess(script_relpath: str, label: str, timeout: int = 120, args: list = None) -> None:
@@ -977,6 +1081,7 @@ def watch_loop():
     global last_morning_brief_date, last_daily_maint_date, last_news_cache_date
     global last_eod_backup_date, last_weekend_intel_date, last_weekly_summary_date
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
+    global last_candle_refresh_ts
     while RUNNING:
         try:
             tick_count += 1
@@ -1021,6 +1126,13 @@ def watch_loop():
                 if last_intel_refresh is None or (datetime.now() - last_intel_refresh).total_seconds() > 3600:
                     last_intel_refresh = datetime.now()
                     refresh_live_intel()
+            # Candle engine refresh every 60s during market hours (9:15-15:30)
+            if _now.weekday() < 5 and 9 <= _now.hour <= 15:
+                if datetime.now().timestamp() - last_candle_refresh_ts > 60:
+                    last_candle_refresh_ts = datetime.now().timestamp()
+                    n_ticks = _candle_refresh()
+                    if n_ticks and n_ticks > 0:
+                        log(f"CANDLE-REFRESH: {n_ticks} symbols ticked")
             # Reconcile outcomes every 5 min (matches open decisions against
             # current positions; marks closed ones with breakeven P&L).
             if datetime.now().timestamp() - last_reconcile_ts > 300:
