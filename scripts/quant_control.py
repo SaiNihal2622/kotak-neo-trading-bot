@@ -55,9 +55,16 @@ def cmd_decisions():
     if not decisions:
         print("No decisions yet.")
         return
+    if not isinstance(decisions, list):
+        print(f"Unexpected response: {decisions}")
+        return
     for d in decisions[-10:]:
+        if not isinstance(d, dict):
+            continue
         ts = d.get('ts', '?')[:19]
         action = d.get('decision', {})
+        if not isinstance(action, dict):
+            action = {}
         a = action.get('action', '?')
         i = action.get('instrument', '?')
         s = action.get('strategy', '?')
