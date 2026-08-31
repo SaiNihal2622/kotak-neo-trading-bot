@@ -1021,6 +1021,8 @@ def run_paper() -> None:
                                     # Place each leg
                                     _placed = 0
                                     _total_cost = 0.0
+                                    _decision_id = str(_qa_a.get('id', '')) or f"q-{now.isoformat()}"
+                                    _leg_records = []
                                     for _leg in _qa_legs:
                                         try:
                                             _strike = int(_leg.get("strike", 0))
@@ -1067,10 +1069,37 @@ def run_paper() -> None:
                                                 _placed += 1
                                                 _total_cost += _est_cost
                                                 logger.info(f"[QUANT-ACTION] PLACED {_filled.symbol} {_filled.side.value} {_filled.qty} @ {_filled.avg_fill_price or _filled.price} status={_filled.status.value}")
+                                                # Record this fill in performance tracker
+                                                _leg_records.append({
+                                                    "symbol": _filled.symbol,
+                                                    "side": _filled.side.value,
+                                                    "qty": _filled.qty,
+                                                    "fill_price": _filled.avg_fill_price or _filled.price,
+                                                })
                                             else:
                                                 logger.warning(f"[QUANT-ACTION] REJECTED {_filled.symbol}: {_filled.rejection_reason}")
                                         except Exception as _leg_err:
                                             logger.warning(f"[QUANT-ACTION] leg failed: {_leg_err}")
+                                    # Record the open decision in performance tracker (so EOD/weekly can compute outcomes)
+                                    if _leg_records:
+                                        try:
+                                            import sys
+                                            if str(ROOT) not in sys.path:
+                                                sys.path.insert(0, str(ROOT))
+                                            from scripts.performance_tracker import record_decision
+                                            record_decision(
+                                                decision_id=_decision_id,
+                                                ts=now.isoformat(),
+                                                action_type="OPEN",
+                                                strategy=str(_qa_a.get("strategy", "custom")),
+                                                underlying=_qa_inst,
+                                                rationale=str(_qa_a.get("rationale", "")),
+                                                max_hold_minutes=int(_qa_a.get("max_hold_minutes", 240)),
+                                                tags={"legs": _leg_records, "expiry": _expiry, "target": _qa_a.get("target"), "stop": _qa_a.get("stop")},
+                                            )
+                                            logger.info(f"[QUANT-ACTION] recorded decision {_decision_id} in performance tracker")
+                                        except Exception as _rec_err:
+                                            logger.debug(f"record_decision failed: {_rec_err}")
                                     _placed_total += _placed
                                     _summary = f"OPEN {_qa_a.get('strategy','?')} {_qa_inst} expiry={_expiry} legs_placed={_placed}/{len(_qa_legs)}"
                                     logger.info(f"[QUANT-ACTION] {_summary} target={_qa_a.get('target')} stop={_qa_a.get('stop')}")
