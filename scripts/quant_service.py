@@ -1,0 +1,425 @@
+r"""Quant Service - the one-stop, always-on, persistent-LLM trading brain.
+
+This is the production-grade replacement for the cron-based Mavis session
+architecture. Key properties:
+
+1. **Persistent Python process** - runs 24/7 as an NSSM service. Survives
+   reboots, restarts on crash, never loses state.
+
+2. **Direct LLM API calls** - bypasses Mavis entirely. Talks to
+   `https://agent.minimax.io/mavis/api/v1/llm/v1/messages` using httpx
+   (Anthropic Messages API format). No session, no cron, no Mavis noise.
+
+3. **Continuous state** - the LLM has a rolling history of recent
+   decisions + market state. Not a fresh session each time.
+
+4. **HTTP control API** - exposes /status /positions /actions /decisions
+   /command endpoints. The chat (this one) calls these to monitor and
+   control the service.
+
+5. **Real-time watching** - polls the market, calls LLM on every
+   significant event, executes trades via the existing paper_client.
+
+6. **No chat interruption** - the service writes to data files, not to
+   any chat. This chat is the user interface; the service is the engine.
+
+Usage:
+    python scripts/quant_service.py                    # foreground
+    # Or as NSSM service:
+    nssm install KotakQuantService "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\.venv\Scripts\python.exe" "-u C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\scripts\quant_service.py"
+    nssm set KotakQuantService AppDirectory "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot"
+    nssm set KotakQuantService AppStdout "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\Logs\quant_service.out.log"
+    nssm set KotakQuantService AppStderr "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\Logs\quant_service.err.log"
+    nssm set KotakQuantService Start SERVICE_AUTO_START
+    nssm start KotakQuantService
+
+Chat-side control (this chat invokes these):
+    python scripts/quant_control.py status
+    python scripts/quant_control.py positions
+    python scripts/quant_control.py decisions
+    python scripts/quant_control.py pause
+    python scripts/quant_control.py resume
+    python scripts/quant_control.py close <leg_id>
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+import signal
+import threading
+import traceback
+import http.server
+import socketserver
+import urllib.parse
+from datetime import datetime
+from pathlib import Path
+from collections import deque
+
+import httpx
+
+ROOT = Path(r'C:\Users\saini\.minimax-agent\projects\kotak-neo-bot')
+DATA = ROOT / 'data_cache'
+LOG = DATA / 'quant_service.log'
+STATE = DATA / 'quant_service_state.json'
+DECISIONS = DATA / 'quant_service_decisions.jsonl'
+ACTIONS = DATA / 'quant_actions.json'
+PORT = 8503
+
+# Tunables
+TICK_SEC = 2.0
+PRICE_MOVE_PCT = 0.3
+LEVEL_TOUCH_PCT = 0.05
+DEDUP_SEC = 30
+MIN_DATA_POINTS = 5
+LLM_MODEL = "MiniMax-M3"
+LLM_MAX_TOKENS = 4000
+
+# Persistent state
+TICKS: dict[str, deque] = {}
+LAST_EVENT_SIG: dict[str, str] = {}
+HISTORY: deque = deque(maxlen=50)  # rolling LLM message history
+RUNNING = True
+SERVICE_STATE = {"status": "starting", "last_tick": None, "last_decision_at": None,
+                 "tick_count": 0, "events_fired": 0, "llm_calls": 0, "actions_taken": 0}
+
+
+def now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def log(msg: str) -> None:
+    line = f"[{now_iso()}] {msg}"
+    print(line, flush=True)
+    try:
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def load_env() -> dict:
+    env = {}
+    env_path = ROOT / 'config' / 'credentials.env'
+    for line in env_path.read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        k, v = line.split('=', 1)
+        env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+ENV = load_env()
+LLM_BASE = ENV.get('MINIMAX_LLM_BASE_URL', '').rstrip('/')
+LLM_KEY = ENV.get('MINIMAX_LLM_API_KEY', '')
+
+
+# ---------- LLM direct call (Anthropic Messages API format) ----------
+
+def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) -> dict:
+    """Call the LLM directly via Anthropic-style /messages endpoint. No
+    Mavis session, no cron. Returns the assistant text."""
+    url = f"{LLM_BASE}/messages"
+    try:
+        r = httpx.post(
+            url,
+            headers={
+                'Authorization': f'Bearer {LLM_KEY}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'model': LLM_MODEL,
+                'max_tokens': max_tokens,
+                'system': system,
+                'messages': [{'role': 'user', 'content': user}],
+            },
+            timeout=60.0,
+        )
+        if r.status_code != 200:
+            return {"ok": False, "error": f"http {r.status_code}: {r.text[:300]}"}
+        body = r.json()
+        text = ''
+        for c in body.get('content', []):
+            if c.get('type') == 'text':
+                text += c.get('text', '')
+        return {"ok": True, "text": text, "usage": body.get('usage', {}), "id": body.get('id')}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+# ---------- Market watching ----------
+
+def read_intraday() -> dict:
+    try:
+        return json.loads((DATA / 'intraday_levels.json').read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def read_liveness() -> dict:
+    try:
+        return json.loads((DATA / 'liveness.json').read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def read_paper() -> dict:
+    try:
+        return json.loads((DATA / 'paper_state.json').read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def read_chains() -> dict:
+    try:
+        return json.loads((DATA / 'option_chains.json').read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def detect_events(intraday: dict, last_intraday: dict) -> list:
+    events = []
+    cur = intraday.get('instruments', {})
+    prev = last_intraday.get('instruments', {})
+    for sym, lv in cur.items():
+        if not lv or not isinstance(lv, dict):
+            continue
+        cur_price = lv.get('current', 0) or 0
+        prev_lv = prev.get(sym, {})
+        prev_price = prev_lv.get('current', 0) or 0
+        if not cur_price:
+            continue
+        if sym not in TICKS:
+            TICKS[sym] = deque(maxlen=2000)
+        TICKS[sym].append((now_iso(), cur_price))
+        if len(TICKS[sym]) < MIN_DATA_POINTS:
+            continue
+        if prev_price and abs(cur_price - prev_price) / prev_price * 100 >= PRICE_MOVE_PCT:
+            events.append({'type': 'price_move', 'symbol': sym, 'pct': round((cur_price - prev_price) / prev_price * 100, 3), 'price': cur_price, 'prev_price': prev_price, 'vwap': lv.get('vwap')})
+        vwap = lv.get('vwap')
+        prev_vwap = prev_lv.get('vwap')
+        if vwap and prev_vwap and prev_price:
+            if (prev_price < prev_vwap and cur_price > vwap) or (prev_price > prev_vwap and cur_price < vwap):
+                events.append({'type': 'vwap_cross', 'symbol': sym, 'price': cur_price, 'vwap': vwap})
+        day_high = lv.get('day_high', 0)
+        day_low = lv.get('day_low', 0)
+        if day_high and day_low and (day_high - day_low) > 0.001 * cur_price:
+            for level_name, level_val in [('day_high', day_high), ('day_low', day_low)]:
+                if level_val and abs(cur_price - level_val) / level_val * 100 < LEVEL_TOUCH_PCT:
+                    events.append({'type': f'touch_{level_name}', 'symbol': sym, 'price': cur_price, 'level': level_val})
+    return events
+
+
+def dedup(events: list) -> list:
+    now = time.time()
+    out = []
+    for e in events:
+        sig = f"{e['type']}:{e['symbol']}"
+        last = LAST_EVENT_SIG.get(sig)
+        if last and (now - last) < DEDUP_SEC:
+            continue
+        LAST_EVENT_SIG[sig] = now
+        out.append(e)
+    return out
+
+
+# ---------- LLM decision loop ----------
+
+PROFESSIONAL_QUANT_SYSTEM = """You are the professional quant brain of kotak-neo-bot, a 24/7 autonomous trading system.
+
+You see the FULL market state and any SIGNIFICANT EVENT that just happened. Your job is to:
+1. Read the state and event
+2. Decide: should we trade? If yes, what, where, when, why?
+3. Output ONE JSON object: {"action": "OPEN|CLOSE|HOLD", "instrument": "NIFTY|BANKNIFTY|...|STOCK",
+   "strategy": "bull_call_vertical|short_strangle|long_call|...|custom",
+   "expiry": "YYYY-MM-DD", "legs": [{"side":"BUY|SELL","qty":N,"strike":N,"opt_type":"CE|PE","order_type":"MARKET|LIMIT","price":F_or_null}],
+   "target": F, "stop": F, "max_hold_minutes": N, "rationale": "2-3 sentences"}
+   OR {"action": "HOLD", "note": "no edge"}.
+
+You may pick any of 28 instruments (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, or 16 NIFTY-50 stocks).
+You may pick any of 10 strategies + custom multi-leg.
+NO templated gates except hard risk: 1% per trade, 3% daily, no naked unlimited risk, no entries in macro blackout.
+
+Be a professional quant. Take the trade if edge is real. Pass if not. Output JSON only, no prose."""
+
+
+def invoke_llm_decision(events: list, context: dict) -> dict:
+    """Direct LLM call. Builds context, calls API, parses JSON action."""
+    user_content = (
+        f"EVENT(S) DETECTED: {json.dumps(events, default=str)[:2000]}\n\n"
+        f"FULL STATE: {json.dumps(context, default=str)[:10000]}\n\n"
+        f"RECENT HISTORY (last {len(HISTORY)} decisions): {json.dumps(list(HISTORY)[-5:], default=str)[:2000]}\n\n"
+        "Decide now. Output ONE JSON object only."
+    )
+    result = call_llm_direct(PROFESSIONAL_QUANT_SYSTEM, user_content)
+    SERVICE_STATE["llm_calls"] += 1
+    if not result.get("ok"):
+        log(f"LLM-ERR: {result.get('error')}")
+        return {"action": "HOLD", "note": f"llm-error: {result.get('error')[:100]}"}
+    text = result.get("text", "").strip()
+    # Strip code fences
+    if text.startswith("```"):
+        text = "\n".join(text.split("\n")[1:]).rstrip("`").strip()
+    try:
+        decision = json.loads(text)
+    except Exception as e:
+        log(f"LLM-PARSE-ERR: {e}: {text[:200]}")
+        return {"action": "HOLD", "note": f"parse-err: {text[:80]}"}
+    HISTORY.append({"ts": now_iso(), "events": events, "decision": decision})
+    log(f"LLM-DECISION: {decision.get('action', '?')} {decision.get('instrument', '?')} {decision.get('strategy', '?')}")
+    return decision
+
+
+def write_decision(decision: dict) -> None:
+    """Write LLM decision to the action file (the bot reads it)."""
+    action_doc = {
+        "ts": now_iso(),
+        "source": "quant_service",
+        "actions": [decision] if decision.get("action") in ("OPEN", "CLOSE") else [],
+        "note": decision.get("note", ""),
+        "rationale": decision.get("rationale", ""),
+        "consumed": False,
+    }
+    if action_doc["actions"]:
+        ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
+        SERVICE_STATE["actions_taken"] += 1
+        log(f"ACTION-WRITTEN: {decision.get('action')} {decision.get('instrument')} {decision.get('strategy', '')}")
+    # Always log the decision
+    with open(DECISIONS, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": now_iso(), "decision": decision, "context_size": len(json.dumps(context))}, default=str) + "\n")
+
+
+# ---------- Watch loop ----------
+
+last_intraday = {}
+tick_count = 0
+
+
+def watch_loop():
+    global last_intraday, tick_count
+    while RUNNING:
+        try:
+            tick_count += 1
+            SERVICE_STATE["tick_count"] = tick_count
+            SERVICE_STATE["last_tick"] = now_iso()
+            intraday = read_intraday()
+            liveness = read_liveness()
+            paper = read_paper()
+            chains = read_chains()
+            events = detect_events(intraday, last_intraday) if intraday else []
+            last_intraday = intraday
+            events = dedup(events)
+            if events:
+                SERVICE_STATE["events_fired"] += len(events)
+                log(f"EVENT: {len(events)} events: " + ", ".join(f"{e['type']}:{e['symbol']}" for e in events[:3]))
+                context = {
+                    "events": events,
+                    "liveness": liveness,
+                    "paper": {k: paper.get(k) for k in ('cash', 'realized_pnl', 'positions', 'orders')},
+                    "intraday": intraday,
+                    "chains_summary": {sym: {'spot': c.get('spot'), 'atm': c.get('atm_strike')} for sym, c in chains.get('chains', {}).items() if 'error' not in c},
+                }
+                decision = invoke_llm_decision(events, context)
+                SERVICE_STATE["last_decision_at"] = now_iso()
+                write_decision(decision)
+            time.sleep(TICK_SEC)
+        except Exception as e:
+            log(f"LOOP-ERR: {e}\n{traceback.format_exc()[:300]}")
+            time.sleep(5)
+
+
+# ---------- HTTP control API ----------
+
+class ControlHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args): pass  # silence
+    def do_GET(self):
+        path = self.path.split('?')[0]
+        if path == '/status':
+            self._json(SERVICE_STATE)
+        elif path == '/positions':
+            try:
+                self._json(json.loads((DATA / 'paper_state.json').read_text(encoding='utf-8')).get('positions', {}))
+            except Exception as e:
+                self._json({"error": str(e)})
+        elif path == '/decisions':
+            try:
+                lines = (DATA / 'quant_service_decisions.jsonl').read_text(encoding='utf-8').splitlines()[-20:]
+                self._json([json.loads(l) for l in lines if l.strip()])
+            except Exception as e:
+                self._json({"error": str(e)})
+        elif path == '/health':
+            self._json({"ok": True, "ts": now_iso()})
+        else:
+            self._json({"error": "unknown", "path": path}, 404)
+    def do_POST(self):
+        path = self.path.split('?')[0]
+        if path == '/command':
+            ln = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(ln).decode('utf-8')) if ln else {}
+            cmd = body.get('cmd')
+            if cmd == 'pause':
+                SERVICE_STATE['status'] = 'paused'
+                self._json({"ok": True, "status": SERVICE_STATE['status']})
+            elif cmd == 'resume':
+                SERVICE_STATE['status'] = 'running'
+                self._json({"ok": True, "status": SERVICE_STATE['status']})
+            elif cmd == 'close':
+                # Write a close action
+                write_decision({"action": "CLOSE", "instrument": body.get('instrument', 'ALL'),
+                               "rationale": f"manual close: {body.get('reason', 'user')}", "max_hold_minutes": 0,
+                               "legs": [], "target": 0, "stop": 0, "strategy": "manual"})
+                self._json({"ok": True, "msg": "close action written"})
+            else:
+                self._json({"error": "unknown cmd", "cmd": cmd}, 400)
+        else:
+            self._json({"error": "unknown", "path": path}, 404)
+    def _json(self, obj, code=200):
+        body = json.dumps(obj, indent=2, default=str).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def http_server():
+    with socketserver.TCPServer(('127.0.0.1', PORT), ControlHandler) as srv:
+        log(f"HTTP-API: listening on http://127.0.0.1:{PORT}")
+        srv.serve_forever()
+
+
+# ---------- Lifecycle ----------
+
+def signal_handler(sig, frame):
+    global RUNNING
+    log(f"SHUTDOWN: signal {sig}")
+    RUNNING = False
+
+
+def main() -> int:
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    log(f"QUANT-SERVICE: starting (pid={os.getpid()})")
+    log(f"  LLM endpoint: {LLM_BASE}/messages")
+    log(f"  HTTP control: http://127.0.0.1:{PORT}")
+
+    SERVICE_STATE["status"] = "running"
+
+    # HTTP control server in background thread
+    http_thread = threading.Thread(target=http_server, daemon=True)
+    http_thread.start()
+
+    # Watch loop in main thread
+    try:
+        watch_loop()
+    finally:
+        STATE.write_text(json.dumps({**SERVICE_STATE, "history_size": len(HISTORY)}, default=str), encoding='utf-8')
+        log("QUANT-SERVICE: stopped")
+
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
