@@ -176,6 +176,26 @@ Last reviewed: 2026-08-30 (Mavis nightly-improvement, false-positive liveness_pi
 
 ## Known-issues register (durable findings)
 
+### 2026-08-31: LLM is the SOLE decision authority — auto-execute OPEN (no human-in-the-loop)
+**Rule**: The bot now auto-executes LLM-generated OPEN actions from `data_cache/quant_actions.json`. The previous "manual review" gate (writing to `quant_pending.jsonl` for user review) has been REMOVED. The user explicitly directed (commit c3dfeb1, 2026-08-27) that "no template for everything - LLM brain is the sole authority for entry decisions." This was finally implemented on 2026-08-31 17:30 IST.
+**Hard risk caps in place** regardless of LLM output:
+- Max 6 concurrent open positions
+- Max 5% of cash per position (cost cap, applied leg-by-leg)
+- Block new entries 09:00-09:15 (pre-open) and after 15:15 (EOD cutoff)
+- Force-square at 14:30 and 15:15
+- Auto-resolve "WEEKLY" expiry to next Thursday
+- Telegram + log on every place/reject
+**Schema contract**: LLM must output `{type, underlying, expiry, strategy, legs[{side,qty,strike,opt_type,order_type,price}], target, stop, max_hold_minutes, rationale}`. The `_normalize_decision()` in `scripts/quant_service.py` handles looser outputs (single-leg flat fields, wrong key names) and converts to the canonical schema.
+**Apply when**: any new "external" decision channel (cron-driven, manual) that wants to add OPEN actions. They MUST write to `quant_actions.json` in the same schema, or write via `quant_control.py ask "..."` which routes through the LLM.
+
+### 2026-08-31: Option greeks + IV surface added to LLM context
+**Rule**: `scripts/option_greeks.py` is a pure-stdlib Black-Scholes implementation (no numpy/scipy). Functions: `bs_price`, `greeks`, `iv_from_price`, `position_greeks`, `strategy_pnl`. The LLM's context now includes `sample_greeks` for ATM options on NIFTY + BANKNIFTY so the brain understands delta/gamma before placing trades.
+**Apply when**: building position-aware features, sizing multi-leg strategies, computing real-time P&L, detecting delta-neutral drift (e.g., short condor goes negative-delta after a rally → close early).
+
+### 2026-08-31: yfinance NSE symbol mapping fix
+**Rule**: yfinance needs `.NS` suffix for NSE stocks. `kotak_bot/data/historical.py` `YFINANCE_TICKERS` map now has 23 NSE stocks with proper `.NS` tickers. `_yfinance_ticker(symbol)` helper auto-appends `.NS` for unknown symbols.
+**Apply when**: adding new NSE stock to the system. Add to `YFINANCE_TICKERS` dict with `SYMBOL: "SYMBOL.NS"` format. Indices use `^NSEI`, `^NSEBANK`, `^INDIAVIX`, `^BSESN`.
+
 ### 2026-08-22: Orphan bot processes may exist and resist non-admin kill
 **Rule**: If `kotak_bot` shows multiple python.exe processes, some of
 them may be orphans from previous bot launches. They are typically
