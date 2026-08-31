@@ -12,7 +12,33 @@ Maintained by:
 
 ---
 
-## Last refresh — 2026-08-31 16:14 IST (commits 58c33a8 + d667717 + 2514342 + 78461f5 + ccc8630)
+## Last refresh — 2026-08-31 16:24 IST (commits 58c33a8 + d667717 + 2514342 + 78461f5 + ccc8630 + 11c9868)
+
+### END-TO-END VERIFIED 2026-08-31 16:23 IST
+- Test OPEN action: bot logged, wrote to quant_pending.jsonl ✓
+- Test CLOSE action: bot executed [QUANT-ACTION] CLOSE executed (instrument=NIFTY): 0 trades. ✓
+- quant_actions.json reader (block 1c in __main__.py) is loaded and working
+
+### New state (16:24 IST)
+- Bot: PID 12496 (new, fresh code), running, tick 166+
+- Service: PID 4680, running, HTTP :8503 healthy
+- All chat-injecting crons: 17 soft-deleted, 3 target_session_id cleared
+- LLM endpoint: direct via /messages (Anthropic format), no Mavis session
+
+### Production-grade architecture
+- quant_service.py (24/7 Python) — the brain
+  - Polls market every 2s
+  - Detects real events
+  - Calls LLM directly via httpx (no Mavis, no session, no 715)
+  - Persistent state (rolling 50-decision history)
+  - HTTP control API on :8503
+  - Telegram alerts on every decision
+- kotak_bot/__main__.py (the executor)
+  - Block 1c reads quant_actions.json every 5s
+  - CLOSE: square_off_all() + Telegram
+  - OPEN: log + Telegram + quant_pending.jsonl for user review
+- This chat (the control surface)
+  - python scripts/quant_control.py {status,positions,decisions,ask,close,pause,resume}
 
 ### The one-stop solution: quant_service.py
 **The Mavis session / cron architecture is no longer the brain.**
@@ -316,6 +342,18 @@ Affected (last 24h):
 - `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
 
 ## 715/1000 recovery alert @ 2026-08-31T16:10:15+05:30
+Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
+**Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
+**Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
+**Auto-recovery**: dead sessions archived; next cron tick starts a fresh session automatically.
+
+Affected (last 24h):
+- `mvs_1100a67f1b1b4598` — kotak-session-hygiene · 08-31 14:10 — 14:14:35
+- `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
+- `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
+- `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## 715/1000 recovery alert @ 2026-08-31T16:15:13+05:30
 Detected 4 session(s) with `unknown error 715 (1000)` in the last 24h.
 **Pattern**: 715 is an upstream/model-provider transient API error, NOT a context-size issue.
 **Mitigated 2026-08-31 15:08**: switched 14 long-lived crons from `mode:sessionId` to `mode:new`.
