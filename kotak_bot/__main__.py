@@ -23,7 +23,7 @@ from pathlib import Path
 import yaml
 from loguru import logger
 
-from kotak_bot.broker import NeoClient, PaperClient
+from kotak_bot.broker import NeoClient, PaperClient, Order, OrderSide, OrderType, OrderStatus, ProductType
 from kotak_bot.data.historical import HistoricalData
 from kotak_bot.data.live_feed import LiveFeed
 from kotak_bot.execution.order_manager import OrderManager
@@ -954,10 +954,9 @@ def run_paper() -> None:
             except Exception as _ba_err:
                 logger.warning(f"brain-action check failed: {_ba_err}")
             # 1c) Quant actions channel (the standalone quant_service writes here).
-            # The LLM (running in the service, not Mavis) writes a full action
-            # with leg specifications. We support CLOSE (via square_off_all) and
-            # OPEN (logged + Telegram + pending file for user approval — the
-            # bot's templated strategy selector doesn't auto-accept LLM OPENs).
+            # The LLM (running in the service, not Mavis) is the SOLE decision
+            # authority for entry decisions (per user directive). OPEN actions are
+            # auto-executed with hard risk caps; CLOSE actions square off all.
             try:
                 _qa_path = Path("data_cache/quant_actions.json")
                 if _qa_path.exists():
@@ -965,6 +964,7 @@ def run_paper() -> None:
                     if isinstance(_qa, dict) and _qa.get("actions") and not _qa.get("consumed"):
                         _qa_ts = _qa.get("ts", "")
                         _qa_actions = _qa.get("actions", [])
+                        _placed_total = 0
                         for _qa_a in _qa_actions:
                             try:
                                 _qa_type = str(_qa_a.get("action", _qa_a.get("type", ""))).upper()
@@ -975,24 +975,100 @@ def run_paper() -> None:
                                     logger.info(f"[QUANT-ACTION] CLOSE executed (instrument={_qa_inst or 'ALL'}): {n} trades.")
                                     alerter.send(f"[Quant service] CLOSE {_qa_inst or 'ALL'}. {n} trades. {_qa_a.get('rationale', '')[:100]}")
                                 elif _qa_type == "OPEN":
-                                    # Log + Telegram + write to pending file for review
                                     _qa_legs = _qa_a.get("legs", [])
-                                    _qa_summary = f"OPEN {_qa_a.get('strategy','?')} {_qa_inst} expiry={_qa_a.get('expiry','?')} legs={len(_qa_legs)}"
-                                    logger.info(f"[QUANT-ACTION] {_qa_summary} target={_qa_a.get('target')} stop={_qa_a.get('stop')}")
-                                    alerter.send(f"[Quant service] {_qa_summary}\nRationale: {_qa_a.get('rationale','')[:200]}\nMax hold: {_qa_a.get('max_hold_minutes','?')}m")
-                                    # Write full action to pending for manual review
-                                    try:
-                                        _pending_path = Path("data_cache/quant_pending.jsonl")
-                                        with open(_pending_path, "a", encoding="utf-8") as _pf:
-                                            _pf.write(json.dumps({"ts": now.isoformat(), "action": _qa_a, "cycle": cycle_counter}, ensure_ascii=False) + "\n")
-                                    except Exception:
-                                        pass
+                                    if not _qa_legs:
+                                        logger.warning(f"[QUANT-ACTION] OPEN with no legs: {_qa_a}")
+                                        continue
+                                    # Hard risk caps
+                                    _max_positions = 6
+                                    _max_position_pct = 0.05  # 5% of cash per position
+                                    _cash = broker.get_margins().get("available_cash", 0) or 0
+                                    _open_count = len(order_mgr.open_trades())
+                                    if _open_count >= _max_positions:
+                                        logger.warning(f"[QUANT-ACTION] REJECT: max positions reached ({_open_count}/{_max_positions})")
+                                        alerter.send(f"[Quant REJECT] max positions reached ({_open_count}/{_max_positions}). Action: {_qa_a.get('rationale','')[:100]}")
+                                        continue
+                                    if now.hour >= 15 and now.minute >= 15:
+                                        logger.warning(f"[QUANT-ACTION] REJECT: too close to EOD ({now.strftime('%H:%M')})")
+                                        continue
+                                    if now.hour < 9 or (now.hour == 9 and now.minute < 15):
+                                        logger.warning(f"[QUANT-ACTION] REJECT: too early pre-open ({now.strftime('%H:%M')})")
+                                        continue
+                                    # Resolve expiry
+                                    from datetime import date as _date, timedelta as _td
+                                    def _nearest_weekly_expiry():
+                                        _today = _date.today()
+                                        _days_ahead = 3 - _today.weekday()  # Thursday = 3
+                                        if _days_ahead <= 0:
+                                            _days_ahead += 7
+                                        return _today + _td(days=_days_ahead)
+                                    _expiry = str(_qa_a.get("expiry", "") or "").strip()
+                                    if not _expiry or _expiry.upper() in ("WEEKLY", "0", "THIS WEEK", "CURRENT"):
+                                        _expiry = _nearest_weekly_expiry().isoformat()
+                                    # Place each leg
+                                    _placed = 0
+                                    _total_cost = 0.0
+                                    for _leg in _qa_legs:
+                                        try:
+                                            _strike = int(_leg.get("strike", 0))
+                                            _opt_type = str(_leg.get("opt_type", "")).upper()
+                                            _side = str(_leg.get("side", "BUY")).upper()
+                                            _qty_lots = int(_leg.get("qty", 1))
+                                            _order_type = str(_leg.get("order_type", "MARKET")).upper()
+                                            _price = _leg.get("price")
+                                            if _price is None and _order_type == "LIMIT":
+                                                _order_type = "MARKET"
+                                            if not _strike or not _opt_type or not _qa_inst:
+                                                logger.warning(f"[QUANT-ACTION] skip leg (missing field): strike={_strike} opt_type={_opt_type} underlying={_qa_inst}")
+                                                continue
+                                            # Format symbol
+                                            from datetime import datetime as _dt
+                                            try:
+                                                _edt = _dt.strptime(_expiry, "%Y-%m-%d")
+                                                _exp_str = _edt.strftime("%d%b%y").upper()
+                                            except Exception:
+                                                _exp_str = _expiry
+                                            _sym = f"{_qa_inst}{_exp_str}{int(_strike)}{_opt_type}"
+                                            _lot = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65, "MIDCPNIFTY": 120}.get(_qa_inst, 75)
+                                            _qty_shares = max(1, _qty_lots * _lot)
+                                            _order = Order(
+                                                symbol=_sym,
+                                                side=OrderSide(_side),
+                                                qty=_qty_shares,
+                                                order_type=OrderType(_order_type) if _order_type in ("MARKET", "LIMIT", "SL", "SL-M") else OrderType.MARKET,
+                                                product=ProductType.MIS,
+                                                price=float(_price) if _price else 0.0,
+                                                tag=f"QUANT-{str(_qa_a.get('strategy','?'))[:10]}"[:30],
+                                                exchange="NFO",
+                                                strike=float(_strike),
+                                                option_type=_opt_type,
+                                                expiry=_expiry,
+                                                underlying=_qa_inst,
+                                            )
+                                            _est_cost = _qty_shares * (float(_price) if _price else 50.0)
+                                            if _cash > 0 and (_total_cost + _est_cost) > _max_position_pct * _cash:
+                                                logger.warning(f"[QUANT-ACTION] REJECT leg: cost cap {_max_position_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
+                                                continue
+                                            _filled = broker.place_order(_order)
+                                            if _filled.status in (OrderStatus.COMPLETE, OrderStatus.OPEN):
+                                                _placed += 1
+                                                _total_cost += _est_cost
+                                                logger.info(f"[QUANT-ACTION] PLACED {_filled.symbol} {_filled.side.value} {_filled.qty} @ {_filled.avg_fill_price or _filled.price} status={_filled.status.value}")
+                                            else:
+                                                logger.warning(f"[QUANT-ACTION] REJECTED {_filled.symbol}: {_filled.rejection_reason}")
+                                        except Exception as _leg_err:
+                                            logger.warning(f"[QUANT-ACTION] leg failed: {_leg_err}")
+                                    _placed_total += _placed
+                                    _summary = f"OPEN {_qa_a.get('strategy','?')} {_qa_inst} expiry={_expiry} legs_placed={_placed}/{len(_qa_legs)}"
+                                    logger.info(f"[QUANT-ACTION] {_summary} target={_qa_a.get('target')} stop={_qa_a.get('stop')}")
+                                    alerter.send(f"[Quant service] {_summary}\nRationale: {_qa_a.get('rationale','')[:200]}\nMax hold: {_qa_a.get('max_hold_minutes','?')}m")
                             except Exception as _qa_a_err:
                                 logger.warning(f"quant-action sub-process failed: {_qa_a_err}")
                         # Mark consumed
                         _qa["consumed"] = True
                         _qa["consumed_at"] = now.isoformat()
                         _qa["consumed_cycle"] = cycle_counter
+                        _qa["placed_legs"] = _placed_total
                         try:
                             with open(_qa_path, "w", encoding="utf-8") as _qw:
                                 json.dump(_qa, _qw, ensure_ascii=False)

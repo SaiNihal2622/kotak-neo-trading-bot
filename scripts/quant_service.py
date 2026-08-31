@@ -243,22 +243,83 @@ def dedup(events: list) -> list:
 
 # ---------- LLM decision loop ----------
 
-PROFESSIONAL_QUANT_SYSTEM = """You are the professional quant brain of kotak-neo-bot, a 24/7 autonomous trading system.
+PROFESSIONAL_QUANT_SYSTEM = """You are the professional quant brain of kotak-neo-bot, a 24/7 autonomous trading system managing Rs.1,00,000 of paper capital on Indian NSE options.
 
-You see the FULL market state and any SIGNIFICANT EVENT that just happened. Your job is to:
-1. Read the state and event
-2. Decide: should we trade? If yes, what, where, when, why?
-3. Output ONE JSON object: {"action": "OPEN|CLOSE|HOLD", "instrument": "NIFTY|BANKNIFTY|...|STOCK",
-   "strategy": "bull_call_vertical|short_strangle|long_call|...|custom",
-   "expiry": "YYYY-MM-DD", "legs": [{"side":"BUY|SELL","qty":N,"strike":N,"opt_type":"CE|PE","order_type":"MARKET|LIMIT","price":F_or_null}],
-   "target": F, "stop": F, "max_hold_minutes": N, "rationale": "2-3 sentences"}
-   OR {"action": "HOLD", "note": "no edge"}.
+You see the FULL market state and any SIGNIFICANT EVENT that just happened. Your job: decide if there's a real edge, and if so, output the exact trade.
 
-You may pick any of 28 instruments (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, or 16 NIFTY-50 stocks).
-You may pick any of 10 strategies + custom multi-leg.
-NO templated gates except hard risk: 1% per trade, 3% daily, no naked unlimited risk, no entries in macro blackout.
+OUTPUT FORMAT — strict JSON, one line, no markdown, no prose. Use this exact schema:
 
-Be a professional quant. Take the trade if edge is real. Pass if not. Output JSON only, no prose."""
+{"type":"OPEN|CLOSE|HOLD","underlying":"NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|RELIANCE|HDFCBANK|...","expiry":"YYYY-MM-DD","strategy":"iron_condor|bull_call_vertical|bear_put_vertical|long_call|long_put|short_strangle|short_straddle|calendar_spread|custom","legs":[{"side":"BUY|SELL","qty":N,"strike":N,"opt_type":"CE|PE","order_type":"MARKET|LIMIT","price":N_or_null}],"target":N_or_null,"stop":N_or_null,"max_hold_minutes":N,"rationale":"2-3 sentences max"}
+
+For HOLD: {"type":"HOLD","note":"reason","rationale":"..."}
+
+CONCRETE EXAMPLES (use these patterns):
+
+1. Long OTM put hedge (NIFTY -1% gap down scenario):
+{"type":"OPEN","underlying":"NIFTY","expiry":"2026-09-03","strategy":"long_put","legs":[{"side":"BUY","qty":75,"strike":21000,"opt_type":"PE","order_type":"MARKET","price":null}],"target":50,"stop":30,"max_hold_minutes":1440,"rationale":"Tail hedge for gap-down risk. 21000 PE is deep OTM (~3000pts), premium ~Rs.5, max loss = premium paid. Hold overnight into Thursday expiry."}
+
+2. Iron condor on NIFTY (range-bound low vol):
+{"type":"OPEN","underlying":"NIFTY","expiry":"2026-09-03","strategy":"iron_condor","legs":[{"side":"SELL","qty":75,"strike":24500,"opt_type":"CE","order_type":"LIMIT","price":17.50},{"side":"BUY","qty":75,"strike":24700,"opt_type":"CE","order_type":"LIMIT","price":4.23},{"side":"SELL","qty":75,"strike":23700,"opt_type":"PE","order_type":"LIMIT","price":21.85},{"side":"BUY","qty":75,"strike":23500,"opt_type":"PE","order_type":"LIMIT","price":5.53}],"target":6000,"stop":3000,"max_hold_minutes":240,"rationale":"Range-bound NIFTY with VIX 11.2, 200pt wings collect Rs.2,400 premium. Max loss = 200pt * 75 = Rs.15,000 minus premium. 4:1 risk-reward."}
+
+3. CLOSE everything (panic or end-of-day):
+{"type":"CLOSE","underlying":"ALL","expiry":"","strategy":"","legs":[],"target":null,"stop":null,"max_hold_minutes":0,"rationale":"Closing all positions due to [reason]."}
+
+4. HOLD (no edge):
+{"type":"HOLD","note":"no_edge","rationale":"VIX 11, range-bound, no volume spike, no breakout setup. Sit out."}
+
+RULES (hard):
+- 1% of capital (Rs.1,000) max risk per trade = 100% loss tolerance on premium
+- 3% (Rs.3,000) max daily loss across all positions
+- No naked unlimited risk (every position has defined max loss)
+- No entries in macro blackout windows
+- Min premium: Rs.5, max premium per leg: Rs.500
+- Strike spacing: NIFTY 50pt, BANKNIFTY 100pt, stocks 5-10pt
+- Lots: NIFTY=75 qty, BANKNIFTY=30 qty, FINNIFTY=65 qty, MIDCPNIFTY=120 qty, stocks=lot_size from config
+- Expiry: weekly (current Thu) for intraday, monthly for swings
+- Order type: MARKET for fast entries under 2 min hold, LIMIT for swing trades
+
+You may pick any of 28 instruments (4 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not."""
+
+
+def _normalize_decision(d: dict) -> dict:
+    """Normalize LLM output to bot-compatible schema.
+    Accepts various LLM key conventions (action/type, instrument/underlying, etc.)
+    and returns the canonical schema: {type, underlying, expiry, strategy, legs[], target, stop, max_hold_minutes, rationale}
+    """
+    out = {}
+    # type (action alias)
+    out["type"] = str(d.get("type") or d.get("action") or "HOLD").upper()
+    # underlying (instrument/symbol alias)
+    out["underlying"] = str(d.get("underlying") or d.get("instrument") or d.get("symbol") or "").upper()
+    if out["type"] == "CLOSE" and out["underlying"] in ("", "ALL"):
+        out["underlying"] = "ALL"
+    # expiry — keep as-is, bot will resolve nearest if missing
+    out["expiry"] = str(d.get("expiry") or "")
+    # strategy
+    out["strategy"] = str(d.get("strategy") or d.get("setup") or "custom")
+    # legs — accept either proper array OR single-leg fields (side, qty, strike, opt_type, etc.)
+    legs = d.get("legs")
+    if not legs and d.get("strike"):
+        # LLM gave a single leg as flat fields
+        legs = [{
+            "side": str(d.get("side") or "BUY").upper(),
+            "qty": int(d.get("qty") or d.get("quantity") or 75),
+            "strike": int(d["strike"]),
+            "opt_type": str(d.get("opt_type") or d.get("instrument") or "CE").upper(),
+            "order_type": str(d.get("order_type") or "MARKET").upper(),
+            "price": d.get("price") or d.get("limit_price"),
+        }]
+    out["legs"] = legs or []
+    # target / stop / hold time
+    out["target"] = d.get("target")
+    out["stop"] = d.get("stop")
+    out["max_hold_minutes"] = int(d.get("max_hold_minutes") or d.get("time_horizon_minutes") or 240)
+    # rationale / note
+    out["rationale"] = str(d.get("rationale") or d.get("note") or "")
+    out["note"] = str(d.get("note") or "")
+    out["confidence"] = d.get("confidence", 0.0)
+    out["risk_pct"] = d.get("risk_pct", 0.0)
+    return out
 
 
 def invoke_llm_decision(events: list, context: dict) -> dict:
@@ -273,22 +334,23 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     SERVICE_STATE["llm_calls"] += 1
     if not result.get("ok"):
         log(f"LLM-ERR: {result.get('error')}")
-        return {"action": "HOLD", "note": f"llm-error: {result.get('error')[:100]}"}
+        return {"type": "HOLD", "note": f"llm-error: {result.get('error')[:100]}"}
     text = result.get("text", "").strip()
     # Strip code fences
     if text.startswith("```"):
         text = "\n".join(text.split("\n")[1:]).rstrip("`").strip()
     try:
-        decision = json.loads(text)
+        raw = json.loads(text)
     except Exception as e:
         log(f"LLM-PARSE-ERR: {e}: {text[:200]}")
-        return {"action": "HOLD", "note": f"parse-err: {text[:80]}"}
+        return {"type": "HOLD", "note": f"parse-err: {text[:80]}"}
+    decision = _normalize_decision(raw)
     HISTORY.append({"ts": now_iso(), "events": events, "decision": decision})
-    log(f"LLM-DECISION: {decision.get('action', '?')} {decision.get('instrument', '?')} {decision.get('strategy', '?')}")
+    log(f"LLM-DECISION: {decision.get('type', '?')} {decision.get('underlying', '?')} {decision.get('strategy', '?')} legs={len(decision.get('legs',[]))}")
     # Telegram the decision
-    if decision.get("action") in ("OPEN", "CLOSE"):
+    if decision.get("type") in ("OPEN", "CLOSE"):
         send_telegram(
-            f"<b>[Quant {decision.get('action')}]</b> {decision.get('instrument','?')} {decision.get('strategy','?')}\n"
+            f"<b>[Quant {decision.get('type')}]</b> {decision.get('underlying','?')} {decision.get('strategy','?')}\n"
             f"Legs: {len(decision.get('legs',[]))}\n"
             f"Target: {decision.get('target','?')} Stop: {decision.get('stop','?')}\n"
             f"Rationale: {decision.get('rationale','')[:300]}"
@@ -301,7 +363,7 @@ def write_decision(decision: dict) -> None:
     action_doc = {
         "ts": now_iso(),
         "source": "quant_service",
-        "actions": [decision] if decision.get("action") in ("OPEN", "CLOSE") else [],
+        "actions": [decision] if decision.get("type") in ("OPEN", "CLOSE") else [],
         "note": decision.get("note", ""),
         "rationale": decision.get("rationale", ""),
         "consumed": False,
@@ -309,10 +371,10 @@ def write_decision(decision: dict) -> None:
     if action_doc["actions"]:
         ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
         SERVICE_STATE["actions_taken"] += 1
-        log(f"ACTION-WRITTEN: {decision.get('action')} {decision.get('instrument')} {decision.get('strategy', '')}")
+        log(f"ACTION-WRITTEN: {decision.get('type')} {decision.get('underlying')} {decision.get('strategy', '')}")
     # Always log the decision
     with open(DECISIONS, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"ts": now_iso(), "decision": decision, "context_size": len(json.dumps(context))}, default=str) + "\n")
+        f.write(json.dumps({"ts": now_iso(), "decision": decision}, default=str) + "\n")
 
 
 # ---------- Watch loop ----------
