@@ -176,6 +176,20 @@ Last reviewed: 2026-08-30 (Mavis nightly-improvement, false-positive liveness_pi
 
 ## Known-issues register (durable findings)
 
+### 2026-08-31: mcp__kotak_neo__ and mcp__kite_mcp__ plugins are NOT connected in this Mavis session (returns "not found" at runtime). Workaround: use the project's own `KotakProdFeed` (data_cache/kotak_prod_feed.py) and `mcp__puppeteer__` (works) for live NSE data.
+**Rule**: Despite mcp__kotak_neo__ and mcp__kite_mcp__ being listed in the tool index, both return "not found" at runtime — the MCP server processes are not connected. The system is fully functional via the project's own Kotak Neo controls: `KotakProdFeed` (17 methods, full PROD auth via `data_cache/kotak_prod_session.json`), `NeoClient` (order placement), `PaperClient` (paper trading), and the bot's own live data feed.
+**Evidence** (verified 2026-08-31 18:25):
+- `KotakProdFeed().get_ltp('NIFTY')` returns cleanly (0.0 post-mkt, expected)
+- 17 methods available: get_ltp, get_latest, subscribe, get_oi_map, get_momentum, etc.
+- Bot's liveness.json shows `data_source: live_kotak`, tick=398, state=running
+- Configured credentials: KOTAK_API_KEY, KOTAK_MOBILE, KOTAK_UCC, KOTAK_MPIN, KOTAK_TOTP_SECRET, KOTAK_ENV
+- Cached session in data_cache/kotak_prod_session.json with view_token + trade_token, expires ~Sept 1 2026
+**Apply when**:
+- Looking up live NIFTY/BNF data → use `KotakProdFeed().get_ltp(symbol)` or `.get_latest(symbol)`, not the MCP plugin
+- Placing orders → use the bot's `order_mgr.place_order()` (which routes to NeoClient/PaperClient based on mode)
+- The MCP plugin might be activated in a different Mavis session if the user restarts MiniMax Code
+- For real-time NSE data, `mcp__puppeteer__` works and `scripts/live_nse_puppeteer.py` parses the result
+
 ### 2026-08-31: LLM is the SOLE decision authority — auto-execute OPEN (no human-in-the-loop)
 **Rule**: The bot now auto-executes LLM-generated OPEN actions from `data_cache/quant_actions.json`. The previous "manual review" gate (writing to `quant_pending.jsonl` for user review) has been REMOVED. The user explicitly directed (commit c3dfeb1, 2026-08-27) that "no template for everything - LLM brain is the sole authority for entry decisions." This was finally implemented on 2026-08-31 17:30 IST.
 **Hard risk caps in place** regardless of LLM output:
