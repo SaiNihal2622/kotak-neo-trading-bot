@@ -423,6 +423,60 @@ last_weekly_check_date = None
 last_intel_refresh = None
 last_reconcile_ts = 0
 
+# ---------- Scheduled operations (in-process, replaces 23 paused crons) ----------
+# Each entry: (last_fired_date_var, hhmm_window, script_relpath, label, args, timeout_sec, weekday_filter)
+# weekday_filter: None = all days, "mon-fri" = Mon-Fri only, "sun" = Sun only
+last_morning_brief_date = None    # 08:15 Mon-Fri: pre-market signals + US close + India VIX (was kotak-bot-morning-brief)
+last_daily_maint_date = None      # 08:25 Mon-Fri: re-auth, self-test, power plan, reconcile (was kotak-bot-daily-maintenance)
+last_news_cache_date = None       # 09:00 Mon-Fri: LLM-judge sentiment aggregate (was implicit via trader-desk)
+last_eod_backup_date = None       # 15:45 Mon-Fri: paper_state + trades_state to Telegram (was kotak-bot-state-backup)
+last_weekend_intel_date = None    # Sun 21:00: weekend_intel + monday_brief + send (was kotak-weekend-intel)
+last_weekly_summary_date = None   # Sun 18:00: weekly P&L recap (was kotak-bot-weekly-summary; watch loop already covers via weekly_strategy_review)
+last_thesis_update_date = None    # Mon 08:00: thesis brief (was implicit via thesis_monitor cron)
+
+
+def _scheduled_subprocess(script_relpath: str, label: str, timeout: int = 120, args: list = None) -> None:
+    """Run a scheduled script in a subprocess. Don't crash the watch loop on failure.
+
+    Replaces the 23 paused Mavis crons. Each scheduled op:
+      - Runs at its prescribed time (Mon-Fri 08:15, 08:25, 09:00, 15:45, Sun 21:00)
+      - Sends its own success Telegram (the script handles user-facing output)
+      - On failure: log + send a terse error Telegram (no spam on success)
+    """
+    import subprocess as _sp
+    script = ROOT / script_relpath
+    if not script.exists():
+        log(f"SCHED-{label}: script missing {script}")
+        return
+    cmd = [sys.executable, "-u", str(script)]
+    if args:
+        cmd.extend(args)
+    try:
+        t0 = time.time()
+        result = _sp.run(
+            cmd,
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        dur = int((time.time() - t0) * 1000)
+        err_short = (result.stderr.strip()[:200] if result.stderr else "ok")
+        out_tail = (result.stdout.strip()[-200:] if result.stdout else "")
+        log(f"SCHED-{label}: exit={result.returncode} dur={dur}ms stderr={err_short} stdout_tail={out_tail}")
+        if result.returncode != 0:
+            send_telegram(
+                f"<b>[Sched {label}]</b> exit={result.returncode}\n"
+                f"stderr: {result.stderr[:500] if result.stderr else 'none'}\n"
+                f"stdout_tail: {out_tail}"
+            )
+    except _sp.TimeoutExpired:
+        log(f"SCHED-{label}: TIMEOUT after {timeout}s")
+        send_telegram(f"<b>[Sched {label}]</b> timeout after {timeout}s — check log")
+    except Exception as e:
+        log(f"SCHED-{label}-err: {e}")
+        send_telegram(f"<b>[Sched {label}]</b> error: {e}")
+
 
 def run_weekly_review() -> dict:
     """Weekly strategy review (Sun 18:00 IST). The LLM reviews the week and suggests changes."""
@@ -579,6 +633,10 @@ def run_eod_self_eval() -> dict:
 
 def watch_loop():
     global last_intraday, tick_count, last_eod_check_date
+    global last_weekly_check_date, last_intel_refresh, last_reconcile_ts
+    global last_morning_brief_date, last_daily_maint_date, last_news_cache_date
+    global last_eod_backup_date, last_weekend_intel_date, last_weekly_summary_date
+    global last_thesis_update_date
     while RUNNING:
         try:
             tick_count += 1
@@ -628,6 +686,37 @@ def watch_loop():
             if datetime.now().timestamp() - last_reconcile_ts > 300:
                 last_reconcile_ts = datetime.now().timestamp()
                 reconcile_outcomes()
+
+            # --- Scheduled operations (replaces 23 paused Mavis crons) ---
+            # Mon-Fri operations
+            if _now.weekday() < 5:
+                # 08:15 morning brief: pre-market signals + US close + India VIX
+                if _now.hour == 8 and 15 <= _now.minute < 20 and last_morning_brief_date != _now.date():
+                    last_morning_brief_date = _now.date()
+                    log("SCHED-MORNING-BRIEF: triggering (08:15)")
+                    _scheduled_subprocess("scripts/mavis_premarket.py", "morning-brief", timeout=60)
+                # 08:25 daily maintenance: re-auth, self-test, power plan, reconcile
+                if _now.hour == 8 and 25 <= _now.minute < 30 and last_daily_maint_date != _now.date():
+                    last_daily_maint_date = _now.date()
+                    log("SCHED-DAILY-MAINT: triggering (08:25)")
+                    _scheduled_subprocess("scripts/daily_maintenance.py", "daily-maint", timeout=180, args=["--quiet"])
+                # 09:00 news cache refresh (LLM-judge sentiment for brain)
+                if _now.hour == 9 and _now.minute < 5 and last_news_cache_date != _now.date():
+                    last_news_cache_date = _now.date()
+                    log("SCHED-NEWS-CACHE: triggering (09:00)")
+                    _scheduled_subprocess("scripts/news_cache.py", "news-cache", timeout=60)
+                # 15:45 EOD state backup (paper_state + trades_state to Telegram)
+                if _now.hour == 15 and 45 <= _now.minute < 50 and last_eod_backup_date != _now.date():
+                    last_eod_backup_date = _now.date()
+                    log("SCHED-EOD-BACKUP: triggering (15:45)")
+                    _scheduled_subprocess("scripts/daily_state_backup.py", "eod-backup", timeout=60)
+            # Sun 21:00 weekend intel + Monday brief
+            if _now.weekday() == 6 and _now.hour == 21 and _now.minute < 5 and last_weekend_intel_date != _now.date():
+                last_weekend_intel_date = _now.date()
+                log("SCHED-WEEKEND-INTEL: triggering (Sun 21:00)")
+                _scheduled_subprocess("scripts/weekend_intel.py", "weekend-intel", timeout=120)
+                _scheduled_subprocess("scripts/monday_brief.py", "monday-brief-build", timeout=60)
+                _scheduled_subprocess("scripts/send_monday_brief.py", "monday-brief-send", timeout=30)
             time.sleep(TICK_SEC)
         except Exception as e:
             log(f"LOOP-ERR: {e}\n{traceback.format_exc()[:300]}")
