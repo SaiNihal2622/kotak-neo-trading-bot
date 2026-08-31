@@ -341,6 +341,43 @@ STRATEGY PLAYBOOK (consider these proactively, not just reactively — guidance,
    - VIX 14-18: cautious, 0.7% risk/trade, prefer defined-risk structures
    - VIX > 18: defensive, 0.5% risk/trade, mostly premium-selling with wings, no naked
 
+9. **VOL FORECAST** (in context under `alpha.vol_forecasts`):
+   - GARCH(1,1) one-step-ahead variance forecast per symbol. Annualized.
+   - **If forecast_vol_ann < current_vol_ann** = vol expected to contract (mean-reversion). Favor premium-selling (iron condor, short strangle).
+   - **If forecast_vol_ann > current_vol_ann** = vol expected to expand. Favor long-option structures (straddles, lotteries) and avoid selling premium.
+   - vol_regime: 'low' (<12%), 'normal' (12-20%), 'high' (>20%). Drives strike selection (sell 1-2 SD in low vol, ATM/closer in high vol).
+   - persistence > 0.95 = vol is "sticky" (clustering). Don't fight it.
+
+10. **KELLY SIZING** (in context under `alpha.kelly`):
+    - Per-strategy half-Kelly fraction based on historical win rate + avg win/loss.
+    - **Use half_kelly, not full_kelly** (full Kelly = ruin risk on variance).
+    - If half_kelly < 0.05: don't take the trade (edge too small).
+    - If half_kelly > 0.25: cap at 0.25 (system cap).
+    - recommended: 'aggressive'/'normal'/'conservative'/'no_edge' is the verdict.
+
+11. **IV SURFACE** (in context under `alpha.iv_metrics`, only for the 4 indices):
+    - **ATM_IV**: current implied vol. > 20% = rich premium (sell). < 12% = cheap premium (buy).
+    - **skew_25d** (25-delta put IV minus call IV): positive = bearish fear premium (puts expensive). Negative = call skew (rare, bullish).
+    - **pcr_oi**: put-call ratio by OI. > 1.2 = bearish positioning. < 0.8 = bullish.
+    - **Use this to pick strikes**: in high IV + positive skew, sell calls + buy lower-strike puts for condor. In low IV, buy ATM options.
+
+12. **EXECUTION QUALITY** (in context under `alpha.execution_quality`):
+    - avg_slippage_pct: positive = we paid the spread (bad). Negative = we got price improvement (good).
+    - If avg_slippage > 0.5%: prefer LIMIT orders at mid-quote, or use bigger LIMIT-MARKET spread.
+    - If fill rate is low: orders might be too aggressive; widen the price.
+
+13. **PORTFOLIO RISK** (in context under `alpha.portfolio_risk`):
+    - **VaR 95% 1-day**: max 1-day loss at 95% confidence. If our position size would push daily P&L > VaR, reduce size.
+    - **max_dd**: peak-to-trough drawdown. If we're near a new max DD, de-risk (cut size by 50%).
+    - **sector_exposure**: dict of {sector: net_lots}. Don't concentrate > 50% of notional in one sector.
+    - **Correlation**: positions in highly-correlated underlyings (corr > 0.7) effectively double the risk — treat as one position.
+
+14. **SELF-VALIDATION** (your prompt additions go through a validator):
+    - When you propose a prompt_addition at 23:00, the system scores it: hard-rule guard, specificity, addresses-underperformers, length.
+    - 'apply' = good, applied. 'apply_with_caution' = applied with warning. 'test_more' = kept aside, tried tomorrow. 'skip' = rejected, no change.
+    - 'reject' = violated hard rules (max risk, force-square, live trading) — never apply, just log.
+    - Write proposals that are: small (50-500 chars), specific (mention conditions, numbers, actions), address real underperformers.
+
 SELF-EVOLUTION (your right and your responsibility):
 - You are not a static brain. You are the system's consciousness.
 - At 23:00 IST daily, you will be called with a self-review prompt. You will output a JSON with:
@@ -390,6 +427,70 @@ _CANDLE_SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'] + [
     'SUNPHARMA', 'TATAMOTORS', 'TATASTEEL', 'POWERGRID', 'NTPC', 'HINDUNILVR',
     'INDUSINDBK', 'BAJFINANCE', 'M&M', 'HCLTECH', 'TITAN',
 ]
+
+# ---------- Quant alpha layer (vol forecast, Kelly, IV, exec quality, portfolio risk) ----------
+
+ALPHA_PATH = DATA / "quant_alpha.json"
+ALPHA_REFRESH_SEC = 300  # refresh every 5 min during market hours
+
+
+def _alpha_refresh() -> bool:
+    """Refresh the alpha snapshot. Called every 5 min during market hours."""
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from quant_alpha import build_alpha_snapshot
+        snap = build_alpha_snapshot()
+        return bool(snap)
+    except Exception as e:
+        log(f"alpha-refresh-err: {e}")
+        return False
+
+
+def read_alpha() -> dict:
+    """Read the latest alpha snapshot for the LLM."""
+    if not ALPHA_PATH.exists():
+        return {}
+    try:
+        return json.loads(ALPHA_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def get_alpha_context_for_llm() -> dict:
+    """Build a compact alpha context for the LLM. Includes vol forecasts,
+    IV metrics, regime, execution quality, portfolio risk, Kelly sizing."""
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from quant_alpha import get_alpha_context_for_llm as _get_ctx
+        return _get_ctx()
+    except Exception as e:
+        log(f"alpha-ctx-err: {e}")
+        return {}
+
+
+# ---------- Decision backtest ----------
+
+def _backtest_replay() -> int:
+    """Replay decisions.jsonl into per-strategy metrics. Returns n strategies processed."""
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from decision_backtest import replay_all_strategies
+        out = replay_all_strategies()
+        return len(out.get("strategies", {}))
+    except Exception as e:
+        log(f"backtest-replay-err: {e}")
+        return 0
+
+
+def _validate_prompt_addition(proposed: str) -> dict:
+    """Score a proposed prompt_addition against history. Returns {score, recommendation, reasons}."""
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from decision_backtest import validate_prompt_addition
+        return validate_prompt_addition(proposed)
+    except Exception as e:
+        log(f"prompt-validation-err: {e}")
+        return {"score": 0, "recommendation": "skip", "reasons": [f"validator error: {e}"]}
 
 
 def _candle_refresh() -> int:
@@ -583,6 +684,13 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
                 context["candles"] = ctx_candles
     except Exception:
         pass
+    # Augment context with alpha (vol forecast, IV, regime, exec quality, portfolio risk, Kelly)
+    try:
+        ctx_alpha = get_alpha_context_for_llm()
+        if ctx_alpha:
+            context["alpha"] = ctx_alpha
+    except Exception:
+        pass
     # Augment context with Greeks for the LLM (so it understands position-level risk)
     if context.get("chains_summary"):
         spot = next((c.get("spot") for c in context["chains_summary"].values() if c.get("spot")), 0)
@@ -680,6 +788,7 @@ last_thesis_update_date = None    # Mon 08:00: thesis brief (was implicit via th
 last_closing_straddle_date = None # 14:50 Mon-Fri: closing-auction straddle/strangle (self-evolved: capture 15:00-15:15 vol)
 last_nightly_improvement_date = None # 23:00 daily: LLM self-review, updates AGENTS.md + prompt_addition.txt (the self-evolution loop)
 last_candle_refresh_ts = 0          # 60s during market hours: candle engine pulls live ticks, computes indicators/patterns
+last_alpha_refresh_ts = 0           # 5 min during market hours: vol forecast, IV, exec quality, portfolio risk, decision backtest
 
 
 def _scheduled_subprocess(script_relpath: str, label: str, timeout: int = 120, args: list = None) -> None:
@@ -1045,18 +1154,30 @@ def run_nightly_improvement() -> dict:
                 log(f"NIGHTY-IMPROVEMENT: appended {len(update['agents_md_appendix'])} chars to AGENTS.md")
             except Exception as e:
                 log(f"NIGHTLY-IMPROVEMENT-AGENTS-ERR: {e}")
-        # Update prompt_addition.txt (LLM extends its own prompt)
+        # Update prompt_addition.txt (LLM extends its own prompt) — validated first
         if update.get("prompt_addition"):
             try:
-                PROMPT_ADDITION_PATH.parent.mkdir(parents=True, exist_ok=True)
-                new_addition = str(update["prompt_addition"]).strip()
-                # Append to existing (preserve history)
-                existing = ""
-                if PROMPT_ADDITION_PATH.exists():
-                    existing = PROMPT_ADDITION_PATH.read_text(encoding="utf-8").strip()
-                combined = (existing + "\n\n" + new_addition).strip() if existing else new_addition
-                PROMPT_ADDITION_PATH.write_text(combined, encoding="utf-8")
-                log(f"NIGHTLY-IMPROVEMENT: prompt_addition updated (+{len(new_addition)} chars)")
+                proposed = str(update["prompt_addition"]).strip()
+                # Validate the proposal against historical performance
+                validation = _validate_prompt_addition(proposed)
+                rec = validation.get("recommendation", "skip")
+                if rec in ("apply", "apply_with_caution"):
+                    PROMPT_ADDITION_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    existing = ""
+                    if PROMPT_ADDITION_PATH.exists():
+                        existing = PROMPT_ADDITION_PATH.read_text(encoding="utf-8").strip()
+                    combined = (existing + "\n\n" + proposed).strip() if existing else proposed
+                    PROMPT_ADDITION_PATH.write_text(combined, encoding="utf-8")
+                    log(f"NIGHTLY-IMPROVEMENT: prompt_addition APPLIED (rec={rec}, score={validation.get('score')})")
+                else:
+                    log(f"NIGHTLY-IMPROVEMENT: prompt_addition REJECTED (rec={rec}, score={validation.get('score')}, reasons={validation.get('reasons')})")
+                # Always log the validation result
+                try:
+                    val_path = DATA / "performance" / "prompt_validation.json"
+                    val_path.parent.mkdir(parents=True, exist_ok=True)
+                    val_path.write_text(json.dumps({"ts": now_iso(), "proposed_chars": len(proposed), **validation}, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
             except Exception as e:
                 log(f"NIGHTLY-IMPROVEMENT-PROMPT-ERR: {e}")
         # Send Telegram
@@ -1081,7 +1202,7 @@ def watch_loop():
     global last_morning_brief_date, last_daily_maint_date, last_news_cache_date
     global last_eod_backup_date, last_weekend_intel_date, last_weekly_summary_date
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
-    global last_candle_refresh_ts
+    global last_candle_refresh_ts, last_alpha_refresh_ts
     while RUNNING:
         try:
             tick_count += 1
@@ -1133,6 +1254,15 @@ def watch_loop():
                     n_ticks = _candle_refresh()
                     if n_ticks and n_ticks > 0:
                         log(f"CANDLE-REFRESH: {n_ticks} symbols ticked")
+                # Quant alpha refresh every 5 min during market hours
+                if datetime.now().timestamp() - last_alpha_refresh_ts > ALPHA_REFRESH_SEC:
+                    last_alpha_refresh_ts = datetime.now().timestamp()
+                    if _alpha_refresh():
+                        log("ALPHA-REFRESH: snapshot updated")
+                    # Replay decision backtest in parallel
+                    n_strats = _backtest_replay()
+                    if n_strats:
+                        log(f"BACKTEST-REPLAY: {n_strats} strategies scored")
             # Reconcile outcomes every 5 min (matches open decisions against
             # current positions; marks closed ones with breakeven P&L).
             if datetime.now().timestamp() - last_reconcile_ts > 300:
