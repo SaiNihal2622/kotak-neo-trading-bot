@@ -181,14 +181,94 @@ risk:
     tick_interval_sec: 0.5
 
 instruments:
-  enabled: [NIFTY, BANKNIFTY]
+  enabled: [NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY,
+            RELIANCE, HDFCBANK, ICICIBANK, INFY, TCS, SBIN,
+            BHARTIARTL, KOTAKBANK, LT, AXISBANK, ITC,
+            TATAMOTORS, SUNPHARMA, TITAN, MARUTI, BAJFINANCE]
   lot_sizes:
-    NIFTY: 65               # Updated 2026-08-11 from PROD scrip master (was 75)
+    NIFTY: 65
     BANKNIFTY: 30
+    FINNIFTY: 25
+    MIDCPNIFTY: 50
+    RELIANCE: 250
+    HDFCBANK: 550
+    ICICIBANK: 700
+    INFY: 400
+    TCS: 150
+    SBIN: 750
+    BHARTIARTL: 475
+    KOTAKBANK: 400
+    LT: 150
+    AXISBANK: 625
+    ITC: 1600
+    TATAMOTORS: 575
+    SUNPHARMA: 350
+    TITAN: 175
+    MARUTI: 100
+    BAJFINANCE: 125
   strike_step:
     NIFTY: 50
     BANKNIFTY: 100
+    FINNIFTY: 50
+    MIDCPNIFTY: 25
+    RELIANCE: 10
+    HDFCBANK: 10
+    ICICIBANK: 5
+    INFY: 5
+    TCS: 10
+    SBIN: 5
+    BHARTIARTL: 5
+    KOTAKBANK: 5
+    LT: 10
+    AXISBANK: 5
+    ITC: 1
+    TATAMOTORS: 5
+    SUNPHARMA: 5
+    TITAN: 10
+    MARUTI: 50
+    BAJFINANCE: 10
   expiry_preference: weekly          # 'weekly' (current week) or 'next_weekly'
+
+# =============================================================
+# QUANT MODE — looser gates, more instruments, LLM-driven entries
+# Activated by kotak-quant-engine cron + kotak-quant-trader cron.
+# This is the "professional quant" path that aims to catch intraday
+# range plays (e.g. 21000 -> 22200 NIFTY) instead of waiting for
+# templated 13:30 cutoff to pass.
+# =============================================================
+quant_mode:
+  enabled: true
+  # Push no-new-entries cutoff to 14:30 (was 13:30) so the brain can
+  # react to late-day setups that form after the templated cutoff.
+  no_new_trades_after: "14:30"
+  # More positions allowed (was 2). Confirmed setups can stack.
+  position_cap: 6
+  # Per-trade risk: 1% of capital (was 1.0% — same)
+  max_loss_per_trade_pct: 1.0
+  # Daily max loss: 3% (was 3.0% — same)
+  max_daily_loss_pct: 3.0
+  # Hard risk limits (these are NOT looser — they protect the book)
+  block_naked_unlimited_risk: true
+  block_trades_during_macro_blackout: true
+  # Event-driven invocation
+  event_driven:
+    price_move_1m_pct: 0.3
+    price_move_5m_pct: 0.7
+    volume_spike_mult: 2.0
+    oi_change_pct: 5.0
+    candle_close_intervals_min: [1, 5, 15]
+    dedup_sec: 60
+  # Intraday levels
+  intraday:
+    track_vwap: true
+    track_opening_range: true
+    track_swing_30m: true
+  # Option chain
+  option_chain:
+    strikes_around_atm: 6
+    refresh_sec: 30
+    track_oi_magnet: true
+    track_iv_rank: true
 
 # =============================================================
 # STRATEGIES — all 10 enabled, regime-driven selection
