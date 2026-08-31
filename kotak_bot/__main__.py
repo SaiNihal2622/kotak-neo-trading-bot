@@ -994,6 +994,19 @@ def run_paper() -> None:
                                     if now.hour < 9 or (now.hour == 9 and now.minute < 15):
                                         logger.warning(f"[QUANT-ACTION] REJECT: too early pre-open ({now.strftime('%H:%M')})")
                                         continue
+                                    # Circuit breakers (daily loss + consecutive losses)
+                                    try:
+                                        import sys
+                                        if str(ROOT) not in sys.path:
+                                            sys.path.insert(0, str(ROOT))
+                                        from scripts.performance_tracker import should_pause_new_entries
+                                        _pause, _reason = should_pause_new_entries(_cash or 100000)
+                                        if _pause:
+                                            logger.warning(f"[QUANT-ACTION] REJECT: circuit breaker: {_reason}")
+                                            alerter.send(f"[Quant CIRCUIT BREAKER] new entries paused: {_reason}")
+                                            continue
+                                    except Exception as _cb_err:
+                                        logger.debug(f"circuit-breaker check failed: {_cb_err}")
                                     # Resolve expiry
                                     from datetime import date as _date, timedelta as _td
                                     def _nearest_weekly_expiry():

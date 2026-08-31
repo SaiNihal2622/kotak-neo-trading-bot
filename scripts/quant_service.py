@@ -362,6 +362,13 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     )
     result = call_llm_direct(PROFESSIONAL_QUANT_SYSTEM, user_content)
     SERVICE_STATE["llm_calls"] += 1
+    # Track LLM cost (per Anthropic Sonnet pricing)
+    if result.get("ok") and result.get("usage"):
+        try:
+            from performance_tracker import record_llm_cost
+            record_llm_cost(result["usage"])
+        except Exception:
+            pass
     if not result.get("ok"):
         log(f"LLM-ERR: {result.get('error')}")
         return {"type": "HOLD", "note": f"llm-error: {result.get('error')[:100]}"}
@@ -411,10 +418,71 @@ def write_decision(decision: dict) -> None:
 
 last_intraday = {}
 tick_count = 0
+last_eod_check_date = None
+
+
+def run_eod_self_eval() -> dict:
+    """End-of-day self-evaluation. The LLM reviews its own decisions, computes
+    metrics, and suggests strategy adjustments. Sends a Telegram summary.
+
+    Called at 15:30 IST (market close) by the watch loop.
+    """
+    try:
+        from performance_tracker import (
+            get_daily_summary, get_strategy_performance, get_drawdown_recent,
+            get_total_cost_today, save_daily_snapshot
+        )
+        summary = get_daily_summary()
+        strategies = get_strategy_performance()
+        drawdown = get_drawdown_recent()
+        cost = get_total_cost_today()
+
+        # If LLM is making money, no change. If not, ask LLM to suggest adjustments.
+        summary_text = (
+            f"=== EOD {summary.get('date')} ===\n"
+            f"Trades: {summary.get('trades', 0)} (closed: {summary.get('closed', 0)})\n"
+            f"Wins/Losses/BE: {summary.get('wins', 0)}/{summary.get('losses', 0)}/{summary.get('breakevens', 0)}\n"
+            f"Win rate: {summary.get('win_rate', 0)*100:.0f}%\n"
+            f"Realized P&L: Rs.{summary.get('realized_pnl', 0):+,.0f}\n"
+            f"Profit factor: {summary.get('profit_factor', 0):.2f}\n"
+            f"Expectancy: Rs.{summary.get('expectancy', 0):+,.0f}/trade\n"
+            f"Max drawdown: Rs.{drawdown.get('max_dd', 0):,.0f}\n"
+            f"LLM calls: {cost.get('calls', 0)}, Cost today: ${cost.get('cost_usd', 0):.4f}\n"
+        )
+        if strategies:
+            summary_text += "\nBy strategy:\n"
+            for s, v in strategies.items():
+                summary_text += f"  {s}: {v.get('count', 0)} trades, win rate {v.get('win_rate', 0)*100:.0f}%, P&L Rs.{v.get('pnl', 0):+,.0f}\n"
+
+        # If we had losses today, ask the LLM to suggest improvements
+        if summary.get("losses", 0) > 0 or summary.get("realized_pnl", 0) < -500:
+            improvement_prompt = (
+                f"Today's performance review:\n{summary_text}\n\n"
+                "Analyze the day's trades. What patterns led to losses? "
+                "Suggest 2-3 specific improvements to the trading strategy "
+                "(timing, instrument selection, position sizing, exit rules). "
+                "Output a short bulleted list. No JSON, plain text."
+            )
+            improvement = call_llm_direct(
+                "You are a senior quant reviewing your own trading performance. Be specific, data-driven, and concise.",
+                improvement_prompt,
+                max_tokens=800
+            )
+            if improvement.get("ok"):
+                summary_text += f"\n=== LLM Self-Review ===\n{improvement.get('text', '')[:2000]}"
+
+        # Persist + alert
+        save_daily_snapshot()
+        send_telegram(summary_text[:4000])
+        log(f"EOD-SELF-EVAL: {summary.get('realized_pnl', 0):+,.0f} P&L, {summary.get('wins', 0)}W/{summary.get('losses', 0)}L")
+        return {"summary": summary, "strategies": strategies, "drawdown": drawdown, "cost": cost}
+    except Exception as e:
+        log(f"eod-self-eval-err: {e}")
+        return {}
 
 
 def watch_loop():
-    global last_intraday, tick_count
+    global last_intraday, tick_count, last_eod_check_date
     while RUNNING:
         try:
             tick_count += 1
@@ -440,6 +508,14 @@ def watch_loop():
                 decision = invoke_llm_decision(events, context)
                 SERVICE_STATE["last_decision_at"] = now_iso()
                 write_decision(decision)
+            # EOD self-eval at 15:30 IST (market close) — runs once per day
+            from datetime import datetime as _dt
+            _now = _dt.now()
+            if _now.hour == 15 and 30 <= _now.minute < 35:
+                if last_eod_check_date != _now.date():
+                    last_eod_check_date = _now.date()
+                    log("EOD-SELF-EVAL: triggering daily review")
+                    run_eod_self_eval()
             time.sleep(TICK_SEC)
         except Exception as e:
             log(f"LOOP-ERR: {e}\n{traceback.format_exc()[:300]}")
