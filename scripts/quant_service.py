@@ -747,7 +747,7 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     return decision
 
 
-def write_decision(decision: dict) -> None:
+def write_decision(decision: dict, context_snapshot: dict = None, event: dict = None) -> None:
     """Write LLM decision to the action file (the bot reads it)."""
     action_doc = {
         "ts": now_iso(),
@@ -761,9 +761,14 @@ def write_decision(decision: dict) -> None:
         ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
         SERVICE_STATE["actions_taken"] += 1
         log(f"ACTION-WRITTEN: {decision.get('type')} {decision.get('underlying')} {decision.get('strategy', '')}")
-    # Always log the decision
+    # Always log the decision with full context (event + market snapshot) for the dashboard
+    log_entry = {"ts": now_iso(), "decision": decision}
+    if event:
+        log_entry["event"] = event
+    if context_snapshot:
+        log_entry["context"] = context_snapshot
     with open(DECISIONS, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"ts": now_iso(), "decision": decision}, default=str) + "\n")
+        f.write(json.dumps(log_entry, default=str) + "\n")
 
 
 # ---------- Watch loop ----------
@@ -1050,7 +1055,8 @@ def run_closing_straddle() -> dict:
         decision = _normalize_decision(raw)
         log(f"CLOSING-STRADDLE: {decision.get('type', '?')} {decision.get('underlying', '?')} {decision.get('strategy', '?')}")
         if decision.get("type") == "OPEN":
-            write_decision(decision)
+            ctx_snapshot = {"nifty_ltp": nifty_ltp, "intraday_range_pct": intraday_range_pct, "vix": vix, "trigger": "14:50 closing straddle"}
+            write_decision(decision, context_snapshot=ctx_snapshot, event={"type": "scheduled_closing_straddle", "ts": now_iso()})
             send_telegram(
                 f"<b>[Closing Straddle]</b> {decision.get('underlying','?')} {decision.get('strategy','?')}\n"
                 f"Legs: {len(decision.get('legs',[]))}\n"
@@ -1229,7 +1235,15 @@ def watch_loop():
                 }
                 decision = invoke_llm_decision(events, context)
                 SERVICE_STATE["last_decision_at"] = now_iso()
-                write_decision(decision)
+                # Build a compact context snapshot for the decision log
+                ctx_snapshot = {
+                    "largest_event": max(events, key=lambda e: abs(e.get("pct", 0))) if events else None,
+                    "n_events": len(events),
+                    "ltp_by_event": {e.get("symbol"): e.get("price") for e in events if e.get("symbol")},
+                    "cash": paper.get("cash"),
+                    "open_positions": len(paper.get("positions", {})),
+                }
+                write_decision(decision, context_snapshot=ctx_snapshot, event=events[0] if events else None)
             # EOD self-eval at 15:30 IST (market close) — runs once per day
             from datetime import datetime as _dt
             _now = _dt.now()

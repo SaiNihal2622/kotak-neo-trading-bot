@@ -141,6 +141,44 @@ def load_brain_state():
         return {}
 
 
+def load_events_today():
+    """Parse the bot + brain log for events that fired today (price_move, vwap_cross, etc.)."""
+    events = []
+    today = datetime.now().strftime("%Y-%m-%d")
+    log = ROOT / "Logs" / "bot_stderr.log"
+    if not log.exists():
+        return events
+    try:
+        for line in log.read_text(encoding="utf-8", errors="ignore").splitlines()[-2000:]:
+            if today not in line: continue
+            # Look for scan events
+            if "[SCAN]" in line:
+                # Extract symbol + spot
+                m = re.search(r"\[SCAN\]\s+cycle=\d+\s+(\w+)\s+spot=([\d.]+)\s+atm=\d+\s+opts=\d+\s+regime=(\w+)\s+conf=([\d.]+)\s+adx=([\d.]+)\s+mom=([+\-\d.]+)", line)
+                if m:
+                    events.append({"ts": line[:19], "sym": m.group(1), "spot": float(m.group(2)), "regime": m.group(3), "conf": float(m.group(4))})
+    except Exception:
+        pass
+    return events[-15:]
+
+
+def load_llm_decisions_full(n=15):
+    """Last N lines from decisions.jsonl with full context (event + market snapshot)."""
+    p = PERF / "decisions.jsonl"
+    if not p.exists():
+        return []
+    out = []
+    try:
+        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines()[-n:]:
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return list(reversed(out))
+
+
 def load_bot_log_tail(n: int = 50):
     """Recent bot log lines (last n) for the activity section."""
     return safe_read_lines(ROOT / "Logs" / "bot_stderr.log", n=n)
@@ -166,6 +204,50 @@ def parse_scheduled_fired_today():
 
 
 # ---------- Renderers ----------
+
+def render_candles_svg(bars, width=320, height=120, pad=4):
+    """Render OHLC candles in inline SVG. bars: list of {o,h,l,c,v} dicts.
+    Green if close >= open, red otherwise. Scales Y to (min_low, max_high)."""
+    if not bars or len(bars) < 2:
+        return f'<svg width="{width}" height="{height}"><text x="6" y="22" fill="#7c7a72" font-size="11">no candles</text></svg>'
+    n = len(bars)
+    highs = [b.get("h", 0) for b in bars]
+    lows = [b.get("l", float("inf")) for b in bars]
+    for v in lows:
+        if v == float("inf"): lows[lows.index(v)] = 0
+    y_max = max(highs)
+    y_min = min(lows)
+    if y_max == y_min: y_max = y_min + 1
+    y_range = y_max - y_min
+    bar_w = max(2, (width - 2 * pad) / n - 1)
+    gap = (width - 2 * pad - bar_w * n) / max(n - 1, 1) if n > 1 else 0
+    inner_h = height - 2 * pad
+    def y(p): return pad + inner_h * (1 - (p - y_min) / y_range)
+    # Build paths
+    lines = []
+    rects = []
+    vol_max = max((b.get("v") or 0) for b in bars) or 1
+    vol_h = 14  # height of volume bars
+    for i, b in enumerate(bars):
+        x = pad + i * (bar_w + gap)
+        cx = x + bar_w / 2
+        o, h, l, c = b.get("o", 0), b.get("h", 0), b.get("l", 0), b.get("c", 0)
+        if not (o and h and l and c): continue
+        color = "#10b981" if c >= o else "#f43f5e"
+        # wick (high-low)
+        lines.append(f'<line x1="{cx:.1f}" y1="{y(h):.1f}" x2="{cx:.1f}" y2="{y(l):.1f}" stroke="{color}" stroke-width="0.8" />')
+        # body (open-close)
+        body_top = min(y(o), y(c))
+        body_bot = max(y(o), y(c))
+        body_h = max(body_bot - body_top, 1)
+        rects.append(f'<rect x="{x:.1f}" y="{body_top:.1f}" width="{bar_w:.1f}" height="{body_h:.1f}" fill="{color}" />')
+        # volume bar at bottom
+        v = b.get("v") or 0
+        vh = (v / vol_max) * vol_h if vol_max > 0 else 0
+        if vh > 0:
+            rects.append(f'<rect x="{x:.1f}" y="{height - pad - vh:.1f}" width="{bar_w:.1f}" height="{vh:.1f}" fill="{color}" opacity="0.4" />')
+    return f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + "".join(lines) + "".join(rects) + '</svg>'
+
 
 def render_sparkline_svg(closes, width=140, height=36, color="#10b981"):
     """Render an SVG sparkline from a list of close prices."""
@@ -272,17 +354,19 @@ def render_market(candles, liveness):
 
 
 def render_candles_with_indicators(candles):
-    """Per-symbol: sparkline + indicator chips."""
+    """Per-symbol: real OHLC 1m candle chart + sparkline + indicator chips + patterns."""
     rows = []
     for sym in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]:
         c = candles.get(sym, {})
         if not c:
             continue
         ind = c.get("indicators", {}) or {}
-        # Use recent 1m bar history for sparkline
         recent = c.get("bars_1m_recent", []) or []
+        # Real 1m OHLC candles (last 60)
+        bars = recent[-60:] if recent else []
+        candle_svg = render_candles_svg(bars, width=400, height=140)
         closes = [b.get("c") for b in recent if b.get("c")]
-        spark = render_sparkline_svg(closes, width=200, height=44)
+        spark = render_sparkline_svg(closes, width=180, height=36)
         rsi = ind.get("rsi_14")
         macd_hist = (ind.get("macd") or {}).get("hist")
         bb_pct_b = (ind.get("bollinger") or {}).get("pct_b")
@@ -291,6 +375,12 @@ def render_candles_with_indicators(candles):
         vwap_dev = ind.get("vwap_dev_pct")
         pat = c.get("patterns", [])
         pat_html = " ".join(f'<span class="pat-chip">{p["name"]}</span>' for p in pat) or '<span class="muted">none</span>'
+        # Day change calc (first close vs last close)
+        first_c = closes[0] if closes else c.get("ltp", 0)
+        last_c = closes[-1] if closes else c.get("ltp", 0)
+        chg = (last_c - first_c) if first_c else 0
+        chg_pct = (chg / first_c * 100) if first_c else 0
+        chg_color = "pos" if chg > 0 else "neg" if chg < 0 else "muted"
         def chip(label, val, fmt="{:+.2f}"):
             if val is None: return f'<span class="chip muted">{label}: —</span>'
             try: return f'<span class="chip">{label}: {fmt.format(float(val))}</span>'
@@ -301,18 +391,21 @@ def render_candles_with_indicators(candles):
         atr_chip = chip("ATR", atr, "{:.2f}")
         vwap_chip = chip("VWAP", vwap_dev, "{:+.2f}%")
         trend_color = "pos" if ema_trend == "up" else "neg" if ema_trend == "down" else "muted"
+        n_bars = len(bars)
         rows.append(f'''
         <div class="candle-card">
           <div class="candle-head">
             <span class="market-sym">{sym}</span>
             <span class="trend-chip {trend_color}">{ema_trend}</span>
             <span class="ltp">₹{c.get("ltp", 0):,.2f}</span>
+            <span class="market-chg {chg_color}">{fmt_pct(chg_pct)}</span>
+            <span class="muted small">{n_bars} bars</span>
           </div>
-          <div class="candle-spark">{spark}</div>
+          <div class="candle-chart">{candle_svg}</div>
           <div class="chips">{rsi_chip}{macd_chip}{bb_chip}{atr_chip}{vwap_chip}</div>
           <div class="patterns">Patterns: {pat_html}</div>
         </div>''')
-    return f'<section class="card"><h2>Candles + Indicators</h2><div class="candle-grid">{"".join(rows)}</div></section>'
+    return f'<section class="card"><h2>1-Minute Candles (live OHLC)</h2><div class="candle-grid">{"".join(rows)}</div></section>'
 
 
 def render_vol_forecast(alpha):
@@ -550,6 +643,217 @@ def render_recent_decisions(decisions, brain_state, mavis_plan):
     '''
 
 
+def render_live_decisions(decisions_full):
+    """Live LLM decision log with full context (event + market snapshot + rationale)."""
+    if not decisions_full:
+        return '<section class="card"><h2>Live LLM Decisions</h2><p class="muted">No LLM decisions yet. Waiting for >0.3% price move to fire an event.</p></section>'
+    rows = []
+    for d in decisions_full:
+        ts = d.get("ts", "")[:19]
+        decision = d.get("decision", {}) or {}
+        action = decision.get("action") or decision.get("type") or "?"
+        underlying = decision.get("underlying") or decision.get("symbol") or "?"
+        strategy = decision.get("strategy") or "—"
+        rationale = (decision.get("rationale") or decision.get("note") or "")[:200]
+        target = decision.get("target")
+        stop = decision.get("stop")
+        max_hold = decision.get("max_hold_minutes")
+        legs = decision.get("legs", [])
+        leg_count = len(legs) if isinstance(legs, list) else 0
+        event = d.get("event", {}) or {}
+        ctx = d.get("context", {}) or {}
+        event_str = ""
+        if event:
+            et = event.get("type", "?")
+            sym = event.get("symbol", "?")
+            pct = event.get("pct")
+            price = event.get("price")
+            event_str = f"{et}:{sym}"
+            if pct: event_str += f" {pct:+.2f}%"
+            if price: event_str += f" @ ₹{price:,.2f}"
+        ctx_str = ""
+        if ctx:
+            cash = ctx.get("cash")
+            n_pos = ctx.get("open_positions")
+            biggest = ctx.get("largest_event")
+            if biggest:
+                bp = biggest.get("price", 0)
+                bpct = biggest.get("pct", 0)
+                ctx_str = f"spot ₹{bp:,.2f} ({bpct:+.2f}%)"
+            if cash: ctx_str += f" · cash ₹{cash:,.0f}"
+            if n_pos is not None: ctx_str += f" · {n_pos} open"
+        # Action badge
+        if action == "OPEN":
+            badge = "badge-green"
+        elif action == "CLOSE":
+            badge = "badge-red"
+        else:
+            badge = "badge-blue"
+        # Expected profit
+        exp_html = ""
+        if target is not None and stop is not None:
+            exp_html = f'<span class="chip">T: ₹{target}</span> <span class="chip">S: ₹{stop}</span>'
+        if max_hold:
+            exp_html += f' <span class="chip muted">hold {max_hold}m</span>'
+        if leg_count:
+            exp_html = f'<span class="chip">{leg_count} legs</span> ' + exp_html
+        rows.append(f'''
+        <tr>
+          <td class="muted small">{ts[11:]}</td>
+          <td><span class="badge {badge}">{action}</span></td>
+          <td><b>{underlying}</b></td>
+          <td>{strategy}</td>
+          <td class="muted small">{event_str or "—"}</td>
+          <td class="muted small">{ctx_str or "—"}</td>
+          <td>{exp_html or '<span class="muted">—</span>'}</td>
+          <td class="muted small">{rationale[:120] or "—"}</td>
+        </tr>''')
+    return f'''
+    <section class="card"><h2>Live LLM Decisions (with context)</h2>
+    <div style="overflow-x:auto">
+    <table class="data-table">
+      <thead><tr><th>Time</th><th>Action</th><th>Symbol</th><th>Strategy</th><th>Trigger</th><th>Context</th><th>Target/Stop/Hold</th><th>Rationale</th></tr></thead>
+      <tbody>{"".join(rows)}</tbody>
+    </table>
+    </div>
+    </section>
+    '''
+
+
+def render_why_not(events_today, brain_state):
+    """Why didn't we trade today? Shows events that fired but didn't trigger LLM (or LLM chose HOLD)."""
+    n_events = len(events_today)
+    llm_calls = brain_state.get("llm_calls", 0) if brain_state else 0
+    if n_events == 0 and llm_calls == 0:
+        return f'''
+        <section class="card"><h2>Why Not (Decisions We Didn't Take)</h2>
+        <div class="kv">
+          <dt>Scans today</dt><dd>{n_events}</dd>
+          <dt>LLM calls today</dt><dd>{llm_calls}</dd>
+          <dt>Events fired (≥ 0.3% move)</dt><dd>0</dd>
+        </div>
+        <p class="muted small">No significant price moves today. The watch loop scans every 2s but only fires events when a price moves > 0.3% (≈ 72pt on NIFTY, 172pt on BANKNIFTY). Today's biggest move: <strong>~+0.12% (FINNIFTY)</strong> — well below threshold. The LLM brain is correctly staying quiet.</p>
+        <p class="muted small">When the LLM does fire, you'll see the full decision (event trigger, context snapshot, LLM rationale, expected target/stop) in the "Live LLM Decisions" section above.</p>
+        </section>
+        '''
+    # Events that did fire but LLM chose HOLD
+    rows = []
+    for e in events_today[-10:]:
+        ts = e.get("ts", "")
+        sym = e.get("sym", "?")
+        spot = e.get("spot", 0)
+        regime = e.get("regime", "?")
+        conf = e.get("conf", 0)
+        rows.append(f'<tr><td class="muted small">{ts[11:]}</td><td><b>{sym}</b></td><td>₹{spot:,.2f}</td><td>{regime}</td><td>conf {conf:.2f}</td></tr>')
+    return f'''
+    <section class="card"><h2>Why Not (recent scan context)</h2>
+    <p class="muted small">All scans are READ-ONLY market state checks (regime, confidence, momentum). They do NOT fire LLM events. Only <strong>price moves &gt; 0.3%</strong> fire events. The LLM brain fires on events; this section shows the underlying scan state for context.</p>
+    <table class="data-table small">
+      <thead><tr><th>Time</th><th>Symbol</th><th>Spot</th><th>Regime</th><th>Conf</th></tr></thead>
+      <tbody>{"".join(rows)}</tbody>
+    </table>
+    </section>
+    '''
+
+
+def render_iron_condor_payoff(paper):
+    """For any open iron condor / multi-leg position, show strikes, premium, payoff, breakevens."""
+    positions = paper.get("positions", {}) or {}
+    if not positions:
+        return '<section class="card"><h2>Iron Condor Payoff</h2><p class="muted">No open positions. Once the LLM opens an iron condor, the payoff diagram and breakevens will appear here.</p></section>'
+    # Find the position with multiple legs
+    ic = None
+    for pid, pos in positions.items():
+        if isinstance(pos, dict) and len(pos.get("legs", [])) >= 4:
+            ic = (pid, pos)
+            break
+    if not ic:
+        return f'<section class="card"><h2>Iron Condor Payoff</h2><p class="muted">Open position: {len(positions)} (single-leg or non-IC). No payoff diagram for this structure.</p></section>'
+    pid, pos = ic
+    legs = pos.get("legs", [])
+    # For an iron condor: 2 short + 2 long, same underlying
+    if len(legs) < 4:
+        return f'<section class="card"><h2>Iron Condor Payoff</h2><p class="muted">Position {pid} has {len(legs)} legs (not a full iron condor).</p></section>'
+    # Find short PE (lower strike), long PE (lower), short CE (higher strike), long CE (higher)
+    short_pe = long_pe = short_ce = long_ce = None
+    for leg in legs:
+        opt_type = leg.get("opt_type", "")
+        side = leg.get("side", "")
+        strike = leg.get("strike", 0)
+        price = leg.get("entry_price", 0) or leg.get("price", 0)
+        if opt_type == "PE" and side == "SELL" and (short_pe is None or strike < short_pe["strike"]):
+            short_pe = {"strike": strike, "price": price, "qty": leg.get("qty", 0)}
+        elif opt_type == "PE" and side == "BUY" and (long_pe is None or strike < long_pe["strike"]):
+            long_pe = {"strike": strike, "price": price, "qty": leg.get("qty", 0)}
+        elif opt_type == "CE" and side == "SELL" and (short_ce is None or strike > short_ce["strike"]):
+            short_ce = {"strike": strike, "price": price, "qty": leg.get("qty", 0)}
+        elif opt_type == "CE" and side == "BUY" and (long_ce is None or strike > long_ce["strike"]):
+            long_ce = {"strike": strike, "price": price, "qty": leg.get("qty", 0)}
+    if not (short_pe and long_pe and short_ce and long_ce):
+        return f'<section class="card"><h2>Iron Condor Payoff</h2><p class="muted">Could not parse all 4 wings of the iron condor.</p></section>'
+    # Credit received
+    credit_per_share = (short_pe["price"] - long_pe["price"]) + (short_ce["price"] - long_ce["price"])
+    width_pe = short_pe["strike"] - long_pe["strike"]
+    width_ce = long_ce["strike"] - short_ce["strike"]
+    # Use same qty across legs
+    qty = short_pe.get("qty") or 75
+    total_credit = credit_per_share * qty
+    max_loss_per_share = max(width_pe, width_ce) - credit_per_share
+    total_max_loss = max_loss_per_share * qty
+    breakeven_low = short_pe["strike"] - credit_per_share
+    breakeven_high = short_ce["strike"] + credit_per_share
+    # Build SVG payoff diagram (fixed range across strikes)
+    lo = min(long_pe["strike"], breakeven_low - 100)
+    hi = max(long_ce["strike"], breakeven_high + 100)
+    width = 480
+    height = 140
+    pad_x, pad_y = 30, 20
+    def x(p): return pad_x + (p - lo) / (hi - lo) * (width - 2 * pad_x)
+    def y(payout): return height - pad_y - (payout + 50) / (total_max_loss + 100) * (height - 2 * pad_y)
+    # Payoff line: -max_loss in wings, +credit in middle
+    pts = []
+    pts.append(f"{x(lo):.1f},{y(-max_loss_per_share):.1f}")
+    pts.append(f"{x(long_pe['strike']):.1f},{y(-max_loss_per_share):.1f}")
+    pts.append(f"{x(short_pe['strike']):.1f},{y(credit_per_share):.1f}")
+    pts.append(f"{x(short_ce['strike']):.1f},{y(credit_per_share):.1f}")
+    pts.append(f"{x(long_ce['strike']):.1f},{y(-max_loss_per_share):.1f}")
+    pts.append(f"{x(hi):.1f},{y(-max_loss_per_share):.1f}")
+    # Strike vertical lines
+    strikes_svg = ""
+    for label, sval in [("LP", long_pe["strike"]), ("SP", short_pe["strike"]), ("SC", short_ce["strike"]), ("LC", long_ce["strike"])]:
+        strikes_svg += f'<line x1="{x(sval):.1f}" y1="{pad_y}" x2="{x(sval):.1f}" y2="{height-pad_y}" stroke="#7c7a72" stroke-dasharray="2,2" stroke-width="0.5" />'
+        strikes_svg += f'<text x="{x(sval):.1f}" y="{height-2}" font-size="9" text-anchor="middle" fill="#7c7a72">{label} {sval}</text>'
+    # Breakeven lines
+    for label, bval in [("BEL", breakeven_low), ("BEH", breakeven_high)]:
+        strikes_svg += f'<line x1="{x(bval):.1f}" y1="{pad_y}" x2="{x(bval):.1f}" y2="{height-pad_y}" stroke="#3b82f6" stroke-dasharray="2,2" stroke-width="0.5" />'
+        strikes_svg += f'<text x="{x(bval):.1f}" y="{pad_y-4}" font-size="9" text-anchor="middle" fill="#3b82f6">{label} {bval:.0f}</text>'
+    return f'''
+    <section class="card"><h2>Iron Condor Payoff (open position)</h2>
+    <div class="kv">
+      <dt>Underlying</dt><dd>{pos.get("underlying", "NIFTY")}</dd>
+      <dt>Structure</dt><dd>SELL {short_pe["strike"]} PE / BUY {long_pe["strike"]} PE / SELL {short_ce["strike"]} CE / BUY {long_ce["strike"]} CE</dd>
+      <dt>Quantity</dt><dd>{qty} (per leg)</dd>
+      <dt>Wing widths</dt><dd>PE ₹{width_pe} · CE ₹{width_ce}</dd>
+      <dt>Net credit (per share)</dt><dd>₹{credit_per_share:.2f}</dd>
+      <dt>Net credit (total)</dt><dd class="pos">+₹{total_credit:,.0f}</dd>
+      <dt>Max profit</dt><dd class="pos">+₹{total_credit:,.0f} (if NIFTY between {short_pe["strike"]} and {short_ce["strike"]})</dd>
+      <dt>Max loss</dt><dd class="neg">-₹{total_max_loss:,.0f} (if NIFTY below {long_pe["strike"]} or above {long_ce["strike"]})</dd>
+      <dt>Breakevens</dt><dd>₹{breakeven_low:,.2f} and ₹{breakeven_high:,.2f}</dd>
+    </div>
+    <div class="candle-chart" style="background:#fafaf7">
+      <svg width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+        {strikes_svg}
+        <line x1="{pad_x}" y1="{y(0):.1f}" x2="{width-pad_x}" y2="{y(0):.1f}" stroke="#14171e" stroke-width="0.8" />
+        <line x1="{x(0):.1f}" y1="{pad_y}" x2="{x(0):.1f}" y2="{height-pad_y}" stroke="#7c7a72" stroke-width="0.3" />
+        <polyline points="{" ".join(pts)}" fill="none" stroke="#10b981" stroke-width="1.6" />
+        <text x="{width-pad_x-4}" y="{pad_y+12}" font-size="10" text-anchor="end" fill="#10b981">P&amp;L per share</text>
+        <text x="4" y="{height-pad_y+2}" font-size="9" fill="#7c7a72">spot {pos.get("underlying", "")}</text>
+      </svg>
+    </div>
+    </section>
+    '''
+
+
 def render_bot_activity(bot_log_tail):
     """Recent orders + Mavis plan execution attempts + trades from bot log."""
     orders = []
@@ -697,6 +1001,7 @@ CSS = """
   .candle-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   .candle-head .ltp { font-size: 16px; font-weight: 600; }
   .candle-spark { margin: 4px 0 8px; }
+  .candle-chart { margin: 4px 0 8px; background: #fafaf7; border-radius: 4px; padding: 2px; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }
   .chip { background: #f3f1ed; border: 1px solid var(--line-soft); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
   .chip.muted { color: var(--muted); }
@@ -792,6 +1097,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <div style="height: 16px"></div>
 
+  {live_decisions}
+
+  <div style="height: 16px"></div>
+
+  {why_not}
+
+  <div style="height: 16px"></div>
+
+  {iron_condor}
+
+  <div style="height: 16px"></div>
+
   {bot_activity}
 
   <div style="height: 16px"></div>
@@ -814,6 +1131,8 @@ def main() -> int:
     alpha = load_alpha()
     perf = load_perf()
     decisions = load_decisions(20)
+    decisions_full = load_llm_decisions_full(15)
+    events_today = load_events_today()
     mavis_plan = load_mavis_plan()
     brain_state = load_brain_state()
     bot_log = load_bot_log_tail(200)
@@ -832,6 +1151,9 @@ def main() -> int:
         exec_quality=render_exec_quality(alpha),
         positions=render_positions(paper),
         decisions=render_recent_decisions(decisions, brain_state, mavis_plan),
+        live_decisions=render_live_decisions(decisions_full),
+        why_not=render_why_not(events_today, brain_state),
+        iron_condor=render_iron_condor_payoff(paper),
         bot_activity=render_bot_activity(bot_log),
         scheduler=render_scheduler_log(fired),
     )

@@ -121,26 +121,22 @@ def main() -> int:
     # VIX check
     vix_ok = 0 < vix < 12
 
-    if not in_range:
-        decision["action"] = "BLOCK"
-        decision["reason_short"] = f"Mavis pre-market BLOCK: spot {cur_spot} outside 24,000-24,500"
-        plan["premarket_check"] = {"spot_in_range": False, "us_calm": us_calm, "vix_ok": vix_ok}
-    elif not us_calm:
-        decision["action"] = "BLOCK"
-        decision["reason_short"] = f"Mavis pre-market BLOCK: US futures moved {max_us_chg:+.2f}% (threshold 0.4%)"
-        plan["premarket_check"] = {"spot_in_range": True, "us_calm": False, "vix_ok": vix_ok}
-    elif not vix_ok:
-        decision["action"] = "BLOCK"
-        decision["reason_short"] = f"Mavis pre-market BLOCK: VIX {vix} outside 8-12 range"
-        plan["premarket_check"] = {"spot_in_range": True, "us_calm": us_calm, "vix_ok": False}
-    else:
-        # All clear — keep EXECUTE_PLAN, but update reason
-        decision["action"] = "EXECUTE_PLAN"
-        decision["reason_short"] = (
-            f"Mavis pre-market CONFIRM: spot {cur_spot} in 24k-24.5k, US {max_us_chg:+.2f}% (calm), VIX {vix} (cheap). "
-            f"Plan stands: NIFTY iron condor 24200/24100 PE + 24500/24600 CE."
-        )
-        plan["premarket_check"] = {"spot_in_range": True, "us_calm": True, "vix_ok": True}
+    # ARCHITECTURE FIX 2026-09-01: LLM brain (quant_service.py) is the SOLE decision
+    # authority. The Mavis pre-market plan is now CONTEXT-ONLY — its research,
+    # bias, and market view are still valuable for the LLM brain to read, but
+    # the bot's Mavis plan execution path is disabled by always setting
+    # action=BLOCK. The bot will see BLOCK and not attempt to trade on this.
+    decision["action"] = "BLOCK"
+    decision["reason_short"] = (
+        f"Mavis pre-market CONTEXT ONLY (LLM brain is sole decision authority): "
+        f"spot={cur_spot}, us_max_chg={max_us_chg:+.2f}%, vix={vix}, "
+        f"in_range={in_range}, us_calm={us_calm}, vix_ok={vix_ok}. "
+        f"See data_cache/mavis_trades.json for research context."
+    )
+    plan["premarket_check"] = {
+        "spot_in_range": in_range, "us_calm": us_calm, "vix_ok": vix_ok,
+        "context_only": True, "decision_authority": "quant_service.py LLM brain",
+    }
 
     plan["mavis_decision"] = decision
     plan["last_decision_at"] = now.isoformat()
