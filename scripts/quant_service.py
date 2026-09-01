@@ -789,6 +789,8 @@ last_closing_straddle_date = None # 14:50 Mon-Fri: closing-auction straddle/stra
 last_nightly_improvement_date = None # 23:00 daily: LLM self-review, updates AGENTS.md + prompt_addition.txt (the self-evolution loop)
 last_candle_refresh_ts = 0          # 60s during market hours: candle engine pulls live ticks, computes indicators/patterns
 last_alpha_refresh_ts = 0           # 5 min during market hours: vol forecast, IV, exec quality, portfolio risk, decision backtest
+last_chain_refresh_ts = 0           # 5 min during market hours: option chain analyzer (writes option_chains.json)
+last_dashboard_refresh_ts = 0       # 5 min during market hours: regenerates data_cache/dashboard.html
 
 
 def _scheduled_subprocess(script_relpath: str, label: str, timeout: int = 120, args: list = None) -> None:
@@ -1202,7 +1204,7 @@ def watch_loop():
     global last_morning_brief_date, last_daily_maint_date, last_news_cache_date
     global last_eod_backup_date, last_weekend_intel_date, last_weekly_summary_date
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
-    global last_candle_refresh_ts, last_alpha_refresh_ts
+    global last_candle_refresh_ts, last_alpha_refresh_ts, last_chain_refresh_ts, last_dashboard_refresh_ts
     while RUNNING:
         try:
             tick_count += 1
@@ -1263,6 +1265,18 @@ def watch_loop():
                     n_strats = _backtest_replay()
                     if n_strats:
                         log(f"BACKTEST-REPLAY: {n_strats} strategies scored")
+                # Option chain refresh every 5 min during market hours
+                if datetime.now().timestamp() - last_chain_refresh_ts > 300:
+                    last_chain_refresh_ts = datetime.now().timestamp()
+                    _scheduled_subprocess("scripts/option_chain_analyzer.py", "chain-analyzer", timeout=120)
+                # Dashboard regeneration every 5 min during market hours
+                if datetime.now().timestamp() - last_dashboard_refresh_ts > 300:
+                    last_dashboard_refresh_ts = datetime.now().timestamp()
+                    try:
+                        from dashboard import main as _dash
+                        _dash()
+                    except Exception as e:
+                        log(f"dashboard-err: {e}")
             # Reconcile outcomes every 5 min (matches open decisions against
             # current positions; marks closed ones with breakeven P&L).
             if datetime.now().timestamp() - last_reconcile_ts > 300:
@@ -1286,7 +1300,7 @@ def watch_loop():
                 if _now.hour == 9 and _now.minute < 5 and last_news_cache_date != _now.date():
                     last_news_cache_date = _now.date()
                     log("SCHED-NEWS-CACHE: triggering (09:00)")
-                    _scheduled_subprocess("scripts/news_cache.py", "news-cache", timeout=60)
+                    _scheduled_subprocess("scripts/news_cache.py", "news-cache", timeout=180)
                 # 14:50 closing-auction straddle: LLM evaluates vol setup, deploys 1-lot long straddle/strangle
                 if _now.hour == 14 and 50 <= _now.minute < 55 and last_closing_straddle_date != _now.date():
                     last_closing_straddle_date = _now.date()

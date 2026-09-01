@@ -220,9 +220,16 @@ class CandleEngine:
             ind = self.compute_indicators(sym, tf='1m')
             pat = self.detect_patterns(sym, tf='1m')
             vp = self.compute_volume_profile(sym, tf='1m')
+            # Recent 1m bar history (last 100 bars, just close+ohlc+v) for sparklines & vol
+            recent_1m = [
+                {'ts': b.get('ts'), 'o': b.get('o'), 'h': b.get('h'),
+                 'l': b.get('l'), 'c': b.get('c'), 'v': b.get('v')}
+                for b in list(self.bars[sym]['1m'])[-100:]
+            ]
             snap['symbols'][sym] = {
                 'ltp': ltp,
                 'latest_bars': latest,
+                'bars_1m_recent': recent_1m,
                 'indicators': ind,
                 'patterns': pat,
                 'volume_profile': vp,

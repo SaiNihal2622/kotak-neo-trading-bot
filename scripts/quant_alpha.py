@@ -183,32 +183,43 @@ def vol_targeted_size(capital: float, target_vol_ann: float, forecast_vol_ann: f
 
 def compute_iv_metrics(chain: dict, spot: float) -> dict:
     """Extract IV metrics from an option chain dict (from option_chains.json).
-    chain format: {'chains': {'NIFTY': {'spot': X, 'expiries': [{'date':..., 'strikes': [{'strike':, 'ce_iv':, 'pe_iv':, 'ce_oi':, 'pe_oi':}]}]}}
-    Or the legacy format: {'spot': X, 'strikes': [{'strike', 'ce_ltp', 'pe_ltp', 'ce_iv', 'pe_iv', 'ce_oi', 'pe_oi'}]}"""
+    Supports multiple formats:
+    - {'spot': X, 'strikes': [{'strike', 'ce_iv', 'pe_iv', 'ce_oi', 'pe_oi'}]}  (legacy KotakProdFeed)
+    - {'spot': X, 'strikes': {'24000_CE': {'iv': 0.16, ...}, '24000_PE': {...}}}  (option_chain_analyzer)
+    - {'chains': {'NIFTY': {'spot': X, 'expiries': [{'strikes': [...]}]}}"""
     if not chain or not spot or spot <= 0:
         return {}
-    # Find nearest ATM strike
     strikes = chain.get('strikes') or []
+    if isinstance(strikes, dict):
+        strikes = list(strikes.values())
     if not strikes:
-        # Try nested format
         expiries = chain.get('expiries') or []
         if expiries:
             strikes = expiries[0].get('strikes', [])
     if not strikes:
         return {}
+    def _iv(s, default=0):
+        """Extract IV from a strike dict. Handles:
+        - ce_iv / pe_iv (legacy KotakProdFeed format)
+        - single 'iv' field (option_chain_analyzer format, same IV for both legs)"""
+        opt_type = s.get('opt_type')
+        if opt_type == 'CE':
+            v = s.get('ce_iv') or s.get('iv', default)
+        elif opt_type == 'PE':
+            v = s.get('pe_iv') or s.get('iv', default)
+        else:
+            v = s.get('iv', default)
+        return v or default
+
     atm_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i].get('strike', 0) - spot))
     atm = strikes[atm_idx]
-    atm_iv = ((atm.get('ce_iv') or 0) + (atm.get('pe_iv') or 0)) / 2
-    # 25-delta skew: OTM put IV - OTM call IV (proxy: 5% OTM each side)
+    atm_iv = _iv(atm)
     otm_pct = 0.05
-    otm_strike_target = spot * (1 - otm_pct)
-    otm_call_target = spot * (1 + otm_pct)
-    otm_put = min(strikes, key=lambda s: abs(s.get('strike', 0) - otm_strike_target))
-    otm_call = min(strikes, key=lambda s: abs(s.get('strike', 0) - otm_call_target))
-    put_iv = otm_put.get('pe_iv') or 0
-    call_iv = otm_call.get('ce_iv') or 0
-    skew_25d = put_iv - call_iv  # positive = bearish fear premium
-    # PCR (put-call ratio by OI)
+    otm_put = min(strikes, key=lambda s: abs(s.get('strike', 0) - spot * (1 - otm_pct)))
+    otm_call = min(strikes, key=lambda s: abs(s.get('strike', 0) - spot * (1 + otm_pct)))
+    put_iv = _iv(otm_put)
+    call_iv = _iv(otm_call)
+    skew_25d = put_iv - call_iv
     total_ce_oi = sum(s.get('ce_oi', 0) or 0 for s in strikes)
     total_pe_oi = sum(s.get('pe_oi', 0) or 0 for s in strikes)
     pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 1.0
@@ -216,7 +227,7 @@ def compute_iv_metrics(chain: dict, spot: float) -> dict:
         'spot': spot,
         'atm_strike': atm.get('strike'),
         'atm_iv': round(atm_iv, 2) if atm_iv else None,
-        'skew_25d': round(skew_25d, 2) if put_iv and call_iv else None,
+        'skew_25d': round(skew_25d, 2) if (put_iv or call_iv) else None,
         'pcr_oi': round(pcr, 3),
         'total_ce_oi': total_ce_oi,
         'total_pe_oi': total_pe_oi,
@@ -449,21 +460,22 @@ def build_alpha_snapshot() -> dict:
             pass
     # Vol forecast + regime per symbol
     for sym, c in candles.items():
-        closes = [b.get('c') for b in [c.get('latest_bars', {}).get(tf, {}) for tf in ['5m', '15m', '1m']] if b and b.get('c')]
+        # Use recent 1m bar history (falls back to latest_bars if missing)
+        recent = c.get('bars_1m_recent', []) or []
+        closes = [b.get('c') for b in recent if b.get('c')]
+        if not closes:
+            closes = [b.get('c') for b in [c.get('latest_bars', {}).get(tf, {}) for tf in ['5m', '15m', '1m']] if b and b.get('c')]
         if not closes and c.get('ltp'):
             closes = [c['ltp']]
         if not closes:
             continue
-        # Use 1m closes for vol forecast
-        bars_1m = candles.get(sym, {}).get('n_bars_1m', 0)
-        if bars_1m >= 30:
+        # Vol forecast
+        if len(closes) >= 30:
             rets = returns_from_closes(closes)
             ewma = forecast_vol_ewma(rets, halflife=20)
             garch = forecast_vol_garch(rets)
             snap['vol_forecasts'][sym] = {'ewma': ewma, 'garch': garch}
         # Regime
-        ltp = c.get('ltp', 0)
-        vix = c.get('vwap') or 0  # proxy if no VIX
         snap['regime_per_symbol'][sym] = detect_regime(closes, vix=0)
     # IV metrics from option chains
     chains_path = DATA / 'option_chains.json'
