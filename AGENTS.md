@@ -58,6 +58,39 @@ The bot does NOT have its own LLM call. The cron IS the brain.
   `scripts/trader_state.py`. Not a "dead alternate orchestrator" despite
   the name.
 
+## The "complete" production system (as of 2026-09-02)
+
+The 24/7 quant brain (`scripts/quant_service.py`) has **12 modules** wired
+into the LLM's decision context. Every LLM call sees all of them.
+
+| Module | Purpose | When it runs |
+|---|---|---|
+| `candle_engine.py` | 1m OHLCV + indicators + patterns | continuous, every 1s tick |
+| `dashboard.py` | HTML output for `:8504` | continuous |
+| `quant_service.py` | The brain (watch loop + LLM + schedulers + HTTP `:8503`) | continuous, 1Hz |
+| `quant_watchdog.py` | Auto-restart brain if it dies | every 60s |
+| `profit_engine.py` | Compounding + Kelly sizing + circuit breakers | every LLM call |
+| `llm_helpers.py` | 5 tools + 2 workflows (morning brief, EOD) | per-call + scheduled |
+| `macro_calendar.py` | RBI / FOMC / US CPI / US NFP + FII/DII flows | every LLM call |
+| `trade_journal.py` | Auto-journal every trade + lessons | every LLM call |
+| `position_adjuster.py` | Per-position P&L + suggested actions | every LLM call |
+| `backtest_engine.py` | Regime-aware edge (per-strategy P&L, sample grade) | every LLM call |
+| `oi_change_detector.py` | Real-time OI build-up / unwinding + PCR shift | every LLM call + every 1 min |
+| `telegram_alerter.py` | Rich brain-side Telegram alerts (throttled) | every LLM decision, OI shifts, etc. |
+| `session_watch.py` | Kotak auth expiry alert + unattended re-auth | every 5 min |
+
+In-process schedulers in `quant_service.py` (replaces 23 paused Mavis crons):
+- 08:15 morning brief
+- 08:25 daily maintenance (re-auth + self-test)
+- 09:00 news cache refresh
+- 14:50 closing straddle scanner
+- 15:45 EOD state backup
+- 23:00 nightly improvement (self-evolution)
+- Sun 18:00 weekly strategy review
+- Sun 21:00 weekend intel + Monday brief
+
+**All 43 Mavis crons are `enabled: false`** — fully self-driven.
+
 ## The active cron stack (the "24/7" piece)
 
 | Cron name                      | Schedule                | Purpose |
@@ -181,9 +214,29 @@ Format: one entry per finding, dated, with the rule + the evidence +
 when it applies. Don't add one-off trivia. Don't add stuff that's
 already in code or git history.
 
-Last reviewed: 2026-08-30 (Mavis nightly-improvement, false-positive liveness_ping_failed documented)
+Last reviewed: 2026-09-02 01:00 IST (this chat — pre-market audit + 3 new feature modules + session watcher)
 
 ## Known-issues register (durable findings)
+
+### 2026-09-02: Session v4 (this chat) — 3 new feature modules + session watcher + pre-market audit
+**Rule**: Pre-market audit found 4 issues, all fixed in this session:
+1. **Kotak session expires in ~6h (UAT env)**, not 24h. Need explicit session expiry handling — added `scripts/session_watch.py` (commit bd8abb4) that runs every 5 min in the brain, alerts via Telegram at 30min/5min thresholds, AND auto re-auths unattended via TOTP+MPIN from env.
+2. **Watchdog was missing** — the brain died at 22:06 IST Sept 1 because no quant_watchdog was running. Now running (PID 19380). Watchdog restarts brain within 60s of death.
+3. **All 43 Mavis crons are `enabled: false`** — verified. No cron spam. Daily-ops fully covered by in-process schedulers in `quant_service.py`.
+4. **4 SYSTEM-owned orphan python processes** (PIDs 9960/9988/9376/9472 from Aug 31 NSSM launch) survive non-admin kill. They squat :8501 with the OLD dashboard. New live_dashboard is on :8504. Safe to defer per the 2026-08-22 orphan-process note; admin kill would clean them up at next user reboot.
+
+**3 new feature modules shipped** (commits 118deb6 / 62e1fd4 / f8aab8d / bd8abb4):
+- `scripts/backtest_engine.py` — regime-aware edge, sample-grade flag (F = untested = be conservative)
+- `scripts/oi_change_detector.py` — NIFTY OI build-up/unwinding detection, fires on >15% shifts
+- `scripts/telegram_alerter.py` — rich brain-side alerts (throttled, formatted, multi-category)
+- `scripts/session_watch.py` — Kotak auth expiry watcher + auto re-auth
+
+**Apply when**:
+- New sessions will see the LLM using `backtest` / `oi_changes` / `telegram_alerter` / `session_watch` references — they exist in LLM context and are wired into the main loop.
+- New "alert" features should go in `telegram_alerter.py` with throttling — don't add raw `send_telegram` calls.
+- New "edge" or "sample size" features should go in `backtest_engine.py` — don't add inline backtest code.
+- Brain self-heals on auth via `session_watch` (every 5 min). Don't add a separate re-auth cron.
+- The 08:25 daily_maintenance ALSO re-auths. Both layers are intentional (belt + suspenders).
 
 ### 2026-08-31: Session v3 (this chat) — full 24/7 LLM quant system shipped in one session
 **Rule**: In one ~6-hour Mavis session, we built the complete production-grade LLM-driven quant system on top of the previous session's foundation. 11 commits shipped: 28515c6 (auto-execute LLM OPEN), 71d627f (greeks + yfinance .NS), d3d31be (AGENTS docs), e063347 (perf tracker + circuit breakers + EOD self-eval + LLM cost), ab44e26 (live intel), f76d4dd (weekly review), 46d7643 (puppeteer NSE), b8e816f (live NSE data), 1275454 (MCP workaround docs), 52dea29 (outcome recording). System is now self-driving: detects → reasons → executes → tracks → reviews → improves, with no human in the loop. User authorized "real trading we do if we see apt profits in paper trading" as the gate to flip to live (currently still paper: KOTAK_LIVE_CONFIRMED=NO).
