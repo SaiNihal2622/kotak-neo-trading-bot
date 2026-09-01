@@ -128,15 +128,44 @@ class HistoricalData:
         return pd.DataFrame()
 
     def _from_yfinance(self, symbol: str, days: int, interval: str) -> pd.DataFrame:
-        """Fetch from yfinance (free, no key)."""
+        """Fetch from yfinance (free, no key).
+
+        yfinance sometimes returns 404 / "possibly delisted" for NSE symbols
+        (e.g. TATAMOTORS.NS is no longer in Yahoo's database, FINNIFTY /
+        MIDCPNIFTY return only 1 row). To avoid spamming stderr every 5 min,
+        we:
+          1. Negative-cache failures for 24h (skip yfinance entirely next time)
+          2. Suppress yfinance's own stderr noise during the call
+          3. If the ticker is known-bad, return empty silently (synthetic takes over)
+        """
+        # Negative cache: skip yfinance if it failed for this symbol in the last 24h
+        neg_cache = self.cache_dir / f"_yfinance_fail_{symbol}.txt"
+        if neg_cache.exists():
+            try:
+                age_h = (datetime.now().timestamp() - neg_cache.stat().st_mtime) / 3600
+                if age_h < 24:
+                    return pd.DataFrame()
+            except Exception:
+                pass
+
         try:
             import yfinance as yf
             ticker = _yfinance_ticker(symbol)
             # yfinance limit: 1m = 7d, 5m = 60d, 15m = 60d, 1h = 730d, 1d = unlimited
             period = f"{days}d" if interval == "1d" else f"{min(days, 60)}d"
-            df = yf.download(ticker, period=period, interval=interval, progress=False)
-            if df.empty:
-                return df
+            # Suppress yfinance's stderr noise (it prints "HTTP Error 404" and
+            # "possibly delisted" to stderr even when we just want to handle it)
+            import contextlib
+            import io
+            with contextlib.redirect_stderr(io.StringIO()):
+                df = yf.download(ticker, period=period, interval=interval, progress=False)
+            if df.empty or len(df) < 2:
+                # Negative-cache: remember this symbol failed, skip yfinance for 24h
+                try:
+                    neg_cache.write_text(datetime.now().isoformat(), encoding="utf-8")
+                except Exception:
+                    pass
+                return pd.DataFrame()
             # yfinance returns multi-level columns for single ticker
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [c[0] for c in df.columns]
@@ -153,6 +182,10 @@ class HistoricalData:
             return pd.DataFrame()
         except Exception as e:
             logger.warning(f"yfinance fetch {symbol} failed: {e}")
+            try:
+                neg_cache.write_text(datetime.now().isoformat(), encoding="utf-8")
+            except Exception:
+                pass
             return pd.DataFrame()
 
     def _from_nselib(self, symbol: str, days: int) -> pd.DataFrame:

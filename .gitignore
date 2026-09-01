@@ -65,6 +65,10 @@ data_cache/compliance/
 # HTTP server watchdog audit (appended on every run)
 data_cache/http_watchdog.jsonl
 
+# yfinance negative cache (1-file-per-symbol, 24h TTL, marks symbols that
+# 404 on yfinance so we don't spam stderr on every chain refresh)
+data_cache/historical/_yfinance_fail_*.txt
+
 # Mavis quant brain — auto-regenerated on every `python scripts/quant_brain.py`
 # Source is in scripts/quant_brain.py; the JSON is a derived snapshot.
 data_cache/quant_brain.json

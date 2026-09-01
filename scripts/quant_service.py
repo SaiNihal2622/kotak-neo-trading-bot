@@ -2054,9 +2054,32 @@ class ControlHandler(http.server.BaseHTTPRequestHandler):
 
 
 def http_server():
-    with socketserver.TCPServer(('127.0.0.1', PORT), ControlHandler) as srv:
-        log(f"HTTP-API: listening on http://127.0.0.1:{PORT}")
-        srv.serve_forever()
+    """HTTP control API on :8503. Self-restarts on any failure.
+
+    The HTTP server runs in a daemon thread inside the brain. If the thread
+    dies for any reason (port conflict, socket error, handler exception),
+    the main 1Hz watch loop keeps running but :8503 is unreachable until
+    the whole brain is restarted. This wrapper:
+      1. Sets allow_reuse_address so a brain restart can rebind :8503 fast
+      2. Catches ALL exceptions in the serve_forever loop
+      3. Auto-restarts the server with a 5s backoff
+      4. Only stops on graceful shutdown (RUNNING = False)
+    """
+    socketserver.TCPServer.allow_reuse_address = True
+    backoff_sec = 5
+    while RUNNING:
+        try:
+            with socketserver.TCPServer(('127.0.0.1', PORT), ControlHandler) as srv:
+                log(f"HTTP-API: listening on http://127.0.0.1:{PORT}")
+                backoff_sec = 5  # reset on successful bind
+                srv.serve_forever()
+        except Exception as e:
+            if not RUNNING:
+                break
+            log(f"HTTP-API: crashed ({e}), restarting in {backoff_sec}s")
+            time.sleep(backoff_sec)
+            # Cap backoff at 60s so we don't sleep forever after repeated failures
+            backoff_sec = min(backoff_sec * 2, 60)
 
 
 # ---------- Lifecycle ----------
