@@ -440,6 +440,17 @@ MACRO CALENDAR + POSITION MANAGEMENT:
 - For each trade, the journal automatically records: setup, market context at
   entry, exit reason, P&L. The 23:00 nightly review reads the journal to self-improve.
 
+BACKTEST ENGINE (regime-aware edge — USE IT to size conviction):
+- `backtest` block shows per-strategy P&L/win rate/sample size for the last 30 days
+  plus the current VIX regime (low_vix <12, mid 12-16, high 16-22, panic 22+).
+- `sample_grade` (A=30+, B=20+, C=10+, D=5+, F=<5) tells you how much to trust
+  a strategy. Grade F = "no real data, treat as untested" — be conservative.
+- `regime.top_strategies` ranks strategies by edge in the current VIX bucket.
+  A strategy that's hot in low_vix (mean-reversion) often fails in high_vix.
+- `global.hint` is a 1-sentence recommendation. Read it.
+- If a proposed strategy has sample_grade F and total_pnl <= 0, the LLM should
+  EITHER reduce size to 1-lot exploratory OR pass on the trade.
+
 PROFIT ENGINE (this is the compound/edge system, USE IT):
 - `profit_state` shows: effective_capital (starting + compounded P&L), today's P&L,
   drawdown, consecutive losses, is_paused, sizing_recommendation.
@@ -1077,6 +1088,12 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     try:
         from macro_calendar import get_macro_state
         context["macro"] = get_macro_state()
+    except Exception:
+        pass
+    # Backtest engine: regime-aware edge (what works in current VIX regime)
+    try:
+        from backtest_engine import get_backtest_summary
+        context["backtest"] = get_backtest_summary()
     except Exception:
         pass
     # Trade journal: lessons learned from past trades
