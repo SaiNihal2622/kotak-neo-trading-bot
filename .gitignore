@@ -75,6 +75,10 @@ data_cache/quant_brain.json
 
 # Mavis scratch / one-off inspection scripts (use _check_*.py to debug)
 data_cache/_check_*.py
+scripts/_check_*.py
+scripts/_tmp_*.py
+scripts/temp_*.py
+scripts/scratch_*.py
 
 # system/run_http_server.ps1 logs (NSSM-managed)
 Logs/http_server_stderr.log
