@@ -1983,6 +1983,16 @@ def watch_loop():
             except Exception:
                 pass
 
+            # --- Kotak session watcher (every 5 min — check expiry, alert + auto re-auth) ---
+            try:
+                if tick_count % 300 == 0:  # every 300 ticks @ 1Hz = 5 min
+                    from session_watch import check_session
+                    sess_state = check_session()
+                    if sess_state.get("status") in ("expired", "critical"):
+                        log(f"SESSION-WATCH: {sess_state.get('status')} - {sess_state.get('message')}")
+            except Exception as e:
+                log(f"session-watch-err: {e}")
+
             time.sleep(TICK_SEC)
         except Exception as e:
             log(f"LOOP-ERR: {e}\n{traceback.format_exc()[:300]}")
