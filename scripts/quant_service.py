@@ -1189,6 +1189,12 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             f"Target: {decision.get('target','?')} Stop: {decision.get('stop','?')}\n"
             f"Rationale: {decision.get('rationale','')[:300]}"
         )
+    # Rich Telegram alerter (throttled, formatted) — supplements the basic send_telegram above
+    try:
+        from telegram_alerter import decision_made
+        decision_made(decision, context=context)
+    except Exception:
+        pass
     return decision
 
 
@@ -1953,6 +1959,30 @@ def watch_loop():
                     run_nightly_improvement()
                 except Exception as e:
                     log(f"SCHED-NIGHTLY-IMPROVEMENT-err: {e}")
+
+            # --- Telegram heartbeats (every 4h during market hours) + OI alerts ---
+            try:
+                from telegram_alerter import heartbeat as tg_heartbeat, oi_alert as tg_oi_alert
+                from oi_change_detector import get_oi_changes_for_llm
+                # Heartbeat every 4h between 09:00-15:30 IST (14400 ticks @ 1Hz = 4h)
+                if 9 <= _now.hour <= 15 and tick_count % 14400 == 0 and tick_count > 0:
+                    tg_heartbeat({
+                        "capital": paper.get("capital", 0),
+                        "realized_pnl": paper.get("realized_pnl", 0),
+                        "open_positions": len(paper.get("positions", {})),
+                        "tick": tick_count,
+                    })
+                # OI alert on every 60th tick (~1 min), offset to avoid batching
+                if tick_count % 60 == 30:
+                    try:
+                        oi_changes = get_oi_changes_for_llm("NIFTY", lookback_min=15)
+                        if oi_changes.get("n_changes", 0) > 0:
+                            tg_oi_alert(oi_changes, threshold_pct=15.0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             time.sleep(TICK_SEC)
         except Exception as e:
             log(f"LOOP-ERR: {e}\n{traceback.format_exc()[:300]}")
@@ -2033,6 +2063,18 @@ def main() -> int:
     log(f"QUANT-SERVICE: starting (pid={os.getpid()})")
     log(f"  LLM endpoint: {LLM_BASE}/messages")
     log(f"  HTTP control: http://127.0.0.1:{PORT}")
+
+    # Notify Telegram on service start
+    try:
+        from telegram_alerter import session_event as tg_session_event
+        tg_session_event("Quant service starting", details={
+            "pid": os.getpid(),
+            "endpoint": f"{LLM_BASE}/messages",
+            "http": f"http://127.0.0.1:{PORT}",
+            "ts": now_iso(),
+        })
+    except Exception:
+        pass
 
     SERVICE_STATE["status"] = "running"
 
