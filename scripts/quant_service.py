@@ -418,6 +418,37 @@ OTHER:
 
 You may pick any of 29 instruments (5 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not.
 
+GLOBAL MARKETS (use this 24/7 context, polled every 5 min):
+- `global_markets` includes US (S&P, NASDAQ, DOW, VIX), Asia (Nikkei, Hang Seng),
+  US sector ETFs (XLF/XLK/XLE for sector rotation), commodities (gold/WTI/silver),
+  crypto (BTC/ETH), and currencies (DXY/USDINR).
+- US market open ~7pm-1:30am IST. Asia ~5:30am-1:30pm IST. NSE 9:15am-3:30pm IST.
+- Treat BIG overnight moves (e.g., VIX +5%, oil +3%, NASDAQ -1%) as early-warning signals.
+  These often predict the NSE open direction and inform your morning thesis.
+- If global cues strongly disagree with NSE's opening direction, flag it. The morning
+  brief uses this to bias the pre-market plan.
+- Trading is still gated to 9:15-15:30 IST. Outside hours, your job is RESEARCH, not orders.
+
+REGRET MINIMIZATION (this matters more than you think):
+- A small loss on a wrong call is CHEAP. The expensive mistake is missing a 5× winner because
+  you waited for "more confirmation." If you have 60%+ conviction, TAKE THE TRADE.
+- Capital preservation matters when you don't have an edge. When you DO have an edge, you
+  grow capital by USING it. Sitting in cash while a real move runs away is the worst outcome.
+- If you've chosen HOLD 5+ times in a row, your bar is too high. Lower the threshold for the
+  next decision — re-read the events, look harder for the edge, and act if it's there.
+- "Mixed regime" is not HOLD. Mixed regime is "smaller position + tighter stop" — not zero.
+  The right answer is usually NIFTY/BANKNIFTY directional with 1/2 to 1/3 lot, NOT skip.
+- A 0.2% drift on the index ISN'T noise when you have 5+ sectors moving together. Drift +
+  sector confirmation = tradeable trend day. Don't require 3-min rapid_move + sector to act —
+  sometimes the move unfolds slowly and you have to commit on the slow drift.
+- If you find yourself writing 200+ char rationales on why to HOLD, that's a yellow flag.
+  200 chars is fine for a simple no. Long HOLD rationales usually = overthinking.
+
+WHAT KIND OF TRADER ARE YOU?
+- Capital preservation traders: HOLD on noise, miss trends, slowly bleed to fees + inflation
+- Trend followers with stops: take the L on bad calls (cheap), ride the winners (5-30×)
+  This system is wired for the SECOND profile. Act like it. Don't be a preservation trader.
+
 STRATEGY PLAYBOOK (consider these proactively, not just reactively — guidance, not mandatory rules):
 
 EVENTS YOU RECEIVE — interpret these carefully:
@@ -956,6 +987,7 @@ last_alpha_refresh_ts = 0           # 5 min during market hours: vol forecast, I
 last_chain_refresh_ts = 0           # 5 min during market hours: option chain analyzer (writes option_chains.json)
 last_dashboard_refresh_ts = 0       # 5 min during market hours: regenerates data_cache/dashboard.html
 last_periodic_scan_ts = 0           # 90 min during market hours: forced LLM scan + 3-line justification (transparency rule)
+last_global_check_ts = 0            # 5 min 24/7: pull US/Asia/Europe/gold/oil/crypto for LLM global context awareness
 
 # --- LLM call thread tracking (for non-blocking async LLM calls) ---
 _LLM_THREAD = None           # type: ignore  # the in-flight Thread object, or None
@@ -1473,7 +1505,7 @@ def watch_loop():
     global last_eod_backup_date, last_weekend_intel_date, last_weekly_summary_date
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
     global last_candle_refresh_ts, last_alpha_refresh_ts, last_chain_refresh_ts, last_dashboard_refresh_ts
-    global last_periodic_scan_ts
+    global last_periodic_scan_ts, last_global_check_ts
     while RUNNING:
         try:
             tick_count += 1
@@ -1495,6 +1527,7 @@ def watch_loop():
                     "paper": {k: paper.get(k) for k in ('cash', 'realized_pnl', 'positions', 'orders')},
                     "intraday": intraday,
                     "chains_summary": {sym: {'spot': c.get('spot'), 'atm': c.get('atm_strike')} for sym, c in chains.get('chains', {}).items() if 'error' not in c},
+                    "global_markets": _safe_read_json(DATA / "global_state.json", default={}),
                 }
                 # Spawn LLM call in a thread so the watch loop keeps scanning at 1Hz
                 # even if the LLM takes 1-3s to respond. This is the key to "live
@@ -1566,6 +1599,7 @@ def watch_loop():
                             "intraday": intraday,
                             "chains_summary": {sym: {'spot': c.get('spot'), 'atm': c.get('atm_strike')} for sym, c in chains.get('chains', {}).items() if 'error' not in c},
                             "candles": read_candles(),
+                            "global_markets": _safe_read_json(DATA / "global_state.json", default={}),
                             "alpha": _safe_read_json(DATA / "quant_alpha.json", default={}),
                             "trigger": "periodic_90min",
                         })
@@ -1576,6 +1610,24 @@ def watch_loop():
             if datetime.now().timestamp() - last_reconcile_ts > 300:
                 last_reconcile_ts = datetime.now().timestamp()
                 reconcile_outcomes()
+
+            # --- 24/7 global markets check (runs always, not just market hours) ---
+            # Pulls US/Asia/Europe/gold/oil/crypto/VIX so the LLM has overnight
+            # context. Trading is still gated to 9:15-15:30 IST, but the THINKING
+            # is 24/7 — pre-market briefs use US close, post-market reviews use
+            # Asia close, and unexpected overnight moves feed the morning brief.
+            if datetime.now().timestamp() - last_global_check_ts > 300:
+                last_global_check_ts = datetime.now().timestamp()
+                try:
+                    sys.path.insert(0, str(ROOT / "scripts"))
+                    from global_markets import write_global_state
+                    state = write_global_state()
+                    n_inst = len(state.get('instruments', {}))
+                    n_err = len(state.get('errors', []))
+                    if n_inst > 0:
+                        log(f"GLOBAL-CHECK: {n_inst} instruments, {n_err} errors")
+                except Exception as e:
+                    log(f"global-check-err: {e}")
 
             # --- Scheduled operations (replaces 23 paused Mavis crons) ---
             # Mon-Fri operations
