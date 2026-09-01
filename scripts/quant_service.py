@@ -429,6 +429,17 @@ OTHER:
 
 You may pick any of 29 instruments (5 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not.
 
+MACRO CALENDAR + POSITION MANAGEMENT:
+- `macro` block shows upcoming events (US NFP, FOMC, RBI policy, US CPI). HIGH-impact
+  events within 1-2 days = reduce size, prefer defined-risk plays. FII/DII flows
+  inform direction: positive FII = bullish bias, negative = bearish.
+- `trade_lessons` shows what worked/didn't in past trades. Read it before trading.
+- `open_position_analysis` shows your current open positions with P&L, time held,
+  and suggested actions (tighten_stop, take_partial_profit, close_soon, etc.).
+  If a position is going wrong, the LLM should consider adjustment BEFORE adding new.
+- For each trade, the journal automatically records: setup, market context at
+  entry, exit reason, P&L. The 23:00 nightly review reads the journal to self-improve.
+
 PROFIT ENGINE (this is the compound/edge system, USE IT):
 - `profit_state` shows: effective_capital (starting + compounded P&L), today's P&L,
   drawdown, consecutive losses, is_paused, sizing_recommendation.
@@ -1060,6 +1071,33 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
                               f"Effective capital Rs.{context['profit_state'].get('effective_capital', 0):,.0f}. "
                               f"Resume after manual review.",
             }
+    except Exception:
+        pass
+    # Macro calendar: upcoming events + FII/DII flows
+    try:
+        from macro_calendar import get_macro_state
+        context["macro"] = get_macro_state()
+    except Exception:
+        pass
+    # Trade journal: lessons learned from past trades
+    try:
+        from trade_journal import get_lessons
+        context["trade_lessons"] = get_lessons()
+    except Exception:
+        pass
+    # Open positions: run position adjuster on each (for the LLM to see P&L + suggested actions)
+    try:
+        from position_adjuster import analyze_position
+        paper = _safe_read_json(DATA / "paper_state.json", default={})
+        positions = paper.get("positions", {}) or {}
+        position_analysis = {}
+        for tid in list(positions.keys())[:5]:  # cap at 5 positions
+            try:
+                position_analysis[tid] = analyze_position(tid)
+            except Exception:
+                continue
+        if position_analysis:
+            context["open_position_analysis"] = position_analysis
     except Exception:
         pass
     user_content = (
