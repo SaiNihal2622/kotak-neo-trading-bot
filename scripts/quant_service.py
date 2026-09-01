@@ -79,6 +79,7 @@ LLM_MAX_TOKENS = 4000
 # Persistent state
 TICKS: dict[str, deque] = {}
 LAST_EVENT_SIG: dict[str, str] = {}
+LAST_SESSION_EVENT: dict[str, float] = {}  # dedup for session-wide move events (epoch seconds)
 HISTORY: deque = deque(maxlen=50)  # rolling LLM message history
 RUNNING = True
 SERVICE_STATE = {"status": "starting", "last_tick": None, "last_decision_at": None,
@@ -196,9 +197,52 @@ def read_chains() -> dict:
 
 
 def detect_events(intraday: dict, last_intraday: dict) -> list:
+    """Detect LLM-triggering events. Uses BOTH:
+    1. SESSION-WIDE moves from the candle engine (catches gradual drifts that
+       no single tick crosses the threshold but cumulative move does).
+    2. Tick-to-tick moves (PRICE_MOVE_PCT) from intraday_levels.json.
+    Also detects VWAP crosses and day-high/low touches.
+    """
     events = []
     cur = intraday.get('instruments', {})
     prev = last_intraday.get('instruments', {})
+    # 1. SESSION-WIDE moves from candle engine (live data, fixes stale intraday_levels)
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from candle_engine import get_engine
+        eng = get_engine()
+        for sym in list(eng.last_ltp.keys()):
+            ltp = eng.last_ltp.get(sym, 0)
+            if not ltp:
+                continue
+            # Session open: prefer the engine's tracked open (set on first tick of the day
+            # or yfinance-backfilled). Fall back to the first bar's open (only valid if
+            # the engine has been running since pre-market).
+            session_open = eng.get_session_open(sym)
+            if not session_open:
+                closed = list(eng.bars.get(sym, {}).get('1m', []))
+                current = eng.current.get(sym, {}).get('1m', {})
+                if closed:
+                    session_open = closed[0].get('o', 0)
+                elif current:
+                    session_open = current.get('o', 0)
+            if not session_open:
+                continue
+            chg = ltp - session_open
+            chg_pct = chg / session_open * 100
+            if abs(chg_pct) >= PRICE_MOVE_PCT:
+                last_fired_key = f"session_move:{sym}"
+                last_ts = LAST_SESSION_EVENT.get(last_fired_key, 0)
+                if time.time() - last_ts > 1800:  # dedup 30 min
+                    LAST_SESSION_EVENT[last_fired_key] = time.time()
+                    events.append({
+                        'type': 'session_move', 'symbol': sym,
+                        'pct': round(chg_pct, 3),
+                        'price': ltp, 'session_open': session_open,
+                    })
+    except Exception as e:
+        log(f"detect-events-candle-err: {e}")
+    # 2. Tick-to-tick + VWAP + level touches from intraday_levels.json
     for sym, lv in cur.items():
         if not lv or not isinstance(lv, dict):
             continue
@@ -502,7 +546,18 @@ def _candle_refresh() -> int:
         prices = fetch_live_prices()
         if prices:
             eng.tick_many(prices)
+        # Backfill today's session opens for any symbol still missing one
+        # (e.g. new symbols added, or yfinance was down on first try)
+        try:
+            eng.backfill_session_opens_from_yfinance()
+        except Exception:
+            pass
         eng.aggregate_to_file()
+        # Persist bars so they survive restarts
+        try:
+            eng.save_all()
+        except Exception:
+            pass
         return len(prices)
     except Exception as e:
         log(f"candle-refresh-err: {e}")
@@ -1283,8 +1338,8 @@ def watch_loop():
                 if datetime.now().timestamp() - last_chain_refresh_ts > 300:
                     last_chain_refresh_ts = datetime.now().timestamp()
                     _scheduled_subprocess("scripts/option_chain_analyzer.py", "chain-analyzer", timeout=120)
-                # Dashboard regeneration every 5 min during market hours
-                if datetime.now().timestamp() - last_dashboard_refresh_ts > 300:
+                # Dashboard regeneration every 1 min during market hours (faster updates)
+                if datetime.now().timestamp() - last_dashboard_refresh_ts > 60:
                     last_dashboard_refresh_ts = datetime.now().timestamp()
                     try:
                         from dashboard import main as _dash

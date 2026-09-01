@@ -45,6 +45,7 @@ DATA = ROOT / 'data_cache'
 CANDLES_DIR = DATA / 'candles'
 CANDLES_DIR.mkdir(parents=True, exist_ok=True)
 AGG_PATH = DATA / 'candles_aggregate.json'
+SESSION_OPENS_PATH = DATA / 'session_opens.json'
 
 # Symbols to track (28 instruments: 4 indices + 24 NIFTY-50 stocks)
 INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY']
@@ -87,6 +88,11 @@ class CandleEngine:
         self.last_ltp: dict[str, float] = {}
         # {symbol: last_volume}
         self.last_vol: dict[str, int] = {}
+        # {symbol: today's session open (set on first tick after 9:15, or from yfinance backfill)}
+        self.session_open: dict[str, float] = {}
+        # ISO date string of the session the opens above belong to
+        self.session_open_date: str = ""
+        self._load_session_opens()
 
     # ---------- tick ingestion ----------
 
@@ -102,6 +108,9 @@ class CandleEngine:
         epoch = int(ts.timestamp())
         self.last_ltp[symbol] = price
         self.last_vol[symbol] = volume
+        # Capture session open on first tick of the day (any tick between 9:15 and 15:30 IST)
+        # is good enough — once set, the open is fixed for the rest of the session.
+        self._maybe_capture_session_open(symbol, price, ts)
         for tf, tf_sec in TF_SECONDS.items():
             bar_epoch = epoch - (epoch % tf_sec)
             cur = self.current[symbol].get(tf)
@@ -137,14 +146,110 @@ class CandleEngine:
                     self.bars[sym][tf].append(cur)
             self.current[sym] = {}
 
+    # ---------- session open tracking ----------
+
+    def _maybe_capture_session_open(self, symbol: str, price: float, ts: datetime) -> None:
+        """Record today's session open on the first tick of the day.
+
+        Rules:
+        - Only between 9:15 IST (inclusive) and 15:30 IST (exclusive).
+        - Sticky per (date, symbol): once set for today's date, never overwritten.
+        - If the date changes (rollover), reset and re-capture.
+        """
+        try:
+            today = ts.strftime('%Y-%m-%d')
+            if self.session_open_date != today:
+                # New day — reset all session opens
+                self.session_open = {}
+                self.session_open_date = today
+            if symbol in self.session_open:
+                return  # already set
+            # 9:15–15:30 IST window (server uses local IST, no conversion needed)
+            h, m = ts.hour, ts.minute
+            minutes_since_midnight = h * 60 + m
+            if 9 * 60 + 15 <= minutes_since_midnight < 15 * 60 + 30:
+                self.session_open[symbol] = float(price)
+                self._persist_session_opens()
+        except Exception:
+            pass
+
+    def _load_session_opens(self) -> None:
+        try:
+            if SESSION_OPENS_PATH.exists():
+                d = json.loads(SESSION_OPENS_PATH.read_text(encoding='utf-8'))
+                self.session_open = {k: float(v) for k, v in d.get('opens', {}).items()}
+                self.session_open_date = d.get('date', '')
+        except Exception:
+            self.session_open = {}
+            self.session_open_date = ''
+
+    def _persist_session_opens(self) -> None:
+        try:
+            SESSION_OPENS_PATH.write_text(
+                json.dumps({'date': self.session_open_date, 'opens': self.session_open}, indent=2),
+                encoding='utf-8',
+            )
+        except Exception:
+            pass
+
+    def get_session_open(self, symbol: str) -> Optional[float]:
+        """Return today's session open for `symbol`, or None if not yet known."""
+        v = self.session_open.get(symbol)
+        if v:
+            return v
+        # Stale (yesterday's date) → drop and re-seed
+        if self.session_open_date and self.session_open_date != _now_ist().strftime('%Y-%m-%d'):
+            self.session_open = {}
+            self.session_open_date = ''
+        return None
+
+    def backfill_session_opens_from_yfinance(self) -> int:
+        """For each symbol without a session open today, fetch today's first 1m bar from
+        yfinance and use its Open as the session open. Returns number backfilled."""
+        today = _now_ist().strftime('%Y-%m-%d')
+        if self.session_open_date != today:
+            self.session_open = {}
+            self.session_open_date = today
+        try:
+            import yfinance as yf
+        except Exception:
+            return 0
+        ticker_map = {
+            'NIFTY': '^NSEI', 'BANKNIFTY': '^NSEBANK',
+            'INDIAVIX': '^INDIAVIX', 'USDINR': 'USDINR=X',
+        }
+        backfilled = 0
+        for sym in SYMBOLS:
+            if sym in self.session_open:
+                continue
+            tk = ticker_map.get(sym, f"{sym}.NS")
+            try:
+                t = yf.Ticker(tk)
+                hist = t.history(period='1d', interval='1m')
+                if hist is None or hist.empty:
+                    continue
+                # First bar of the day is the session open
+                first_ts = hist.index[0]
+                first_open = float(hist['Open'].iloc[0])
+                if first_open > 0:
+                    self.session_open[sym] = first_open
+                    backfilled += 1
+            except Exception:
+                continue
+        if backfilled:
+            self._persist_session_opens()
+        return backfilled
+
     # ---------- persistence ----------
 
     def save_bars(self, symbol: str, tf: str) -> None:
-        """Append-only persist bars for one symbol+tf."""
+        """Overwrite-persist the last 60 bars for one symbol+tf. Idempotent (no dupes on repeat calls)."""
         path = _bar_path(symbol, tf)
         try:
-            with path.open('a', encoding='utf-8') as f:
-                for bar in list(self.bars[symbol][tf])[-60:]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            bars = list(self.bars[symbol][tf])[-60:]
+            with path.open('w', encoding='utf-8') as f:
+                for bar in bars:
                     f.write(json.dumps(bar) + "\n")
         except Exception:
             pass
@@ -234,6 +339,11 @@ class CandleEngine:
                 'patterns': pat,
                 'volume_profile': vp,
                 'n_bars_1m': len(self.bars[sym]['1m']),
+                'session_open': self.session_open.get(sym),
+                'session_pct': (
+                    round((ltp - self.session_open[sym]) / self.session_open[sym] * 100, 3)
+                    if self.session_open.get(sym) and ltp else None
+                ),
             }
         try:
             AGG_PATH.write_text(json.dumps(snap, indent=2, default=str), encoding='utf-8')
@@ -526,6 +636,11 @@ def get_engine() -> CandleEngine:
         for sym in SYMBOLS:
             for tf in TF_SECONDS:
                 _ENGINE.load_history(sym, tf)
+        # Backfill today's session opens from yfinance (only for symbols without one)
+        try:
+            _ENGINE.backfill_session_opens_from_yfinance()
+        except Exception:
+            pass
     return _ENGINE
 
 

@@ -168,24 +168,36 @@ def load_events_today():
 
 
 def load_llm_decisions_full(n=15):
-    """Last N lines from decisions.jsonl with full context (event + market snapshot).
+    """Last N LLM calls with full context (event + market snapshot).
+    Reads from data_cache/quant_service_decisions.jsonl (the brain's own log).
+    Falls back to performance/decisions.jsonl for older entries.
     Filters out test records."""
-    p = PERF / "decisions.jsonl"
-    if not p.exists():
-        return []
     out = []
-    try:
-        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
-            try:
-                d = json.loads(line)
-                if d.get("decision_id", "").lower().startswith("test"): continue
-                if d.get("rationale", "").lower() == "test": continue
-                out.append(d)
-            except Exception:
-                continue
-    except Exception:
-        pass
-    return out[-n:][::-1]
+    for p in [DATA / "quant_service_decisions.jsonl", PERF / "decisions.jsonl"]:
+        if not p.exists():
+            continue
+        try:
+            for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+                try:
+                    d = json.loads(line)
+                    # Test record filter (legacy schema)
+                    if d.get("decision_id", "").lower().startswith("test"): continue
+                    if d.get("rationale", "").lower() == "test": continue
+                    out.append(d)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    # Dedupe by ts (the same call might be in both files)
+    seen = set()
+    deduped = []
+    for d in out:
+        k = (d.get("ts") or d.get("decision_id") or json.dumps(d, sort_keys=True))[:60]
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(d)
+    return deduped[-n:][::-1]
 
 
 def load_bot_log_tail(n: int = 50):
@@ -384,11 +396,21 @@ def render_candles_with_indicators(candles):
         vwap_dev = ind.get("vwap_dev_pct")
         pat = c.get("patterns", [])
         pat_html = " ".join(f'<span class="pat-chip">{p["name"]}</span>' for p in pat) or '<span class="muted">none</span>'
-        # Day change calc (first close vs last close)
-        first_c = closes[0] if closes else c.get("ltp", 0)
-        last_c = closes[-1] if closes else c.get("ltp", 0)
-        chg = (last_c - first_c) if first_c else 0
-        chg_pct = (chg / first_c * 100) if first_c else 0
+        # Day change calc: prefer the engine's session_open (today's 9:15 open,
+        # backfilled from yfinance on engine init). Fall back to first close.
+        ltp = c.get("ltp", 0)
+        sess_open = c.get("session_open")
+        if sess_open:
+            first_c = sess_open
+            chg = ltp - first_c
+            chg_pct = (chg / first_c * 100) if first_c else 0
+            chg_source = "open"
+        else:
+            first_c = closes[0] if closes else ltp
+            last_c = closes[-1] if closes else ltp
+            chg = (last_c - first_c) if first_c else 0
+            chg_pct = (chg / first_c * 100) if first_c else 0
+            chg_source = "bars"
         chg_color = "pos" if chg > 0 else "neg" if chg < 0 else "muted"
         def chip(label, val, fmt="{:+.2f}"):
             if val is None: return f'<span class="chip muted">{label}: —</span>'
@@ -559,7 +581,7 @@ def render_exec_quality(alpha):
     '''
 
 
-def render_recent_decisions(decisions, brain_state, mavis_plan):
+def render_recent_decisions(decisions, brain_state, mavis_plan, decisions_full=None):
     """LLM audit trail + brain status + active Mavis plan."""
     n = len(decisions)
     n_today = 0
@@ -569,6 +591,29 @@ def render_recent_decisions(decisions, brain_state, mavis_plan):
             n_today += 1
     events = brain_state.get("events_fired", 0) if brain_state else 0
     llm_calls = brain_state.get("llm_calls", 0) if brain_state else 0
+    # Build a one-line summary of the most recent decision (for the brain status panel).
+    # Prefer decisions_full (new format from quant_service_decisions.jsonl) over the
+    # legacy `decisions` list, so brain state always reflects the latest LLM call.
+    latest_decision_summary = "no decisions yet"
+    src = (decisions_full or decisions) if (decisions_full or decisions) else []
+    if src:
+        d = src[0]
+        ts = (d.get("ts") or "")[11:19] or "—"
+        # New format (from quant_service_decisions.jsonl): decision is nested
+        if "decision" in d and isinstance(d["decision"], dict):
+            dec = d["decision"]
+            action = dec.get("action") or dec.get("type") or "?"
+            note = (dec.get("note") or dec.get("rationale") or "")[:80]
+            ev = d.get("event") or {}
+            ev_sym = ev.get("symbol") or ""
+            ev_pct = ev.get("pct")
+            ev_str = f"{ev_sym} ({ev_pct:+.2f}%)" if ev_sym and ev_pct is not None else ""
+        else:
+            # Legacy format
+            action = d.get("action_type") or d.get("action") or d.get("type") or "?"
+            note = (d.get("rationale") or "")[:80]
+            ev_str = ""
+        latest_decision_summary = f"{ts} <b>{action}</b> {ev_str} {('— ' + note) if note else ''}".strip()
     rows = []
     for d in decisions[:8]:
         action = d.get("action") or d.get("type") or "?"
@@ -632,7 +677,7 @@ def render_recent_decisions(decisions, brain_state, mavis_plan):
           <dt>LLM calls (cumulative)</dt><dd>{llm_calls}</dd>
           <dt>LLM decisions today</dt><dd>{n_today}</dd>
           <dt>Total LLM trades (history)</dt><dd>{n}</dd>
-          <dt>Why no trades yet?</dt><dd class="muted small">No price move &gt; 0.3% detected today. Threshold: 0.3% on NIFTY ≈ 72pt, on BANKNIFTY ≈ 172pt.</dd>
+          <dt>Latest decision</dt><dd class="muted small">{latest_decision_summary}</dd>
         </div>'''
     return f'''
     <section class="card"><h2>LLM Decisions &amp; Brain</h2>
@@ -661,7 +706,12 @@ def render_live_decisions(decisions_full):
         ts = d.get("ts", "")[:19]
         decision = d.get("decision", {}) or {}
         action = decision.get("action") or decision.get("type") or "?"
-        underlying = decision.get("underlying") or decision.get("symbol") or "?"
+        underlying = decision.get("underlying") or decision.get("symbol") or ""
+        # For HOLD decisions, show the symbol that triggered the largest event instead of "?"
+        if not underlying:
+            ctx = d.get("context", {}) or {}
+            biggest = ctx.get("largest_event") or {}
+            underlying = biggest.get("symbol") or d.get("event", {}).get("symbol") or "—"
         strategy = decision.get("strategy") or "—"
         rationale = (decision.get("rationale") or decision.get("note") or "")[:200]
         target = decision.get("target")
@@ -734,14 +784,36 @@ def render_why_not(events_today, brain_state):
     n_events = len(events_today)
     llm_calls = brain_state.get("llm_calls", 0) if brain_state else 0
     if n_events == 0 and llm_calls == 0:
+        # Compute the real biggest move from the candle aggregate (uses session_open if available)
+        biggest_html = '<span class="muted">no live data</span>'
+        try:
+            agg_path = ROOT / "data_cache" / "candles_aggregate.json"
+            if agg_path.exists():
+                import json as _json
+                agg = _json.loads(agg_path.read_text(encoding='utf-8'))
+                moves = []
+                for sym, c in (agg.get("symbols") or {}).items():
+                    p = c.get("session_pct")
+                    if p is not None:
+                        moves.append((sym, float(p), c.get("session_open"), c.get("ltp")))
+                if moves:
+                    moves.sort(key=lambda m: abs(m[1]), reverse=True)
+                    sym, pct, opn, ltp = moves[0]
+                    biggest_html = (
+                        f'<strong>{sym} {pct:+.3f}%</strong> '
+                        f'(open ₹{opn:,.2f} → ₹{ltp:,.2f})'
+                    )
+        except Exception:
+            pass
         return f'''
         <section class="card"><h2>Why Not (Decisions We Didn't Take)</h2>
         <div class="kv">
           <dt>Scans today</dt><dd>{n_events}</dd>
           <dt>LLM calls today</dt><dd>{llm_calls}</dd>
           <dt>Events fired (≥ 0.3% move)</dt><dd>0</dd>
+          <dt>Biggest move today (live)</dt><dd>{biggest_html}</dd>
         </div>
-        <p class="muted small">No significant price moves today. The watch loop scans every 2s but only fires events when a price moves > 0.3% (≈ 72pt on NIFTY, 172pt on BANKNIFTY). Today's biggest move: <strong>~+0.12% (FINNIFTY)</strong> — well below threshold. The LLM brain is correctly staying quiet.</p>
+        <p class="muted small">The watch loop scans every 2s but only fires events when a price moves &gt; 0.3% (≈ 72pt on NIFTY, 172pt on BANKNIFTY) from session open. Today's biggest move: {biggest_html} — well below threshold. The LLM brain is correctly staying quiet.</p>
         <p class="muted small">When the LLM does fire, you'll see the full decision (event trigger, context snapshot, LLM rationale, expected target/stop) in the "Live LLM Decisions" section above.</p>
         </section>
         '''
@@ -1159,7 +1231,7 @@ def main() -> int:
         risk=render_risk(alpha),
         exec_quality=render_exec_quality(alpha),
         positions=render_positions(paper),
-        decisions=render_recent_decisions(decisions, brain_state, mavis_plan),
+        decisions=render_recent_decisions(decisions, brain_state, mavis_plan, decisions_full=decisions_full),
         live_decisions=render_live_decisions(decisions_full),
         why_not=render_why_not(events_today, brain_state),
         iron_condor=render_iron_condor_payoff(paper),
