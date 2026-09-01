@@ -110,20 +110,25 @@ def load_perf():
 
 
 def load_decisions(n: int = 20):
-    """Last N lines from decisions.jsonl (the LLM's decision audit trail)."""
+    """Last N lines from decisions.jsonl (the LLM's decision audit trail).
+    Filters out test records (decision_id starting with 'test' or rationale='test')."""
     p = PERF / "decisions.jsonl"
     if not p.exists():
         return []
     out = []
     try:
-        for line in p.read_text(encoding='utf-8', errors='ignore').splitlines()[-n:]:
+        for line in p.read_text(encoding='utf-8', errors='ignore').splitlines():
             try:
-                out.append(json.loads(line))
+                d = json.loads(line)
+                # Filter out test records
+                if d.get("decision_id", "").lower().startswith("test"): continue
+                if d.get("rationale", "").lower() == "test": continue
+                out.append(d)
             except Exception:
                 continue
     except Exception:
         pass
-    return list(reversed(out))
+    return out[-n:][::-1]  # last N, most recent first
 
 
 def load_mavis_plan():
@@ -163,20 +168,24 @@ def load_events_today():
 
 
 def load_llm_decisions_full(n=15):
-    """Last N lines from decisions.jsonl with full context (event + market snapshot)."""
+    """Last N lines from decisions.jsonl with full context (event + market snapshot).
+    Filters out test records."""
     p = PERF / "decisions.jsonl"
     if not p.exists():
         return []
     out = []
     try:
-        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines()[-n:]:
+        for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
             try:
-                out.append(json.loads(line))
+                d = json.loads(line)
+                if d.get("decision_id", "").lower().startswith("test"): continue
+                if d.get("rationale", "").lower() == "test": continue
+                out.append(d)
             except Exception:
                 continue
     except Exception:
         pass
-    return list(reversed(out))
+    return out[-n:][::-1]
 
 
 def load_bot_log_tail(n: int = 50):
