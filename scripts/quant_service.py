@@ -994,6 +994,43 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             context["recent_performance"] = recent_perf
     except Exception:
         pass
+    # Augment with helper tools (pre-computed so the LLM has them on hand)
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from llm_helpers import find_similar_setups, select_strike_for_delta, pre_mortem
+        # Find similar past setups for the relevant strategy
+        # If events contain a strategy hint, use it; else use null (returns all)
+        ctx_chains = context.get("chains_summary") or {}
+        spot = next((c.get("spot") for c in ctx_chains.values() if c.get("spot")), 0)
+        # Get similar setups (all strategies, top 3)
+        similar = find_similar_setups(strategy=None, n=3)
+        context["similar_setups"] = similar
+        # If we have a spot, compute ATM delta strikes for reference
+        if spot:
+            strikes_pe = select_strike_for_delta(spot, 0.30, "PE", iv=0.13, dte_days=1)
+            strikes_ce = select_strike_for_delta(spot, 0.30, "CE", iv=0.13, dte_days=1)
+            context["strike_suggestions"] = {"atm_pe": strikes_pe, "atm_ce": strikes_ce, "spot": spot}
+    except Exception:
+        pass
+    # Pre-mortem for the dominant event type (if any)
+    try:
+        from llm_helpers import pre_mortem
+        if events:
+            # Infer strategy from the first event's context
+            primary_event = events[0]
+            if primary_event.get("type") == "rapid_move_3m" or primary_event.get("type") == "rapid_move_5m":
+                if primary_event.get("pct", 0) < 0:
+                    primary_strat = "long_put"
+                else:
+                    primary_strat = "long_call"
+            elif primary_event.get("type") == "session_move":
+                primary_strat = "iron_condor"  # default
+            else:
+                primary_strat = "iron_condor"
+            pm = pre_mortem(primary_strat, context)
+            context["pre_mortem"] = pm
+    except Exception:
+        pass
     user_content = (
         f"EVENT(S) DETECTED: {json.dumps(events, default=str)[:2000]}\n\n"
         f"FULL STATE: {json.dumps(context, default=str)[:14000]}\n\n"
@@ -1742,6 +1779,14 @@ def watch_loop():
                 if _now.hour == 8 and 15 <= _now.minute < 20 and last_morning_brief_date != _now.date():
                     last_morning_brief_date = _now.date()
                     log("SCHED-MORNING-BRIEF: triggering (08:15)")
+                    # Run the multi-step morning workflow inline (not subprocess)
+                    try:
+                        from llm_helpers import run_morning_brief
+                        mb = run_morning_brief()
+                        log(f"MORNING-BRIEF: thesis={mb.get('thesis', {}).get('expected_nse_open', '?')}")
+                        SERVICE_STATE["last_morning_brief"] = mb
+                    except Exception as e:
+                        log(f"morning-brief-err: {e}")
                     _scheduled_subprocess("scripts/mavis_premarket.py", "morning-brief", timeout=60)
                 # 08:25 daily maintenance: re-auth, self-test, power plan, reconcile
                 if _now.hour == 8 and 25 <= _now.minute < 30 and last_daily_maint_date != _now.date():
