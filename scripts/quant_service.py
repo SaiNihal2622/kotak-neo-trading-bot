@@ -68,10 +68,11 @@ ACTIONS = DATA / 'quant_actions.json'
 PORT = 8503
 
 # Tunables
-TICK_SEC = 2.0
-PRICE_MOVE_PCT = 0.3
+TICK_SEC = 1.0            # Watch loop scans every 1 sec (was 2s) — "live sec by sec" mode
+PRICE_MOVE_PCT = 0.2      # Lower threshold (was 0.3) — catches more index moves (e.g. today's −0.31%)
 LEVEL_TOUCH_PCT = 0.05
-DEDUP_SEC = 30
+DEDUP_SEC = 5             # Same event-type+symbol won't re-fire within 5s (was 30s) — fast re-eval
+SESSION_MOVE_DEDUP_SEC = 300  # Session-wide moves per symbol re-evaluate every 5 min (was 30 min)
 MIN_DATA_POINTS = 5
 LLM_MODEL = "MiniMax-M3"
 LLM_MAX_TOKENS = 4000
@@ -252,7 +253,7 @@ def detect_events(intraday: dict, last_intraday: dict) -> list:
             if abs(chg_pct) >= PRICE_MOVE_PCT:
                 last_fired_key = f"session_move:{sym}"
                 last_ts = LAST_SESSION_EVENT.get(last_fired_key, 0)
-                if time.time() - last_ts > 1800:  # dedup 30 min
+                if time.time() - last_ts > SESSION_MOVE_DEDUP_SEC:  # 5 min default
                     LAST_SESSION_EVENT[last_fired_key] = time.time()
                     events.append({
                         'type': 'session_move', 'symbol': sym,
@@ -872,6 +873,54 @@ last_chain_refresh_ts = 0           # 5 min during market hours: option chain an
 last_dashboard_refresh_ts = 0       # 5 min during market hours: regenerates data_cache/dashboard.html
 last_periodic_scan_ts = 0           # 90 min during market hours: forced LLM scan + 3-line justification (transparency rule)
 
+# --- LLM call thread tracking (for non-blocking async LLM calls) ---
+_LLM_THREAD = None           # type: ignore  # the in-flight Thread object, or None
+_LLM_LOCK = None             # lazy-initialized threading.Lock
+
+
+def _llm_in_flight() -> bool:
+    """Return True if an LLM call is currently running in a background thread."""
+    global _LLM_THREAD
+    if _LLM_THREAD is None:
+        return False
+    if _LLM_THREAD.is_alive():
+        return True
+    # Thread finished — clean up
+    _LLM_THREAD = None
+    return False
+
+
+def _spawn_llm_thread(events: list, context: dict, paper: dict) -> None:
+    """Fire-and-forget LLM call in a background thread. The watch loop continues
+    at 1Hz regardless of LLM latency. If the LLM is already in flight, the
+    caller is expected to skip (don't pile up calls)."""
+    global _LLM_THREAD
+    if _LLM_THREAD is not None and _LLM_THREAD.is_alive():
+        return  # shouldn't reach here if _llm_in_flight() was checked
+
+    def _runner():
+        try:
+            decision = invoke_llm_decision(events, context)
+            SERVICE_STATE["last_decision_at"] = now_iso()
+            ctx_snapshot = {
+                "largest_event": max(events, key=lambda e: abs(e.get("pct", 0))) if events else None,
+                "n_events": len(events),
+                "ltp_by_event": {e.get("symbol"): e.get("price") for e in events if e.get("symbol")},
+                "cash": paper.get("cash"),
+                "open_positions": len(paper.get("positions", {})),
+            }
+            write_decision(decision, context_snapshot=ctx_snapshot, event=events[0] if events else None)
+            log(f"LLM-DECISION: {decision.get('type')} {decision.get('underlying', '')} {decision.get('strategy', '')} legs={len(decision.get('legs') or [])}")
+        except Exception as e:
+            log(f"llm-thread-err: {e}")
+        finally:
+            global _LLM_THREAD
+            _LLM_THREAD = None
+
+    import threading
+    _LLM_THREAD = threading.Thread(target=_runner, daemon=True)
+    _LLM_THREAD.start()
+
 
 def _periodic_scan(context: dict) -> dict:
     """Periodic LLM scan (every 90 min during market hours).
@@ -1363,17 +1412,14 @@ def watch_loop():
                     "intraday": intraday,
                     "chains_summary": {sym: {'spot': c.get('spot'), 'atm': c.get('atm_strike')} for sym, c in chains.get('chains', {}).items() if 'error' not in c},
                 }
-                decision = invoke_llm_decision(events, context)
-                SERVICE_STATE["last_decision_at"] = now_iso()
-                # Build a compact context snapshot for the decision log
-                ctx_snapshot = {
-                    "largest_event": max(events, key=lambda e: abs(e.get("pct", 0))) if events else None,
-                    "n_events": len(events),
-                    "ltp_by_event": {e.get("symbol"): e.get("price") for e in events if e.get("symbol")},
-                    "cash": paper.get("cash"),
-                    "open_positions": len(paper.get("positions", {})),
-                }
-                write_decision(decision, context_snapshot=ctx_snapshot, event=events[0] if events else None)
+                # Spawn LLM call in a thread so the watch loop keeps scanning at 1Hz
+                # even if the LLM takes 1-3s to respond. This is the key to "live
+                # sec by sec" — events are detected at 1Hz; LLM evaluates them
+                # asynchronously.
+                if not _llm_in_flight():
+                    _spawn_llm_thread(events, context, paper)
+                else:
+                    log(f"EVENT: {len(events)} skipped (LLM still in flight from previous call)")
             # EOD self-eval at 15:30 IST (market close) — runs once per day
             from datetime import datetime as _dt
             _now = _dt.now()
