@@ -429,6 +429,21 @@ OTHER:
 
 You may pick any of 29 instruments (5 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not.
 
+PROFIT ENGINE (this is the compound/edge system, USE IT):
+- `profit_state` shows: effective_capital (starting + compounded P&L), today's P&L,
+  drawdown, consecutive losses, is_paused, sizing_recommendation.
+- `strategy_performance` shows ACTUAL P&L per strategy:
+    iron_condor: 4 wins / 9 total / win_rate 44% / Kelly size 3.7% — YOUR BEST EDGE.
+    Others: 0 wins. If you don't know the setup, lean on what works.
+- `strategy_recommendation` ranks strategies by P&L. The LLM should bias
+  decisions toward high-PnL strategies, not experiment on unknowns.
+- `is_paused=True` = circuit breaker. Respect it. Manual review needed.
+- Max risk per trade = 1% of EFFECTIVE capital (not starting). So as you
+  compound, position size grows automatically. As you draw down, it shrinks.
+  This is the compounding engine — use it.
+- If you have a 4-win iron_condor setup in range regime, take it. The
+  data says it works. Don't reinvent.
+
 GLOBAL MARKETS (use this 24/7 context, polled every 5 min):
 - `global_markets` includes US (S&P, NASDAQ, DOW, VIX), Asia (Nikkei, Hang Seng),
   US sector ETFs (XLF/XLK/XLE for sector rotation), commodities (gold/WTI/silver),
@@ -1031,6 +1046,22 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             context["pre_mortem"] = pm
     except Exception:
         pass
+    # Profit engine: compounding, Kelly sizing, circuit breakers
+    try:
+        from profit_engine import get_profit_state, get_strategy_recommendation
+        context["profit_state"] = get_profit_state()
+        context["strategy_recommendation"] = get_strategy_recommendation()
+        # Check if paused — if so, override to HOLD
+        if context["profit_state"].get("is_paused"):
+            return {
+                "type": "HOLD",
+                "note": f"profit_engine_paused: {context['profit_state'].get('pause_reason', '?')}",
+                "rationale": f"Circuit breaker active: {context['profit_state'].get('pause_reason', '?')}. "
+                              f"Effective capital Rs.{context['profit_state'].get('effective_capital', 0):,.0f}. "
+                              f"Resume after manual review.",
+            }
+    except Exception:
+        pass
     user_content = (
         f"EVENT(S) DETECTED: {json.dumps(events, default=str)[:2000]}\n\n"
         f"FULL STATE: {json.dumps(context, default=str)[:14000]}\n\n"
@@ -1525,6 +1556,14 @@ def run_nightly_improvement() -> dict:
         summary = get_daily_summary()
         strategies = get_strategy_performance()
         drawdown = get_drawdown_recent()
+        # Profit engine: read real P&L state and strategy recommendations
+        try:
+            from profit_engine import get_profit_state, get_strategy_recommendation
+            profit_state = get_profit_state()
+            strategy_rec = get_strategy_recommendation()
+        except Exception:
+            profit_state = {}
+            strategy_rec = {}
         # Read recent decisions
         recent = []
         decisions_path = DATA / "performance" / "decisions.jsonl"
@@ -1549,6 +1588,13 @@ def run_nightly_improvement() -> dict:
             f"  Max drawdown: Rs.{drawdown.get('max_dd', 0):,.0f}\n"
             f"  Profit factor: {summary.get('profit_factor', 0):.2f}\n\n"
             f"By strategy: {json.dumps(strategies, default=str)[:1500]}\n\n"
+            f"PROFIT ENGINE STATE (real P&L data — use this!):\n"
+            f"  Effective capital: Rs.{profit_state.get('effective_capital', 0):,.0f}\n"
+            f"  Total compounded P&L: Rs.{profit_state.get('compounded_pnl', 0):+,.0f}\n"
+            f"  Today's P&L: Rs.{profit_state.get('today_pnl', 0):+,.0f}\n"
+            f"  Drawdown: {profit_state.get('drawdown_pct', 0):.1f}%\n"
+            f"  Strategy recommendation: {strategy_rec.get('recommendation', '?')}\n"
+            f"  Per-strategy Kelly sizes: {json.dumps({k: v.get('kelly_size_pct', 0) for k, v in (profit_state.get('strategy_performance') or {}).items()}, default=str)}\n\n"
             f"Last 20 decisions: {json.dumps(recent[-10:], default=str)[:5000]}\n\n"
             "Reflect and output strict JSON:\n"
             "{\n"
