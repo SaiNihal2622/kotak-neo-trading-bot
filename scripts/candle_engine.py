@@ -47,8 +47,11 @@ CANDLES_DIR.mkdir(parents=True, exist_ok=True)
 AGG_PATH = DATA / 'candles_aggregate.json'
 SESSION_OPENS_PATH = DATA / 'session_opens.json'
 
-# Symbols to track (28 instruments: 4 indices + 24 NIFTY-50 stocks)
-INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY']
+# Symbols to track (29 instruments: 5 indices + 24 NIFTY-50 stocks)
+# SENSEX added: BSE index, more volatile, has option chain coverage.
+# Note: SENSEX opens at 09:55 IST (not 09:15) — engine tolerates the gap and
+# backfills session_open from the first tick after the engine is up.
+INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX']
 STOCKS = [
     'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'ITC', 'SBIN',
     'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK', 'ASIANPAINT', 'MARUTI',
@@ -216,6 +219,7 @@ class CandleEngine:
             return 0
         ticker_map = {
             'NIFTY': '^NSEI', 'BANKNIFTY': '^NSEBANK',
+            'SENSEX': '^BSESN',
             'INDIAVIX': '^INDIAVIX', 'USDINR': 'USDINR=X',
         }
         backfilled = 0
@@ -284,7 +288,7 @@ class CandleEngine:
         try:
             import yfinance as yf
             ticker_map = {
-                'NIFTY': '^NSEI', 'BANKNIFTY': '^NSEBANK',
+                'NIFTY': '^NSEI', 'BANKNIFTY': '^NSEBANK', 'SENSEX': '^BSESN',
                 'INDIAVIX': '^INDIAVIX', 'USDINR': 'USDINR=X',
                 'WTI': 'CL=F', 'BRENT': 'BZ=F', 'GOLD': 'GC=F',
                 'SP500': '^GSPC', 'NASDAQ': '^IXIC', 'DOW': '^DJI',
@@ -664,22 +668,27 @@ def fetch_live_prices() -> dict[str, float]:
                 return out
     except Exception:
         pass
-    # Fallback: yfinance
-    try:
-        import yfinance as yf
-        ticker_map = {'NIFTY': '^NSEI', 'BANKNIFTY': '^NSEBANK', 'FINNIFTY': 'NIFTY_FIN_SERVICE.NS',
-                      'MIDCPNIFTY': 'NIFTY_MIDCAP_100.NS'}
-        for sym in SYMBOLS:
-            tk = ticker_map.get(sym, f"{sym}.NS")
-            try:
-                t = yf.Ticker(tk)
-                hist = t.history(period='1d')
-                if hist is not None and not hist.empty:
-                    out[sym] = float(hist['Close'].iloc[-1])
-            except Exception:
-                continue
-    except Exception:
-        pass
+    # Per-symbol yfinance fallback for any symbol KotakProdFeed didn't return
+    # (e.g. SENSEX — BSE not in PROD by default; TATAMOTORS — delisted on yfinance).
+    missing = [s for s in SYMBOLS if s not in out]
+    if missing:
+        try:
+            import yfinance as yf
+            ticker_map = {
+                'NIFTY': '^NSEI', 'BANKNIFTY': '^NSEBANK', 'SENSEX': '^BSESN',
+                'FINNIFTY': 'NIFTY_FIN_SERVICE.NS', 'MIDCPNIFTY': 'NIFTY_MIDCAP_100.NS',
+            }
+            for sym in missing:
+                tk = ticker_map.get(sym, f"{sym}.NS")
+                try:
+                    t = yf.Ticker(tk)
+                    hist = t.history(period='1d')
+                    if hist is not None and not hist.empty:
+                        out[sym] = float(hist['Close'].iloc[-1])
+                except Exception:
+                    continue
+        except Exception:
+            pass
     return out
 
 

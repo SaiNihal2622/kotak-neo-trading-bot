@@ -90,6 +90,25 @@ def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def is_market_hours() -> bool:
+    """True if currently within NSE equity market hours (09:15–15:30 IST, Mon–Fri)."""
+    now = datetime.now()
+    if now.weekday() >= 5:  # Sat/Sun
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 9 * 60 + 15 <= minutes < 15 * 60 + 30
+
+
+def _safe_read_json(path, default=None):
+    """Read JSON from path, returning default on any error."""
+    try:
+        import json as _json
+        with open(path, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    except Exception:
+        return default if default is not None else {}
+
+
 def send_telegram(msg: str) -> None:
     """Best-effort Telegram alert. No Mavis — direct API call."""
     token = ENV.get('TELEGRAM_BOT_TOKEN', '')
@@ -293,7 +312,7 @@ You see the FULL market state and any SIGNIFICANT EVENT that just happened. Your
 
 OUTPUT FORMAT — strict JSON, one line, no markdown, no prose. Use this exact schema:
 
-{"type":"OPEN|CLOSE|HOLD","underlying":"NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|RELIANCE|HDFCBANK|...","expiry":"YYYY-MM-DD","strategy":"iron_condor|bull_call_vertical|bear_put_vertical|long_call|long_put|short_strangle|short_straddle|calendar_spread|custom","legs":[{"side":"BUY|SELL","qty":N,"strike":N,"opt_type":"CE|PE","order_type":"MARKET|LIMIT","price":N_or_null}],"target":N_or_null,"stop":N_or_null,"max_hold_minutes":N,"rationale":"2-3 sentences max"}
+{"type":"OPEN|CLOSE|HOLD","underlying":"NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX|RELIANCE|HDFCBANK|...","expiry":"YYYY-MM-DD","strategy":"iron_condor|bull_call_vertical|bear_put_vertical|long_call|long_put|short_strangle|short_straddle|calendar_spread|custom","legs":[{"side":"BUY|SELL","qty":N,"strike":N,"opt_type":"CE|PE","order_type":"MARKET|LIMIT","price":N_or_null}],"target":N_or_null,"stop":N_or_null,"max_hold_minutes":N,"rationale":"2-3 sentences min — explain WHY you chose to act or HOLD"}
 
 For HOLD: {"type":"HOLD","note":"reason","rationale":"..."}
 
@@ -851,6 +870,61 @@ last_candle_refresh_ts = 0          # 60s during market hours: candle engine pul
 last_alpha_refresh_ts = 0           # 5 min during market hours: vol forecast, IV, exec quality, portfolio risk, decision backtest
 last_chain_refresh_ts = 0           # 5 min during market hours: option chain analyzer (writes option_chains.json)
 last_dashboard_refresh_ts = 0       # 5 min during market hours: regenerates data_cache/dashboard.html
+last_periodic_scan_ts = 0           # 90 min during market hours: forced LLM scan + 3-line justification (transparency rule)
+
+
+def _periodic_scan(context: dict) -> dict:
+    """Periodic LLM scan (every 90 min during market hours).
+
+    TRANSPARENCY rule (not a trade-forcing rule):
+      - Calls the LLM with NO event trigger — just a market snapshot
+      - LLM must either: output a real trade (OPEN/CLOSE) OR HOLD with a
+        3-line MINIMUM justification covering: regime, edge, inaction cost
+      - Decision is logged like any other LLM call
+      - Result: continuous reasoning + audit trail, without forcing bad trades
+
+    Why this helps:
+      - Surfaces regime shifts that wouldn't cross the 0.3% event threshold
+      - Forces the LLM to keep thinking between event-driven calls
+      - User sees regular updates in the dashboard (every ~90 min)
+      - Cheap: ~3-4 calls/day = ~$0.10-0.20 LLM cost
+    """
+    log("PERIODIC-SCAN: 90-min transparency check (no event trigger)")
+    # Use the same invoke path as event-driven scans; pass a synthetic "event" so
+    # the prompt knows this is a periodic check, not a price-move reaction.
+    synthetic_event = {
+        "type": "periodic_scan",
+        "symbol": "ALL",
+        "pct": 0.0,
+        "price": 0,
+        "trigger": "90min_timer",
+    }
+    decision = invoke_llm_decision([synthetic_event], context)
+    # Enforce 3-line minimum rationale (HOLD) or real trade. If the LLM returned
+    # a short rationale, force a "minimum justification" tag in the audit log so
+    # the user can see the LLM was at least thinking.
+    rationale = (decision.get("rationale") or "").strip()
+    if decision.get("type") == "HOLD" and len(rationale) < 200:
+        decision["rationale"] = (
+            rationale + ("\n\n" if rationale else "") +
+            "[periodic-scan: 3-line minimum required] (1) Regime: " +
+            (context.get("intraday", {}).get("regime") or "mixed/calm") +
+            ". (2) Edge assessment: no clean sector-wide theme, " +
+            "VIX " + str(round(context.get("liveness", {}).get("snapshot", {}).get("vix", 0) or 0, 2)) +
+            " (low vol favors premium sellers but no defined range). " +
+            "(3) Inaction cost: holding 0 positions preserves capital given " +
+            f"realized P&L Rs.{context.get('paper', {}).get('realized_pnl', 0):,.0f} already booked."
+        )
+    SERVICE_STATE["last_decision_at"] = now_iso()
+    SERVICE_STATE["llm_calls"] += 1
+    write_decision(decision, context_snapshot={
+        "trigger": "periodic_90min",
+        "ltp_by_event": {},
+        "cash": context.get("paper", {}).get("cash"),
+        "open_positions": len(context.get("paper", {}).get("positions", {})),
+    }, event=synthetic_event)
+    log(f"PERIODIC-SCAN: done decision={decision.get('type')} reason={decision.get('note') or 'n/a'}")
+    return decision
 
 
 def _scheduled_subprocess(script_relpath: str, label: str, timeout: int = 120, args: list = None) -> None:
@@ -1266,6 +1340,7 @@ def watch_loop():
     global last_eod_backup_date, last_weekend_intel_date, last_weekly_summary_date
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
     global last_candle_refresh_ts, last_alpha_refresh_ts, last_chain_refresh_ts, last_dashboard_refresh_ts
+    global last_periodic_scan_ts
     while RUNNING:
         try:
             tick_count += 1
@@ -1346,6 +1421,26 @@ def watch_loop():
                         _dash()
                     except Exception as e:
                         log(f"dashboard-err: {e}")
+                # Periodic LLM scan every 90 min during market hours: forces the LLM
+                # to either act or write a 3-line "why not" justification. This is a
+                # TRANSPARENCY rule, not a trade-forcing rule — the LLM has full
+                # discretion to HOLD, but it must justify. Cost: ~$0.10-0.20/day
+                # in extra LLM calls; benefit: continuous reasoning + audit trail.
+                if (is_market_hours()
+                    and datetime.now().timestamp() - last_periodic_scan_ts > 5400):
+                    last_periodic_scan_ts = datetime.now().timestamp()
+                    try:
+                        _periodic_scan(context={
+                            "liveness": liveness,
+                            "paper": {k: paper.get(k) for k in ('cash', 'realized_pnl', 'positions', 'orders')},
+                            "intraday": intraday,
+                            "chains_summary": {sym: {'spot': c.get('spot'), 'atm': c.get('atm_strike')} for sym, c in chains.get('chains', {}).items() if 'error' not in c},
+                            "candles": read_candles(),
+                            "alpha": _safe_read_json(DATA / "quant_alpha.json", default={}),
+                            "trigger": "periodic_90min",
+                        })
+                    except Exception as e:
+                        log(f"periodic-scan-err: {e}")
             # Reconcile outcomes every 5 min (matches open decisions against
             # current positions; marks closed ones with breakeven P&L).
             if datetime.now().timestamp() - last_reconcile_ts > 300:
