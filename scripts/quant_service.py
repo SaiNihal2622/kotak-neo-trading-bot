@@ -217,16 +217,17 @@ def read_chains() -> dict:
 
 
 def detect_events(intraday: dict, last_intraday: dict) -> list:
-    """Detect LLM-triggering events. Uses BOTH:
-    1. SESSION-WIDE moves from the candle engine (catches gradual drifts that
-       no single tick crosses the threshold but cumulative move does).
-    2. Tick-to-tick moves (PRICE_MOVE_PCT) from intraday_levels.json.
+    """Detect LLM-triggering events. Uses ALL of:
+    1. RAPID moves: >0.3% in 3 min or >0.5% in 5 min from the candle engine.
+       Catches sudden momentum that the session-drift threshold smooths over.
+    2. SESSION-WIDE moves from the candle engine (catches gradual drifts).
+    3. Tick-to-tick moves (PRICE_MOVE_PCT) from intraday_levels.json.
     Also detects VWAP crosses and day-high/low touches.
     """
     events = []
     cur = intraday.get('instruments', {})
     prev = last_intraday.get('instruments', {})
-    # 1. SESSION-WIDE moves from candle engine (live data, fixes stale intraday_levels)
+    # 1. SESSION-WIDE moves + 2. RAPID moves from candle engine
     try:
         sys.path.insert(0, str(ROOT / "scripts"))
         from candle_engine import get_engine
@@ -235,9 +236,6 @@ def detect_events(intraday: dict, last_intraday: dict) -> list:
             ltp = eng.last_ltp.get(sym, 0)
             if not ltp:
                 continue
-            # Session open: prefer the engine's tracked open (set on first tick of the day
-            # or yfinance-backfilled). Fall back to the first bar's open (only valid if
-            # the engine has been running since pre-market).
             session_open = eng.get_session_open(sym)
             if not session_open:
                 closed = list(eng.bars.get(sym, {}).get('1m', []))
@@ -248,21 +246,55 @@ def detect_events(intraday: dict, last_intraday: dict) -> list:
                     session_open = current.get('o', 0)
             if not session_open:
                 continue
+            # 1a. SESSION-WIDE move (cumulative drift from open)
             chg = ltp - session_open
             chg_pct = chg / session_open * 100
             if abs(chg_pct) >= PRICE_MOVE_PCT:
                 last_fired_key = f"session_move:{sym}"
                 last_ts = LAST_SESSION_EVENT.get(last_fired_key, 0)
-                if time.time() - last_ts > SESSION_MOVE_DEDUP_SEC:  # 5 min default
+                if time.time() - last_ts > SESSION_MOVE_DEDUP_SEC:
                     LAST_SESSION_EVENT[last_fired_key] = time.time()
                     events.append({
                         'type': 'session_move', 'symbol': sym,
                         'pct': round(chg_pct, 3),
                         'price': ltp, 'session_open': session_open,
                     })
+            # 1b. RAPID move (sudden momentum — >0.3% in 3min or >0.5% in 5min)
+            closes_1m = eng.get_close_series(sym, '1m', n=10)
+            if len(closes_1m) >= 4:
+                # 3-min rapid move
+                ref_3m = closes_1m[-4] if len(closes_1m) >= 4 else closes_1m[0]
+                rapid_3m_pct = (ltp - ref_3m) / ref_3m * 100
+                if abs(rapid_3m_pct) >= 0.3:
+                    last_fired_key = f"rapid_3m:{sym}"
+                    last_ts = LAST_SESSION_EVENT.get(last_fired_key, 0)
+                    if time.time() - last_ts > SESSION_MOVE_DEDUP_SEC:
+                        LAST_SESSION_EVENT[last_fired_key] = time.time()
+                        events.append({
+                            'type': 'rapid_move_3m', 'symbol': sym,
+                            'pct': round(rapid_3m_pct, 3),
+                            'price': ltp, 'ref_price': ref_3m,
+                            'window_min': 3,
+                            'note': 'sudden momentum — actionable',
+                        })
+            if len(closes_1m) >= 6:
+                ref_5m = closes_1m[-6]
+                rapid_5m_pct = (ltp - ref_5m) / ref_5m * 100
+                if abs(rapid_5m_pct) >= 0.5:
+                    last_fired_key = f"rapid_5m:{sym}"
+                    last_ts = LAST_SESSION_EVENT.get(last_fired_key, 0)
+                    if time.time() - last_ts > SESSION_MOVE_DEDUP_SEC:
+                        LAST_SESSION_EVENT[last_fired_key] = time.time()
+                        events.append({
+                            'type': 'rapid_move_5m', 'symbol': sym,
+                            'pct': round(rapid_5m_pct, 3),
+                            'price': ltp, 'ref_price': ref_5m,
+                            'window_min': 5,
+                            'note': 'fast move — momentum confirmation',
+                        })
     except Exception as e:
         log(f"detect-events-candle-err: {e}")
-    # 2. Tick-to-tick + VWAP + level touches from intraday_levels.json
+    # 3. Tick-to-tick + VWAP + level touches from intraday_levels.json
     for sym, lv in cur.items():
         if not lv or not isinstance(lv, dict):
             continue
@@ -345,6 +377,16 @@ RULES (hard):
 You may pick any of 28 instruments (4 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not.
 
 STRATEGY PLAYBOOK (consider these proactively, not just reactively — guidance, not mandatory rules):
+
+EVENTS YOU RECEIVE — interpret these carefully:
+- `session_move` (>=0.2% from session open): CUMULATIVE DRIFT — only actionable if other symbols confirm. Drift alone = noise.
+- `rapid_move_3m` (>=0.3% in 3 min): SUDDEN MOMENTUM — actionable. Likely news/flow. Consider directional plays.
+- `rapid_move_5m` (>=0.5% in 5 min): FAST MOVE — momentum confirmation. Higher conviction than 3m.
+- `vwap_cross` / `touch_day_high|low`: technical levels, not auto-trade. Use as confirmation.
+- `price_move` (tick-to-tick >=0.2%): micro-move, rarely actionable alone.
+- `periodic_scan` (no event): 90-min audit. Decide if regime shifted; HOLD with rationale is fine.
+
+ACTIONABILITY RULE: rapid_move + sector theme confirmation (e.g. ALL banks +0.3% together, or VIX spiking with index down) = TRADE. rapid_move alone on one stock = noise. session_move alone = noise. rapid_move + volume spike (when available) = high conviction.
 
 1. **LOTTERY TICKETS** (vol-explosion optionality — captures moves like 6→180):
    - When VIX < 13 AND intraday range < 0.4% NIFTY/BANKNIFTY AND no major event in next 4h
