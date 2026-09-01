@@ -1620,12 +1620,27 @@ def run_paper() -> None:
                     # Compute plan's actual max loss: for debit = full debit, for credit = full width - credit
                     # Simplification: use plan.stop as the per-trade risk
                     plan_max_loss_for_risk = abs(plan.stop)
+                    # Compute the original lot count from the plan's first leg, so the
+                    # risk engine can SCALE DOWN (not reject) if the proposed size
+                    # exceeds the 1% per-trade cap.
+                    try:
+                        _orig_lots = 1
+                        if plan.legs:
+                            _leg0 = plan.legs[0]
+                            _leg_qty = int(_leg0.get("qty", 1) or 1)
+                            # In the bot's order-placement code, leg['qty'] is treated
+                            # as LOT COUNT (then multiplied by lot_size to get shares).
+                            # So the lot count is the leg qty as-given.
+                            _orig_lots = max(1, _leg_qty)
+                    except Exception:
+                        _orig_lots = 1
                     dec = risk.check_new_trade(
                         plan_max_loss=plan_max_loss_for_risk,
                         underlying=symbol,
                         regime=rs.regime.value,
                         confidence=plan.confidence,
                         vix=rs.vix,
+                        original_qty_lots=_orig_lots,
                     )
                     log_signal({
                         "symbol": symbol, "regime": rs.regime.value, "side": "scan",

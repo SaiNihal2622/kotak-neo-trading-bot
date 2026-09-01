@@ -29,20 +29,56 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 def validate_position(entry: float, stop: float, qty: int, capital: float = 100000) -> dict:
     """Check if a position's max loss fits the 1% risk budget.
-    Returns: { ok: bool, max_loss: float, max_loss_pct: float, reason: str }"""
+
+    Returns a SCALED qty if the proposed qty would exceed 1% — never
+    just "ok: false". Only REJECT if even 1 share would exceed 1% (i.e.
+    the per-share loss is wider than 1% of capital, which means the
+    stop is too far from entry — caller should pick a tighter stop).
+
+    Returns: { ok, max_loss, max_loss_pct, max_loss_budget, headroom_pct,
+              suggested_qty, scaled_from, reason }
+    """
     if entry <= 0 or stop <= 0 or qty <= 0:
         return {"ok": False, "reason": "invalid inputs (entry/stop/qty must be > 0)"}
     if stop >= entry:
         return {"ok": False, "reason": f"stop ({stop}) must be below entry ({entry}) for long positions"}
-    max_loss = (entry - stop) * qty
+    # Per-share loss
+    loss_per_share = entry - stop
+    max_loss = loss_per_share * qty
     max_loss_pct = max_loss / capital * 100
+    # Per-share loss as % of capital
+    per_share_pct = (loss_per_share / capital) * 100
+    # If even 1 share exceeds 1% of capital, the strategy itself is too wide
+    if per_share_pct > 1.0:
+        return {
+            "ok": False,
+            "max_loss": max_loss,
+            "max_loss_pct": round(max_loss_pct, 3),
+            "max_loss_budget": capital * 0.01,
+            "reason": f"per-share loss ₹{loss_per_share:,.2f} = {per_share_pct:.3f}% of capital > 1% — even 1 share is too wide; tighten stop",
+        }
+    # Scale qty down to fit 1% budget
+    budget_shares = int((capital * 0.01) / loss_per_share)
+    if budget_shares < 1:
+        budget_shares = 1
+    if budget_shares < qty:
+        scaled = budget_shares
+    else:
+        scaled = qty
+    scaled_loss = loss_per_share * scaled
+    scaled_loss_pct = (scaled_loss / capital) * 100
     return {
-        "ok": max_loss_pct <= 1.0,
-        "max_loss": max_loss,
-        "max_loss_pct": round(max_loss_pct, 3),
+        "ok": True,
+        "max_loss": round(scaled_loss, 2),
+        "max_loss_pct": round(scaled_loss_pct, 3),
         "max_loss_budget": capital * 0.01,
-        "headroom_pct": round(1.0 - max_loss_pct, 3),
-        "reason": "within 1% budget" if max_loss_pct <= 1.0 else f"OVER 1% budget by {max_loss_pct - 1.0:.2f}%",
+        "headroom_pct": round(1.0 - scaled_loss_pct, 3),
+        "suggested_qty": scaled,
+        "scaled_from": qty if scaled != qty else None,
+        "reason": (
+            "within 1% budget" if scaled == qty
+            else f"scaled from {qty} to {scaled} shares to fit 1% budget (per-share loss ₹{loss_per_share:,.2f})"
+        ),
     }
 
 

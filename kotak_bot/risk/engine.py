@@ -149,8 +149,17 @@ class RiskEngine:
 
     def check_new_trade(self, plan_max_loss: float, underlying: str = "",
                         regime: str = "unknown", confidence: float = 0.5,
-                        vix: float = 14.0) -> RiskDecision:
-        """Decide whether a new trade is allowed and how many lots."""
+                        vix: float = 14.0, original_qty_lots: int = 1) -> RiskDecision:
+        """Decide whether a new trade is allowed and how many lots.
+
+        If the LLM proposes a position whose total max loss exceeds the per-trade
+        cap (1% of capital), we SCALE DOWN to the largest integer lot count
+        that fits within the cap, instead of rejecting. We only REJECT if
+        even 1 lot would exceed the cap (i.e. the strategy itself is too
+        wide to fit the 1% rule — caller should pass a tighter stop or
+        skip the trade).
+        """
+        original_qty_lots = max(1, int(original_qty_lots or 1))
         self._roll_period()
         # pick preset based on context
         preset = self.pick_preset(regime=regime, confidence=confidence, vix=vix)
@@ -193,16 +202,34 @@ class RiskEngine:
         max_tpd = caps.get("max_trades_per_day", 6)
         if self.state.trades_today >= max_tpd:
             return RiskDecision(False, f"max_trades_per_day={max_tpd} (preset={preset})", 0, 0, preset)
-        # 9. per-trade max loss
+        # 9. per-trade max loss (with scale-down instead of reject)
         per_trade_cap = min(
             self.state.capital * caps.get("max_loss_per_trade_pct", 1.0) / 100.0,
             caps.get("max_loss_per_trade_abs", 3_000.0),
         )
         if plan_max_loss > per_trade_cap:
+            # Try to scale down to fit within 1% of capital.
+            loss_per_lot = plan_max_loss / max(1, original_qty_lots)
+            if loss_per_lot > per_trade_cap:
+                # Even 1 lot would exceed the cap — strategy is too wide.
+                return RiskDecision(
+                    False,
+                    f"1-lot_loss=₹{loss_per_lot:,.0f} > per_trade_cap=₹{per_trade_cap:,.0f} (preset={preset}, original_qty={original_qty_lots})",
+                    0, 0, preset,
+                )
+            # Find the largest lot count that keeps total loss within per_trade_cap.
+            # Floor + cap at max_lots. If max_lots is too small, allow it as a "min size" entry.
+            max_lots = caps.get("max_lots", 3)
+            scaled_qty = max(1, min(max_lots, int(per_trade_cap / loss_per_lot)))
+            scaled_loss = loss_per_lot * scaled_qty
+            logger.info(
+                f"[risk] scaling {underlying} from {original_qty_lots} lots to {scaled_qty} lots "
+                f"(loss ₹{plan_max_loss:,.0f} -> ₹{scaled_loss:,.0f} <= cap ₹{per_trade_cap:,.0f}, preset={preset})"
+            )
             return RiskDecision(
-                False,
-                f"plan_loss=₹{plan_max_loss:,.0f} > per_trade_cap=₹{per_trade_cap:,.0f} (preset={preset})",
-                0, 0, preset,
+                True,
+                f"scaled_to_{scaled_qty}_lots_to_fit_1pct (was {original_qty_lots})",
+                scaled_qty, scaled_loss, preset,
             )
         # OK
         default_lots = caps.get("default_lots", 1)
