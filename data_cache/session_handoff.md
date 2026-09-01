@@ -6,18 +6,96 @@ read this file first. When it makes a material change, it should append a sectio
 
 Maintained by:
 - `scripts/session_death_detector.py` (every 5 min, appends death-sweep blocks)
-- The active primary chat (this file's owner: `mvs_42e2c15c34934eb68485e31ae393848b`)
+- The active primary chat (this file's owner: `mvs_23123df3eb9544178ff0d9926de5cae5`)
 - Critical crons (kotak-bot-watchdog, kotak-self-monitor, kotak-nightly-improvement)
   are wired to write back here via `mavis session send` to this primary chat.
 
 ---
 
-## Last refresh — 2026-08-31 16:32 IST (commits 58c33a8 + d667717 + 2514342 + 78461f5 + ccc8630 + 11c9868 + a0465d5 + 1fb5f8f)
+## Last refresh — 2026-09-02 00:50 IST (commits 1b8580f + 118deb6 + 62e1fd4 + f8aab8d)
 
-### Complete production system — 8 commits this session
-- quant_service.py (24/7 brain) — direct LLM API, persistent state, HTTP :8503
-- quant_watchdog.py (safety net) — auto-restarts service if dies, 30s health checks
-- quant_control.py (chat interface) — status/positions/decisions/ask/close/pause/resume
+### Session 2 of the self-driving era — 4 new modules wired in
+- **scripts/backtest_engine.py** (commit 118deb6) — regime-aware edge for live decisions
+  - `get_strategy_edge(strategy, days=30)` — recent P&L / win rate / sample size / edge-decay flag
+  - `get_regime_edge(vix_bucket, trend)` — which strategies have edge in current VIX regime
+  - `simulate_trade_proposal(legs, capital, vix)` — quick max loss / max profit / sizing check
+  - `get_backtest_summary()` — top-level rollup, always in LLM context
+  - Warns on sample_grade F (untested strategies), points to top regime-fit strategies
+- **scripts/oi_change_detector.py** (commit 62e1fd4) — institutional positioning tracker
+  - Captures OI snapshots from KotakProdFeed every tick
+  - Detects build-up (>5% OI increase at a strike = new S/R) and unwinding (decrease = S/R breaking)
+  - Tracks PCR shifts (positive = put writers adding = bullish)
+  - Persists snapshots to `data_cache/oi_snapshots/` (24h rolling)
+  - Logs significant changes to `data_cache/oi_changes.jsonl`
+  - Wakes LLM on >15% OI shifts via Telegram alert
+- **scripts/telegram_alerter.py** (commit f8aab8d) — rich brain-side Telegram notifications
+  - Throttled per category (decision 30s, position 15min, risk 1min, OI 5min, heartbeat 4h, daily 1d)
+  - Categorized: decision_made / position_update / risk_alert / oi_alert / heartbeat / daily_summary / session_event
+  - Rich formatting with backtest edge + macro context
+  - Service start notification fires on every brain boot
+  - 4h heartbeat during market hours (09:00-15:30)
+- **quant_watchdog.py** (restarted this session) — was MISSING after 22:06 IST Sept 1, that's why brain died
+
+### What the LLM now sees on every decision (full context)
+- profit_state (compounding, Kelly, circuit breakers)
+- macro (upcoming events + FII/DII)
+- backtest (per-strategy edge + regime top picks)
+- oi_changes (build-up / unwinding + PCR)
+- trade_lessons (past trade lessons)
+- open_position_analysis (P&L + suggested actions)
+- regime (bull/bear/sideways)
+- pre_mortem (challenge the proposed trade)
+- intraday_levels, chains_summary, recent_performance, global_markets
+
+### Production system — 11 modules in scripts/
+| Module | Purpose |
+|---|---|
+| candle_engine.py | 1m OHLCV + indicators + patterns |
+| dashboard.py | HTML output |
+| quant_service.py | The brain (watch loop, LLM, schedulers, HTTP :8503) |
+| profit_engine.py | Compounding + Kelly + circuit breakers |
+| llm_helpers.py | 5 tools + 2 workflows |
+| macro_calendar.py | RBI/FOMC/CPI/NFP + FII/DII |
+| trade_journal.py | Auto-journal + lessons |
+| position_adjuster.py | Position management |
+| **backtest_engine.py** | Regime-aware edge (NEW) |
+| **oi_change_detector.py** | Real-time OI changes (NEW) |
+| **telegram_alerter.py** | Rich brain-side alerts (NEW) |
+| quant_watchdog.py | Safety net (RESTARTED) |
+| quant_daemon.py | Alternative watcher (legacy) |
+
+### Running RIGHT NOW (00:50 IST)
+- quant_service: PID 7300, running, 1Hz, HTTP :8503 healthy
+- quant_watchdog: PID 19380, monitoring, will restart service if dies
+- kotak_bot paper: PID 2508, tick 4002, uptime 33.6h, capital Rs.1,00,000, P&L +Rs.9,977.95
+- All 23 Mavis crons paused (replaced by in-process scheduler in quant_service)
+- In-process schedulers (8 jobs):
+  - 08:15 morning brief
+  - 08:25 daily maintenance
+  - 09:00 opening volatility scanner
+  - 13:30 closing straddle scanner
+  - 14:30 force square-off
+  - 15:45 EOD state backup
+  - Sun 18:00 weekly review
+  - Sun 21:00 weekend intel + Monday brief
+  - 23:00 nightly improvement (self-evolution)
+
+### Use from any chat
+```
+python scripts/quant_control.py {status|positions|decisions|ask|close|pause|resume}
+```
+
+### Telegram alerts (NEW — fires automatically)
+- Service start: "🔄 Quant service starting" with PID/endpoint
+- LLM decision: "🟢 OPEN iron_condor NIFTY" with target/stop/rationale + edge stats
+- OI alert: "🔔 OI alert: NIFTY" when build-up/unwinding >15%
+- Position update: every 15 min while open
+- Heartbeat: every 4h during market hours
+- Daily summary: at 15:30 EOD
+- Risk alert: drawdown / circuit breaker (forced, no throttle)
+
+---
+
 - quant_daemon.py (alternative watcher) — passive event detector
 - intraday_levels.py + option_chain_analyzer.py — 28-instrument state tracking
 - session_death_detector.py + session_715_recovery.py + path_shadow_check.py + rotate_jsonl.py — infra
