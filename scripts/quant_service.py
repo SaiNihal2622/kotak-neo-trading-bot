@@ -363,43 +363,60 @@ CONCRETE EXAMPLES (use these patterns):
 4. HOLD (no edge):
 {"type":"HOLD","note":"no_edge","rationale":"VIX 11, range-bound, no volume spike, no breakout setup. Sit out."}
 
-RULES (hard):
-- 1% of capital (Rs.1,000) MAX ACTUAL LOSS per trade. This is LOSS, not premium. A Rs.150
-  premium BANKNIFTY option with 30 lot size costs Rs.4,500 — but the LOSS only if your
-  stop is hit. So size positions so that (entry - stop) × qty ≤ Rs.1,000.
-- 3% (Rs.3,000) max daily loss across all positions (close everything if hit)
-- EVERY position MUST have a `stop` field. No naked positions. Stop can be a price level
-  (e.g., stop=80 means exit if premium drops to 80) or "premium × 0.5" for a 50% stop.
-- For directional plays (long calls/puts): use TIGHT stops (10-30% of premium) so you can
-  afford larger position sizes within the 1% loss cap. E.g., BANKNIFTY 30-lot long put
-  at Rs.150 with stop=Rs.100 = (150-100) × 30 = Rs.1,500 loss → too much, tighten to
-  stop=Rs.117 for Rs.990 loss (1% exactly).
-- For spreads (vertical, condor): max loss is structural = (wing - credit) × qty. Must
-  also fit ≤ 1% of capital. If structural loss is too big, use SMALLER wings or skip.
-- For lottery tickets (deep OTM < Rs.20 premium): full lot size, stop at 50% of premium.
-  E.g., BANKNIFTY 30-lot at Rs.15 with stop=Rs.7.5 = (15-7.5) × 30 = Rs.225 = 0.22% ✓
-- No naked unlimited risk (defined max loss on every position)
+RULES (principles, not formulas):
+- MAX LOSS per trade = 1% of capital (Rs.1,000) — this is the actual loss when stop hits, not
+  the premium paid. A Rs.150 option × 30 lot costs Rs.4,500 in capital, but if you stop out
+  at Rs.117 the loss is (150-117) × 30 = Rs.990.
+- MAX DAILY LOSS = 3% of capital (Rs.3,000) across all positions.
+- EVERY position MUST have a `stop` field in the JSON output. No naked positions.
+
+STOP PLACEMENT — REASON ABOUT EACH TRADE, DON'T TEMPLATE:
+The right stop is a function of the trade's context, not a fixed % rule. Consider:
+  - Signal strength: rapid_move_3m/5m + sector confirmation + VIX expansion = HIGH CONVICTION.
+    Allow wider stops (25-40% of premium) to give the trade room to breathe. Can use full lot.
+  - Weak signal: single-stock session drift, no sector theme = LOW CONVICTION. Tighter stops
+    (10-20% of premium) AND smaller position (1/2 lot or 1/3 lot equivalents where possible).
+  - Time in trade: late session (after 14:00) = tighter stops. Theta burns, no time to recover.
+  - Volatility regime: high VIX (>15) = wider natural swings, use ATR-based stops, not %.
+  - Whether trend-following or mean-reversion: trend trades need room to ride pullbacks;
+    mean-reversion trades have defined invalidation points and tighter stops.
+  - Reversal risk: if the move could be a fakeout, give it slightly wider room. If confirmed
+    by multiple signals, can use tighter stops (less chance of invalidation).
+
+POSITION SIZING — DISTANCE × QTY × CONVICTION:
+The risk equation is simple: risk = (entry - stop) × qty ≤ 1% of capital. Adjust TWO
+variables (stop distance and qty) to fit the conviction:
+  - High conviction + wants wide stop: 33-lot with 30% stop = ~Rs.1,000 loss on Rs.150 option
+  - Medium conviction: 30-lot with 20% stop = Rs.900 loss
+  - Low conviction: 15-lot with 20% stop = Rs.450 loss (more conservative)
+  - Speculative scalp: 30-lot with 10% stop = Rs.450 loss
+There's no single right answer — pick what matches the setup's risk/reward and your confidence.
+
+SPREADS / CONDORS:
+  - Max loss is structural = (wing width - credit) × qty. Must also fit ≤ 1% of capital.
+  - If structural loss is too big, use TIGHTER wings (e.g., 50pt instead of 200pt on NIFTY) or
+    trade fewer lots. Do NOT skip a setup just because wings are too wide — adjust.
+
+LOTTERY TICKETS (deep OTM < Rs.20):
+  - Full lot is fine — these are designed for low max loss. E.g., BANKNIFTY 30-lot at
+    Rs.15 with stop=Rs.7.5 = (15-7.5) × 30 = Rs.225 (0.22%). Cheap optionality.
+  - Up to 2 concurrent tickets on different underlyings (diversified bets).
+
+OTHER:
+- No naked unlimited risk
 - No entries in macro blackout windows
 - Min premium: Rs.5, max premium per leg: Rs.500
-- Strike spacing: NIFTY 50pt, BANKNIFTY 100pt, FINNIFTY/SENSEX 100pt, MIDCPNIFTY 25pt, stocks 5-10pt
-- Lots: NIFTY=75 qty, BANKNIFTY=30 qty, FINNIFTY=65 qty, MIDCPNIFTY=120 qty, SENSEX=20 qty, stocks=lot_size from config
+- Strike spacing: NIFTY 50pt, BANKNIFTY 100pt, FINNIFTY/SENSEX 100pt, MIDCPNIFTY 25pt
+- Lots: NIFTY=75 qty, BANKNIFTY=30 qty, FINNIFTY=65 qty, MIDCPNIFTY=120 qty, SENSEX=20 qty
 - Expiry: weekly (current Thu) for intraday, monthly for swings
 - Order type: MARKET for fast entries under 2 min hold, LIMIT for swing trades
-- TREND DAY DETECTION: if any index is down >0.4% from session open at mid-session (12:00+),
-  consider DIRECTIONAL plays (bear put vertical, long put). If VIX also expanding, that's
-  a strong trend day signal. Do not wait for premium to drop to Rs.10 — use tight stops
-  on standard premium options to fit the 1% loss budget.
+- TREND DAY: if any index is down >0.4% from session open at mid-session (12:00+), consider
+  DIRECTIONAL plays (bear put vertical, long put). If VIX also expanding, strong signal.
+- DON'T TEMPLATE: every trade is different. A 5-min scalp needs different handling than a
+  4-hour swing. Read the setup, decide the stop, then size to fit. The principles above
+  are the rails, not the track.
 
-POSITION SIZING CHEAT-SHEET (so you don't refuse good trades):
-  BANKNIFTY (lot 30):  max (entry - stop) = Rs.33 → e.g., Rs.150 entry, Rs.117 stop
-  SENSEX (lot 20):     max (entry - stop) = Rs.50 → e.g., Rs.100 entry, Rs.50 stop
-  NIFTY (lot 75):      max (entry - stop) = Rs.13 → very tight, use 15% stops only
-  FINNIFTY (lot 65):   max (entry - stop) = Rs.15 → very tight
-  MIDCPNIFTY (lot 120): max (entry - stop) = Rs.8 → ultra-tight, only for highest conviction
-  → If structural loss is too big on MIDCPNIFTY, use BANKNIFTY or SENSEX instead.
-  → Or use spreads: bear put vertical on NIFTY 50pt wings, BANKNIFTY 200pt wings.
-
-You may pick any of 28 instruments (5 indices + 23 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not.
+You may pick any of 29 instruments (5 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not.
 
 STRATEGY PLAYBOOK (consider these proactively, not just reactively — guidance, not mandatory rules):
 
