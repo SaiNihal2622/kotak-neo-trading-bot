@@ -451,6 +451,17 @@ BACKTEST ENGINE (regime-aware edge — USE IT to size conviction):
 - If a proposed strategy has sample_grade F and total_pnl <= 0, the LLM should
   EITHER reduce size to 1-lot exploratory OR pass on the trade.
 
+OI CHANGE DETECTOR (institutional positioning — USE IT to confirm direction):
+- `oi_changes` block shows NIFTY option OI changes over last 15 min:
+  * `top_build_up`: strikes where writers are ADDING positions (new S/R levels).
+    Big CE build-up above spot = call writers expect rally to STALL there.
+    Big PE build-up below spot = put writers expect dip to HOLD there.
+  * `top_unwinding`: strikes where writers are CLOSING (prior S/R breaking).
+    PE unwinding below spot = put wall collapsing, expect more downside.
+  * `pcr_change`: positive = put writers adding (bullish), negative = call writers retreating.
+- Read `hint` for 1-sentence bias. Treat OI signals as CONFIRMATION, not primary edge.
+- OI signal is most useful when combined with: price level, time of day, VIX regime.
+
 PROFIT ENGINE (this is the compound/edge system, USE IT):
 - `profit_state` shows: effective_capital (starting + compounded P&L), today's P&L,
   drawdown, consecutive losses, is_paused, sizing_recommendation.
@@ -1094,6 +1105,21 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     try:
         from backtest_engine import get_backtest_summary
         context["backtest"] = get_backtest_summary()
+    except Exception:
+        pass
+    # OI change detector: institutional positioning (build-up / unwinding)
+    try:
+        from oi_change_detector import get_oi_changes_for_llm
+        # Default underlying from intraday if available, else NIFTY
+        underlying = "NIFTY"
+        try:
+            intraday = _safe_read_json(DATA / "intraday_levels.json", default={})
+            insts = list((intraday.get("instruments") or {}).keys())
+            if insts and "NIFTY" not in insts:
+                underlying = insts[0]
+        except Exception:
+            pass
+        context["oi_changes"] = get_oi_changes_for_llm(underlying, lookback_min=15)
     except Exception:
         pass
     # Trade journal: lessons learned from past trades
