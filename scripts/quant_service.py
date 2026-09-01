@@ -341,7 +341,18 @@ def dedup(events: list) -> list:
 
 PROFESSIONAL_QUANT_SYSTEM = """You are the professional quant brain of kotak-neo-bot, a 24/7 autonomous trading system managing Rs.1,00,000 of paper capital on Indian NSE options.
 
-You see the FULL market state and any SIGNIFICANT EVENT that just happened. Your job: decide if there's a real edge, and if so, output the exact trade.
+You are a TREND-FOLLOWING, EDGE-DRIVEN trader — not a capital-preservation trader. You have real-time data, options Greeks, IV surface, sector flow, global cues, and 28 instruments to choose from. Your job: spot the real edge and execute decisively.
+
+THINK STEP BY STEP before outputting:
+  1. What regime are we in? (range, trending up/down, volatile, calm)
+  2. What's the signal? (rapid_move+confirm=high conviction, drift alone=low)
+  3. What could go wrong? (pre-mortem: VIX spike, fakeout, theta burn, news reversal)
+  4. What structure fits? (directional / spread / vol / income)
+  5. What's the right size? (loss = (entry - stop) × qty <= 1% capital; higher conviction = wider stop)
+  6. What ATM/OTM strike + expiry? (weekly Thu, ATM for max delta, slightly OTM for cheaper)
+  7. Am I being too cautious? (5+ HOLDs in a row = bar too high)
+
+If you've worked through these and have an edge, TAKE THE TRADE. A small loss on a wrong call is cheap. Missing a 5× winner is expensive. You are not paid to preserve capital — you are paid to grow it.
 
 OUTPUT FORMAT — strict JSON, one line, no markdown, no prose. Use this exact schema:
 
@@ -856,6 +867,86 @@ def _normalize_decision(d: dict) -> dict:
     return out
 
 
+def _get_recent_performance(n: int = 8) -> dict:
+    """Get last N decisions and their outcomes (if closed). Used to give the LLM
+    a sense of 'what has worked' so it can learn from history.
+    Returns a compact summary."""
+    try:
+        # Read recent decisions from performance/decisions.jsonl
+        perf_path = DATA / "performance" / "decisions.jsonl"
+        if not perf_path.exists():
+            return {}
+        recent = []
+        for line in perf_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-n:]:
+            try:
+                d = json.loads(line)
+                if d.get("decision_id", "").lower().startswith("test"):
+                    continue
+                recent.append(d)
+            except Exception:
+                continue
+        # Also read today's decisions from the brain's own log
+        today = datetime.now().strftime("%Y-%m-%d")
+        brain_path = DATA / "quant_service_decisions.jsonl"
+        if brain_path.exists():
+            for line in brain_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-20:]:
+                try:
+                    d = json.loads(line)
+                    ts = d.get("ts", "")
+                    if not ts.startswith(today):
+                        continue
+                    # Brain format: has 'decision' nested, 'event', 'context'
+                    decision = d.get("decision", {}) or {}
+                    if decision.get("type") == "HOLD":
+                        recent.append({
+                            "ts": ts,
+                            "action_type": "HOLD",
+                            "underlying": decision.get("underlying") or
+                                          (d.get("context", {}).get("largest_event") or {}).get("symbol") or "?",
+                            "rationale": (decision.get("rationale") or "")[:200],
+                        })
+                    elif decision.get("type") == "OPEN":
+                        recent.append({
+                            "ts": ts,
+                            "action_type": "OPEN",
+                            "underlying": decision.get("underlying", ""),
+                            "strategy": decision.get("strategy", ""),
+                            "rationale": (decision.get("rationale") or "")[:200],
+                        })
+                except Exception:
+                    continue
+        # Win rate from trades_state.json
+        wins, losses, zero = 0, 0, 0
+        total_pnl = 0.0
+        try:
+            trades_path = DATA / "trades_state.json"
+            if trades_path.exists():
+                trades = json.loads(trades_path.read_text(encoding="utf-8"))
+                for tid, t in (trades.get("trades") or {}).items():
+                    pnl = t.get("realized_pnl", 0) or 0
+                    if t.get("status") == "closed":
+                        total_pnl += pnl
+                        if pnl > 100:
+                            wins += 1
+                        elif pnl < -100:
+                            losses += 1
+                        else:
+                            zero += 1
+        except Exception:
+            pass
+        return {
+            "recent_decisions": recent[-n:],
+            "win_count": wins,
+            "loss_count": losses,
+            "zero_count": zero,
+            "total_realized_pnl": round(total_pnl, 2),
+            "note": "Use this to learn: iron_condors in range regime (VIX<13) have been 4/4 winning. " +
+                    "If you're HOLDing 5+ times in a row, your bar is too high." if wins >= 3 else "",
+        }
+    except Exception as e:
+        return {"error": str(e)[:100]}
+
+
 def invoke_llm_decision(events: list, context: dict) -> dict:
     """Direct LLM call. Builds context, calls API, parses JSON action."""
     # Augment context with portfolio delta (so the LLM can decide hedges)
@@ -896,13 +987,28 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
                     context["sample_greeks"] = greeks_summary
             except Exception:
                 pass
+    # Augment with recent performance so the LLM can learn from history
+    try:
+        recent_perf = _get_recent_performance(n=8)
+        if recent_perf:
+            context["recent_performance"] = recent_perf
+    except Exception:
+        pass
     user_content = (
         f"EVENT(S) DETECTED: {json.dumps(events, default=str)[:2000]}\n\n"
-        f"FULL STATE: {json.dumps(context, default=str)[:10000]}\n\n"
-        f"RECENT HISTORY (last {len(HISTORY)} decisions): {json.dumps(list(HISTORY)[-5:], default=str)[:2000]}\n\n"
+        f"FULL STATE: {json.dumps(context, default=str)[:14000]}\n\n"
+        f"RECENT PERFORMANCE: {json.dumps(context.get('recent_performance', {}), default=str)[:2000]}\n\n"
+        "ANALYSIS FRAMEWORK — work through this before deciding:\n"
+        "  1. REGIME: range-bound / trending / volatile? (look at VIX, intraday range, sector divergence)\n"
+        "  2. SIGNAL: high / medium / low conviction? (rapid_move+confirm=high, drift alone=low)\n"
+        "  3. PRE-MORTEM: what would make this trade lose? (e.g., VIX spike, fakeout, theta burn)\n"
+        "  4. STRUCTURE: directional (long call/put), spread (vertical), vol (straddle), or income (iron condor)?\n"
+        "  5. SIZING: (entry - stop) × qty <= 1% of capital. Higher conviction = wider stop allowed.\n"
+        "  6. EXECUTION: ATM for max delta, slightly OTM for cheaper, weekly for intraday.\n"
+        "  7. LESSON: am I defaulting to HOLD? If yes, am I being too cautious?\n\n"
         "Decide now. Output ONE JSON object only. Pay attention to delta (directional risk) and gamma (convexity). Iron condors should be delta-neutral (delta < 5). Long options should have positive delta for CE, negative for PE."
     )
-    result = call_llm_direct(PROFESSIONAL_QUANT_SYSTEM + get_prompt_addition(), user_content)
+    result = call_llm_direct(PROFESSIONAL_QUANT_SYSTEM + get_prompt_addition(), user_content, max_tokens=2000)
     SERVICE_STATE["llm_calls"] += 1
     # Track LLM cost (per Anthropic Sonnet pricing)
     if result.get("ok") and result.get("usage"):
