@@ -1520,6 +1520,8 @@ last_daily_maint_date = None      # 08:25 Mon-Fri: re-auth, self-test, power pla
 last_news_cache_date = None       # 09:00 Mon-Fri: LLM-judge sentiment aggregate (was implicit via trader-desk)
 last_eod_backup_date = None       # 15:45 Mon-Fri: paper_state + trades_state to Telegram (was kotak-bot-state-backup)
 last_eod_postmortem_date = None   # 15:35 Mon-Fri: comprehensive daily post-mortem (trades, signals, missed, bugs fixed)
+last_pre_eod_check_date = None    # 15:25 Mon-Fri: pre-EOD safety check (verify bot will force-square correctly at 15:30)
+last_post_eod_check_date = None   # 17:30 Mon-Fri: post-EOD health check (verify bot + session still alive 2h after close)
 last_weekend_intel_date = None    # Sun 21:00: weekend_intel + monday_brief + send (was kotak-weekend-intel)
 last_weekly_summary_date = None   # Sun 18:00: weekly P&L recap (was kotak-bot-weekly-summary; watch loop already covers via weekly_strategy_review)
 last_thesis_update_date = None    # Mon 08:00: thesis brief (was implicit via thesis_monitor cron)
@@ -2226,6 +2228,46 @@ def watch_loop():
                     last_eod_postmortem_date = _now.date()
                     log("SCHED-EOD-POSTMORTEM: triggering (15:35)")
                     _scheduled_subprocess("scripts/daily_postmortem.py", "eod-postmortem", timeout=60)
+                # 15:25 pre-EOD safety check (verify bot will run force-square correctly at 15:30)
+                if _now.hour == 15 and 25 <= _now.minute < 30 and last_pre_eod_check_date != _now.date():
+                    last_pre_eod_check_date = _now.date()
+                    log("SCHED-PRE-EOD-CHECK: triggering (15:25)")
+                    try:
+                        from kotak_bot.alerts.telegram import send as tg_send
+                        # Verify state integrity before EOD
+                        _paper = _safe_read_json(DATA / "paper_state.json", default={})
+                        _positions = _paper.get("positions", {}) or {}
+                        _cash = _paper.get("cash", 0)
+                        _liveness = _safe_read_json(DATA / "liveness.json", default={})
+                        _bot_alive = bool(_liveness.get("main_thread_alive"))
+                        _open_pos = _liveness.get("snapshot", {}).get("open_positions", 0)
+                        msg = (f"[pre-EOD 15:25] bot_alive={_bot_alive} open_positions={_open_pos} "
+                               f"cash=Rs.{_cash:,.0f} paper_positions={len(_positions)}")
+                        if _open_pos > 0 and not _bot_alive:
+                            msg += " WARNING: bot not alive but positions open — NSSM will need to retry force-square"
+                        tg_send(msg, category='pre_eod', force=True)
+                    except Exception as _pre_eod_err:
+                        log(f"SCHED-PRE-EOD-CHECK-err: {_pre_eod_err}")
+                # 17:30 post-EOD health check (verify both still alive 2h after close)
+                if _now.hour == 17 and 30 <= _now.minute < 35 and last_post_eod_check_date != _now.date():
+                    last_post_eod_check_date = _now.date()
+                    log("SCHED-POST-EOD-CHECK: triggering (17:30)")
+                    try:
+                        from kotak_bot.alerts.telegram import send as tg_send
+                        _liveness = _safe_read_json(DATA / "liveness.json", default={})
+                        _bot_alive = bool(_liveness.get("main_thread_alive"))
+                        _open_pos = _liveness.get("snapshot", {}).get("open_positions", 0)
+                        _tick = _liveness.get("tick", 0)
+                        _uptime = _liveness.get("uptime_sec", 0)
+                        # Read session expiry
+                        _sess = _safe_read_json(DATA / "kotak_prod_session.json", default={})
+                        _exp = _sess.get("expires_at", 0)
+                        _remaining_h = round((_exp - time.time()) / 3600, 2) if _exp else 0
+                        msg = (f"[post-EOD 17:30] bot_alive={_bot_alive} tick={_tick} uptime={_uptime}s "
+                               f"open_pos={_open_pos} session_remaining={_remaining_h}h")
+                        tg_send(msg, category='post_eod', force=True)
+                    except Exception as _post_eod_err:
+                        log(f"SCHED-POST-EOD-CHECK-err: {_post_eod_err}")
                 # 15:45 EOD state backup (paper_state + trades_state to Telegram)
                 if _now.hour == 15 and 45 <= _now.minute < 50 and last_eod_backup_date != _now.date():
                     last_eod_backup_date = _now.date()
