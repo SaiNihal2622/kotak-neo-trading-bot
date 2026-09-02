@@ -1199,7 +1199,22 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
 
 
 def write_decision(decision: dict, context_snapshot: dict = None, event: dict = None) -> None:
-    """Write LLM decision to the action file (the bot reads it)."""
+    """Write LLM decision to the action file (the bot reads it).
+
+    FIX 2026-09-02: OPEN actions are silently dropped during the pre-open
+    window (before 09:15 IST) and EOD buffer (after 15:15 IST). The LLM still
+    gets a HOLD-like response and the decision is logged, but no action file
+    is written — the bot will hard-reject it anyway, and the action would
+    pollute the file with stale retryable actions.
+    """
+    _now = datetime.now()
+    _h, _m = _now.hour, _now.minute
+    _is_pre_open = (_h < 9) or (_h == 9 and _m < 15)
+    _is_eod = (_h == 15 and _m >= 15) or (_h > 15)
+    _is_weekday = _now.weekday() < 5
+    _in_trading_window = _is_weekday and not _is_pre_open and not _is_eod
+
+    # Build the canonical action doc
     action_doc = {
         "ts": now_iso(),
         "source": "quant_service",
@@ -1208,6 +1223,11 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
         "rationale": decision.get("rationale", ""),
         "consumed": False,
     }
+    # Suppress OPEN outside the trading window — the bot would reject it anyway
+    if action_doc["actions"] and any(a.get("type") == "OPEN" for a in action_doc["actions"]):
+        if not _in_trading_window:
+            log(f"ACTION-SUPPRESSED: OPEN outside trading window (IST {_h:02d}:{_m:02d}); dropping action to file. Decision logged only.")
+            action_doc["actions"] = []  # strip the OPEN
     if action_doc["actions"]:
         ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
         SERVICE_STATE["actions_taken"] += 1

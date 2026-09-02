@@ -965,6 +965,26 @@ def run_paper() -> None:
                         _qa_ts = _qa.get("ts", "")
                         _qa_actions = _qa.get("actions", [])
                         _placed_total = 0
+                        # FIX 2026-09-02: track whether rejections are time-window (pre-open/EOD) or hard
+                        # (max-positions, circuit-breaker). Time-window rejections must NOT mark the action
+                        # consumed — the bot should retry once we're in the trading window.
+                        _has_retryable_reject = False
+                        # TTL: if action is older than 30 min, expire it (so we don't retry ancient actions)
+                        try:
+                            _qa_age_min = (now - datetime.fromisoformat(_qa_ts)).total_seconds() / 60.0
+                        except Exception:
+                            _qa_age_min = 0
+                        if _qa_age_min > 30:
+                            logger.warning(f"[QUANT-ACTION] EXPIRED: action is {_qa_age_min:.0f}min old, dropping")
+                            _qa["consumed"] = True
+                            _qa["expired_at"] = now.isoformat()
+                            _qa["placed_legs"] = 0
+                            try:
+                                with open(_qa_path, "w", encoding="utf-8") as _qw:
+                                    json.dump(_qa, _qw, ensure_ascii=False)
+                            except Exception:
+                                pass
+                            continue
                         for _qa_a in _qa_actions:
                             try:
                                 _qa_type = str(_qa_a.get("action", _qa_a.get("type", ""))).upper()
@@ -990,9 +1010,11 @@ def run_paper() -> None:
                                         continue
                                     if now.hour >= 15 and now.minute >= 15:
                                         logger.warning(f"[QUANT-ACTION] REJECT: too close to EOD ({now.strftime('%H:%M')})")
+                                        _has_retryable_reject = True
                                         continue
                                     if now.hour < 9 or (now.hour == 9 and now.minute < 15):
                                         logger.warning(f"[QUANT-ACTION] REJECT: too early pre-open ({now.strftime('%H:%M')})")
+                                        _has_retryable_reject = True
                                         continue
                                     # Circuit breakers (daily loss + consecutive losses)
                                     try:
@@ -1106,11 +1128,16 @@ def run_paper() -> None:
                                     alerter.send(f"[Quant service] {_summary}\nRationale: {_qa_a.get('rationale','')[:200]}\nMax hold: {_qa_a.get('max_hold_minutes','?')}m")
                             except Exception as _qa_a_err:
                                 logger.warning(f"quant-action sub-process failed: {_qa_a_err}")
-                        # Mark consumed
-                        _qa["consumed"] = True
-                        _qa["consumed_at"] = now.isoformat()
-                        _qa["consumed_cycle"] = cycle_counter
-                        _qa["placed_legs"] = _placed_total
+                        # Mark consumed only if we actually placed legs OR if rejection was hard
+                        # (not a time-window reject). Time-window rejects get retried on the next cycle.
+                        if _placed_total > 0 or not _has_retryable_reject:
+                            _qa["consumed"] = True
+                            _qa["consumed_at"] = now.isoformat()
+                            _qa["consumed_cycle"] = cycle_counter
+                            _qa["placed_legs"] = _placed_total
+                        else:
+                            logger.info(f"[QUANT-ACTION] deferring retry (placed=0, time-window reject); will retry after 09:15")
+                            _qa["last_retry_note"] = f"deferred at {now.strftime('%H:%M:%S')} — time-window reject"
                         try:
                             with open(_qa_path, "w", encoding="utf-8") as _qw:
                                 json.dump(_qa, _qw, ensure_ascii=False)
