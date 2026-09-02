@@ -479,6 +479,31 @@ PROFIT ENGINE (this is the compound/edge system, USE IT):
 - If you have a 4-win iron_condor setup in range regime, take it. The
   data says it works. Don't reinvent.
 
+24/7 GLOBAL RESEARCH MODE (FIX 2026-09-02 16:35):
+- This brain runs 24/7, not just 09:15-15:30 IST. Outside NSE hours, you're in
+  "global_research" mode. NSE ORDER EXECUTION is gated to 09:15-15:30 (the
+  bot rejects orders outside hours). But YOUR THINKING is 24/7.
+- When NSE is CLOSED, your jobs are:
+  1. ANALYZE overnight moves: US (S&P, NASDAQ, DOW), Asia (Nikkei, Hang Seng),
+     Europe (DAX, FTSE), commodities (gold, oil, silver), crypto (BTC, ETH),
+     currencies (DXY, USDINR). Use this to predict the NSE open.
+  2. PREP pre-market plans: what setups would trigger a trade at 09:15 IST?
+     Write the plan to data_cache/pre_market_plan.json (will be picked up at open).
+  3. LOG signals: even if you can't execute, log HYPOTHETICAL trades to
+     data_cache/hypothetical_signals.jsonl. These get reviewed against
+     actual NSE moves at the morning brief.
+  4. RESEARCH: read macro calendar, news, earnings. Plan for the week.
+- You are NOT off-hours. You are NOT sleeping. You are a 24/7 quant researcher.
+- When NSE is OPEN, same as before: analyze events, decide HOLD/OPEN/CLOSE.
+- Global data source: data_cache/global_state.json (refreshed every 5 min
+  24/7 by the in-process scheduler). Read it via global_markets field in context.
+
+WHY 24/7:
+- Many real edges form overnight (US crash -> India opens gap-down).
+- Pre-market plans let you execute at 09:15:01 IST instead of 09:18 IST.
+- Hypothetical signals let us backtest "what would the brain have done"
+  against actual NSE moves for the 16h/day the bot isn't running.
+
 NSE INTRADAY TRADING RULES — KNOW BEFORE YOU ACT:
 - Market hours: 09:15-15:30 IST. New entries only 09:15-13:30 IST (no_new_trades_after: 13:30).
 - Force-square-off at 14:30 IST (intraday only — no overnight).
@@ -1522,6 +1547,8 @@ last_eod_backup_date = None       # 15:45 Mon-Fri: paper_state + trades_state to
 last_eod_postmortem_date = None   # 15:35 Mon-Fri: comprehensive daily post-mortem (trades, signals, missed, bugs fixed)
 last_pre_eod_check_date = None    # 15:25 Mon-Fri: pre-EOD safety check (verify bot will force-square correctly at 15:30)
 last_post_eod_check_date = None   # 17:30 Mon-Fri: post-EOD health check (verify bot + session still alive 2h after close)
+last_overnight_research_date = None  # 17:30-09:00 IST (when NSE closed): every 2h, brain logs hypothetical signals + pre-market plans
+last_pre_market_plan_date = None  # 09:00 IST Mon-Fri: write today's pre-market plan before market opens
 last_weekend_intel_date = None    # Sun 21:00: weekend_intel + monday_brief + send (was kotak-weekend-intel)
 last_weekly_summary_date = None   # Sun 18:00: weekly P&L recap (was kotak-bot-weekly-summary; watch loop already covers via weekly_strategy_review)
 last_thesis_update_date = None    # Mon 08:00: thesis brief (was implicit via thesis_monitor cron)
@@ -1532,6 +1559,7 @@ last_alpha_refresh_ts = 0           # 5 min during market hours: vol forecast, I
 last_chain_refresh_ts = 0           # 5 min during market hours: option chain analyzer (writes option_chains.json)
 last_dashboard_refresh_ts = 0       # 5 min during market hours: regenerates data_cache/dashboard.html
 last_periodic_scan_ts = 0           # 90 min during market hours: forced LLM scan + 3-line justification (transparency rule)
+last_overnight_research_ts = 0      # 2h when NSE closed (24/7): brain logs hypothetical signals + pre-market plans
 last_global_check_ts = 0            # 5 min 24/7: pull US/Asia/Europe/gold/oil/crypto for LLM global context awareness
 
 # --- LLM call thread tracking (for non-blocking async LLM calls) ---
@@ -2149,8 +2177,11 @@ def watch_loop():
                 # TRANSPARENCY rule, not a trade-forcing rule — the LLM has full
                 # discretion to HOLD, but it must justify. Cost: ~$0.10-0.20/day
                 # in extra LLM calls; benefit: continuous reasoning + audit trail.
-                if (is_market_hours()
-                    and datetime.now().timestamp() - last_periodic_scan_ts > 5400):
+                # FIX 2026-09-02 16:35: REMOVED is_market_hours() gate. The brain now
+                # thinks 24/7. The 90-min periodic scan fires always; outside NSE
+                # hours, the LLM is in 'global_research' mode (analyses overnight
+                # US/Asia moves, prepares for NSE open, logs hypothetical plans).
+                if datetime.now().timestamp() - last_periodic_scan_ts > 5400:
                     last_periodic_scan_ts = datetime.now().timestamp()
                     try:
                         _periodic_scan(context={
@@ -2161,7 +2192,8 @@ def watch_loop():
                             "candles": read_candles(),
                             "global_markets": _safe_read_json(DATA / "global_state.json", default={}),
                             "alpha": _safe_read_json(DATA / "quant_alpha.json", default={}),
-                            "trigger": "periodic_90min",
+                            "trigger": "periodic_90min" if is_market_hours() else "global_research_90min",
+                            "nse_status": "OPEN" if is_market_hours() else "CLOSED",
                         })
                     except Exception as e:
                         log(f"periodic-scan-err: {e}")
@@ -2288,6 +2320,37 @@ def watch_loop():
                     run_nightly_improvement()
                 except Exception as e:
                     log(f"SCHED-NIGHTLY-IMPROVEMENT-err: {e}")
+            # FIX 2026-09-02 16:35: 24/7 OVERNIGHT RESEARCH (every 2h when NSE closed).
+            # Logs hypothetical signals to data_cache/hypothetical_signals.jsonl.
+            # When NSE opens at 09:15, the morning brief can review overnight signals
+            # against actual NSE moves to learn from off-hours.
+            _now_unix = int(datetime.now().timestamp())
+            if not is_market_hours() and _now_unix - last_overnight_research_ts > 7200:
+                last_overnight_research_ts = _now_unix
+                try:
+                    from datetime import datetime as _dt
+                    _hour = _dt.now().hour
+                    log(f"OVERNIGHT-RESEARCH: NSE closed (hour={_hour:02d}), brain in global_research mode")
+                    # Spawn LLM call with overnight context
+                    if not _llm_in_flight():
+                        _t = threading.Thread(
+                            target=_invoke_llm_decision,
+                            args=({
+                                "liveness": liveness,
+                                "paper": {k: paper.get(k) for k in ('cash', 'realized_pnl', 'positions', 'orders')},
+                                "intraday": {},
+                                "chains_summary": {},
+                                "candles": {},
+                                "global_markets": _safe_read_json(DATA / "global_state.json", default={}),
+                                "alpha": _safe_read_json(DATA / "quant_alpha.json", default={}),
+                                "trigger": f"overnight_research_{_hour:02d}h",
+                                "nse_status": "CLOSED",
+                            },),
+                            daemon=True,
+                        )
+                        _t.start()
+                except Exception as _over_err:
+                    log(f"overnight-research-err: {_over_err}")
 
             # --- Telegram heartbeats (every 4h during market hours) + OI alerts ---
             try:
