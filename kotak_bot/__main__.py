@@ -661,7 +661,10 @@ def run_paper() -> None:
                 )
                 for pos in orphan_positions:
                     try:
-                        from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
+                        # BUG FIX 2026-09-02: do NOT re-import Order here — Python would
+                        # mark it as a local for the entire run_paper() function, breaking
+                        # the later Order(...) call at line ~1071 (UnboundLocalError). The
+                        # top-level import at line 26 already provides Order/OrderSide/etc.
                         close_order = Order(
                             symbol=pos.symbol, side=OrderSide.SELL if pos.qty > 0 else OrderSide.BUY,
                             qty=abs(pos.qty), order_type=OrderType.MARKET, product=ProductType.MIS,
