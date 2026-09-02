@@ -1269,7 +1269,9 @@ function render(s) {
       + '<td class="num">' + (p.ltp || 0).toFixed(2) + '</td>'
       + '<td class="num ' + pnlCls + '">' + fmtINR(p.pnl) + '</td>'
       + '<td class="mono">' + (p.expiry || '') + '</td></tr>';
-  }).join('') || '<tr><td colspan="7" class="muted">no open positions</td></tr>';
+  }).join('') || '<tr><td colspan="7" style="text-align: center; padding: 16px; color: var(--muted); font-size: 12px;">' +
+    '<div style="font-size: 22px; margin-bottom: 4px;">📭</div>' +
+    '<div>No open positions</div></td></tr>';
   $('posCount').textContent = '(' + (s.positions || []).length + ')';
 
   // trades
@@ -1280,7 +1282,9 @@ function render(s) {
       + '<td class="' + (t.side === 'BUY' ? 'green' : 'red') + '">' + (t.side || '') + '</td>'
       + '<td class="num">' + t.qty + '</td>'
       + '<td class="num">' + (t.price || 0).toFixed(2) + '</td></tr>';
-  }).join('') || '<tr><td colspan="5" class="muted">no fills today</td></tr>';
+  }).join('') || '<tr><td colspan="5" style="text-align: center; padding: 16px; color: var(--muted); font-size: 12px;">' +
+    '<div style="font-size: 22px; margin-bottom: 4px;">📭</div>' +
+    '<div>No fills today</div></td></tr>';
   $('trdCount').textContent = '(' + (s.today_fills_count || 0) + ')';
 
   // thesis
@@ -1341,8 +1345,8 @@ function render(s) {
   // Refresh candles
   fetch('/api/candles?symbol=NIFTY&interval=5m&period=1d').then(r => r.json()).then(d => renderCandles(d, 'nifty'));
   fetch('/api/candles?symbol=BANKNIFTY&interval=5m&period=1d').then(r => r.json()).then(d => renderCandles(d, 'bnf'));
-  // Option chain
-  fetch('/api/option_chain?symbol=NIFTY&expiry=2026-08-26&spot=' + (s.market_thesis && s.market_thesis.nifty_spot || 24260)).then(r => r.json()).then(d => renderOC(d));
+  // Option chain (expiry auto-calculated server-side to next Thursday)
+  fetch('/api/option_chain?symbol=NIFTY&expiry=auto&spot=' + (s.market_thesis && s.market_thesis.nifty_spot || 24260)).then(r => r.json()).then(d => renderOC(d));
 
   // Mavis Brain (quant trader AI)
   fetch('/api/quant_brain').then(r => r.json()).then(renderBrain);
@@ -1454,21 +1458,52 @@ function renderBrain(b) {
 
 function renderMavisPlan(d) {
   if (!d || !d.available || !d.trades) {
-    $('mavisPlan').innerHTML = '<span class="muted">no Mavis trade plan yet — Mavis writes to data_cache/mavis_trades.json</span>';
+    $('mavisPlan').innerHTML = '<div style="padding: 14px; color: var(--muted); text-align: center; font-size: 12px; background: var(--bg); border: 1px dashed var(--line); border-radius: 4px;">' +
+      '<div style="font-size: 28px; margin-bottom: 4px;">🌅</div>' +
+      '<div style="font-weight: 600; color: var(--text);">No Mavis plan yet</div>' +
+      '<div style="margin-top: 4px;">Pre-market cron at <b>08:25 IST</b> writes the next plan here</div></div>';
     $('mavisTree').innerHTML = '<span class="muted">—</span>';
     return;
   }
   // Render decision banner at the top
   let planHtml = '';
   if (d.decision) {
-    const actionColor = d.decision === 'EXECUTE_PLAN' ? 'green' :
-                        d.decision === 'BLOCK' ? 'red' : 'yellow';
-    const actionBg = d.decision === 'EXECUTE_PLAN' ? 'rgba(31,191,117,0.18)' :
-                     d.decision === 'BLOCK' ? 'rgba(231,76,60,0.18)' : 'rgba(245,179,66,0.18)';
+    // Check freshness — parse the date out of "valid_for" string (e.g. "Tue 01-Sep-2026 NSE...")
+    const today = new Date();
+    const todayStr = today.toISOString().slice(0, 10);  // YYYY-MM-DD
+    let isStale = false;
+    let validDateStr = '';
+    if (d.valid_for_date) {
+      validDateStr = d.valid_for_date;
+      isStale = d.valid_for_date !== todayStr;
+    } else if (d.valid_for) {
+      // Parse "Tue 01-Sep-2026" → "2026-09-01"
+      const m = d.valid_for.match(/(\d{2})-([A-Za-z]{3})-(\d{4})/);
+      if (m) {
+        const months = {Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12'};
+        validDateStr = m[3] + '-' + (months[m[2]] || '01') + '-' + m[1];
+        isStale = validDateStr !== todayStr;
+      }
+    }
+    let actionColor = d.decision === 'EXECUTE_PLAN' ? 'green' :
+                      d.decision === 'BLOCK' ? 'red' : 'yellow';
+    let actionBg = d.decision === 'EXECUTE_PLAN' ? 'rgba(31,191,117,0.18)' :
+                   d.decision === 'BLOCK' ? 'rgba(231,76,60,0.18)' : 'rgba(245,179,66,0.18)';
+    let actionBorder = actionColor;
+    if (isStale) {
+      // Mute to gray when stale so a BLOCK from yesterday doesn't look like today's signal
+      actionColor = '#9aa0aa';
+      actionBg = 'rgba(120,120,140,0.10)';
+      actionBorder = '#5a5d65';
+    }
     const conf = d.decision_confidence ? Math.round(d.decision_confidence * 100) + '%' : '—';
     const at = d.decision_at || d.generated_at || '';
     const atShort = at.length >= 16 ? at.substring(11, 16) : at;
-    planHtml += '<div style="background: ' + actionBg + '; border: 1px solid ' + actionColor + '; border-radius: 6px; padding: 12px; margin-bottom: 12px;">' +
+    const staleBanner = isStale
+      ? '<div style="font-size: 11px; margin-top: 8px; padding: 6px 10px; background: rgba(245,179,66,0.10); border-left: 3px solid #f5b342; border-radius: 3px;">' +
+        '⏰ <b>Stale plan</b> from ' + (validDateStr || '?') + ' — pre-market cron will refresh at 08:25 IST</div>'
+      : '';
+    planHtml += '<div style="background: ' + actionBg + '; border: 1px solid ' + actionBorder + '; border-radius: 6px; padding: 12px; margin-bottom: 12px;">' +
       '<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">' +
       '<div style="font-size: 22px; font-weight: 700; color: ' + actionColor + ';">' + d.decision + '</div>' +
       '<div style="font-size: 12px;"><span class="muted">bias:</span> <b>' + (d.decision_bias || '—') + '</b></div>' +
@@ -1477,6 +1512,7 @@ function renderMavisPlan(d) {
       '<div style="font-size: 11px;" class="muted">updated ' + atShort + '</div>' +
       '</div>' +
       (d.decision_reason ? '<div style="font-size: 12px; margin-top: 8px;"><b style="color: ' + actionColor + ';">Why:</b> ' + d.decision_reason + '</div>' : '') +
+      staleBanner +
       '</div>';
   }
   // Render trade plan
@@ -1684,14 +1720,22 @@ function renderTerminal(t) {
         + '</div>';
     }).join('');
   } else {
-    $('riskMatrix').innerHTML = '<div style="padding: 20px; text-align: center; color: var(--muted);">no iron condor detected in positions</div>';
+    $('riskMatrix').innerHTML = '<div style="padding: 24px; text-align: center; color: var(--muted); background: var(--bg); border: 1px dashed var(--line); border-radius: 6px; margin: 8px 0;">' +
+      '<div style="font-size: 32px; margin-bottom: 6px;">📊</div>' +
+      '<div style="font-weight: 600; color: var(--text); font-size: 13px;">No iron condor open</div>' +
+      '<div style="margin-top: 4px; font-size: 11px;">Risk matrix shows when an iron condor is in positions</div>' +
+      '</div>';
   }
 
   // Scenarios — professional table with proper bars, fixed labeling
   const sc = t.scenarios || {};
   const scKeys = Object.keys(sc);
   if (scKeys.length === 0) {
-    $('scenariosBody').innerHTML = '<div style="padding: 20px; text-align: center; color: var(--muted);">no scenarios</div>';
+    $('scenariosBody').innerHTML = '<div style="padding: 24px; text-align: center; color: var(--muted); background: var(--bg); border: 1px dashed var(--line); border-radius: 6px; margin: 8px 0;">' +
+      '<div style="font-size: 32px; margin-bottom: 6px;">🎯</div>' +
+      '<div style="font-weight: 600; color: var(--text); font-size: 13px;">No active scenarios</div>' +
+      '<div style="margin-top: 4px; font-size: 11px;">P&L at various spot levels will appear when a position is open</div>' +
+      '</div>';
   } else {
     const maxAbs = (arr) => Math.max(...arr.map(s => Math.abs(s.pnl)), 1);
     $('scenariosBody').innerHTML = scKeys.map(und => {
@@ -1753,8 +1797,13 @@ function renderOC(d) {
   if (!d) return;
   const tbody = $('ocTable').querySelector('tbody');
   if (d.error && (!d.calls || !d.calls.length)) {
-    $('ocTable').querySelector('tbody').innerHTML = '<tr><td colspan="11" class="muted">' + d.error + '</td></tr>';
-    $('ocNote').textContent = 'NSE blocked from this IP, Kite MCP down. Option chain unavailable.';
+    const expiryInfo = d.expiry ? ' (requested expiry: ' + d.expiry + ')' : '';
+    $('ocTable').querySelector('tbody').innerHTML = '<tr><td colspan="11" style="text-align: center; padding: 20px; color: var(--muted); font-size: 12px;">' +
+      '<div style="font-size: 28px; margin-bottom: 6px;">📡</div>' +
+      '<div style="font-weight: 600; color: var(--text);">Option chain unavailable</div>' +
+      '<div style="margin-top: 4px; font-size: 11px;">' + d.error + expiryInfo + '</div>' +
+      '</td></tr>';
+    $('ocNote').textContent = d.expiry ? 'Next expiry: ' + d.expiry + ' (auto-calculated) — NSE blocked from this IP' : 'NSE blocked from this IP, Kite MCP down. Option chain unavailable.';
     return;
   }
   $('ocMeta').textContent = '· spot ' + (d.spot || 0).toFixed(2) + ' · ' + (d.source || '');
@@ -1877,7 +1926,15 @@ def handle_api(path):
         return json.dumps(get_candles(sym, interval, period), default=str)
     if u.path == "/api/option_chain":
         sym = (qs.get("symbol", ["NIFTY"])[0]).upper()
-        expiry = qs.get("expiry", ["2026-08-26"])[0]
+        expiry = qs.get("expiry", ["auto"])[0]
+        # Auto-calculate next Thursday if expiry is missing, default, or stale
+        if expiry in ("", "auto", "2026-08-26"):
+            today_ist = datetime.now(IST).date()
+            days_to_thu = (3 - today_ist.weekday()) % 7
+            # If today is Thursday after 15:30 IST, skip to next Thursday
+            if days_to_thu == 0 and datetime.now(IST).hour >= 15:
+                days_to_thu = 7
+            expiry = (today_ist + timedelta(days=days_to_thu)).isoformat()
         spot = float(qs.get("spot", ["0"])[0] or 0)
         return json.dumps(get_option_chain(sym, expiry, spot), default=str)
     if u.path == "/api/terminal":
