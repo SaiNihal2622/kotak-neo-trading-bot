@@ -1519,6 +1519,7 @@ last_morning_brief_date = None    # 08:15 Mon-Fri: pre-market signals + US close
 last_daily_maint_date = None      # 08:25 Mon-Fri: re-auth, self-test, power plan, reconcile (was kotak-bot-daily-maintenance)
 last_news_cache_date = None       # 09:00 Mon-Fri: LLM-judge sentiment aggregate (was implicit via trader-desk)
 last_eod_backup_date = None       # 15:45 Mon-Fri: paper_state + trades_state to Telegram (was kotak-bot-state-backup)
+last_eod_postmortem_date = None   # 15:35 Mon-Fri: comprehensive daily post-mortem (trades, signals, missed, bugs fixed)
 last_weekend_intel_date = None    # Sun 21:00: weekend_intel + monday_brief + send (was kotak-weekend-intel)
 last_weekly_summary_date = None   # Sun 18:00: weekly P&L recap (was kotak-bot-weekly-summary; watch loop already covers via weekly_strategy_review)
 last_thesis_update_date = None    # Mon 08:00: thesis brief (was implicit via thesis_monitor cron)
@@ -2220,6 +2221,11 @@ def watch_loop():
                         run_closing_straddle()
                     except Exception as e:
                         log(f"SCHED-CLOSING-STRADDLE-err: {e}")
+                # 15:35 EOD post-mortem (comprehensive daily report to Telegram)
+                if _now.hour == 15 and 35 <= _now.minute < 40 and last_eod_postmortem_date != _now.date():
+                    last_eod_postmortem_date = _now.date()
+                    log("SCHED-EOD-POSTMORTEM: triggering (15:35)")
+                    _scheduled_subprocess("scripts/daily_postmortem.py", "eod-postmortem", timeout=60)
                 # 15:45 EOD state backup (paper_state + trades_state to Telegram)
                 if _now.hour == 15 and 45 <= _now.minute < 50 and last_eod_backup_date != _now.date():
                     last_eod_backup_date = _now.date()
