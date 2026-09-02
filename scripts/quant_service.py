@@ -530,6 +530,22 @@ EVENTS YOU RECEIVE — interpret these carefully:
 
 ACTIONABILITY RULE: rapid_move + sector theme confirmation (e.g. ALL banks +0.3% together, or VIX spiking with index down) = TRADE. rapid_move alone on one stock = noise. session_move alone = noise. rapid_move + volume spike (when available) = high conviction.
 
+LOW-VOL REGIME TUNING (VIX < 12):
+- In low-vol regimes, rapid_move is rare. The market drifts 0.5-1% over hours.
+- IF VIX < 12 AND NIFTY/BANKNIFTY both >0.5% from open AND broad sector weakness (banks + autos + metals all down):
+  the slow-drift is the signal. You can enter a long_put / bear_put_vertical WITHOUT a rapid_move trigger.
+- Time-of-day: best entries are 09:30-12:30 (drift is fresh). After 13:00, move may be exhausted.
+- Watch for SENSEX confirmation too (BSE F&O available via Kotak; SENSEX often leads or confirms NIFTY).
+
+SENSEX AS ENTRY TARGET (not just confirmation):
+- SENSEX has its own option chain (BSE F&O). SENSEX=20 lot, 100pt strike spacing.
+- If NIFTY is bearish AND SENSEX is also down 0.5%+, EITHER can be the entry. Pick the one with:
+  - Better liquidity (wider bid-ask spread = skip)
+  - Lower premium decay (further OTM = lower theta)
+  - Your recent track record on that index
+- Don't BOTH NIFTY and SENSEX at the same time — that's 2x exposure to the same thesis.
+  If you want to scale, scale up NIFTY first.
+
 1. **LOTTERY TICKETS** (vol-explosion optionality — captures moves like 6→180):
    - When VIX < 13 AND intraday range < 0.4% NIFTY/BANKNIFTY AND no major event in next 4h
    - Deploy 1 lot deep-OTM (10-15 delta) long call OR long put, max 0.5% of capital risk per ticket
