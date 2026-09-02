@@ -751,41 +751,43 @@ HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="topbar">
-  <span class="brand"><span class="brand-mark">⚡</span>KOTAK NEO BOT <span style="color:var(--muted); font-weight:500; margin-left:4px">— LIVE</span></span>
+  <span class="brand"><span class="brand-mark">KN</span>KOTAK NEO BOT <span class="brand-sep">|</span><span class="brand-sub">PRODUCTION TRADING CONSOLE</span></span>
   <span id="botPill" class="pill">…</span>
   <span id="vixPill" class="pill">VIX …</span>
   <span id="dataPill" class="pill">data …</span>
   <span id="tickPill" class="pill">tick …</span>
+  <span id="sessionPill" class="pill">session …</span>
   <span class="spacer"></span>
+  <span id="dataAge" class="muted mono" style="font-size: 11px;">data age: --</span>
   <span class="clock" id="clock">--:--:--</span>
   <span class="pill pill-clock">IST</span>
 </div>
 
 <div class="grid">
 
-  <!-- COUNTDOWNS — 0DTE -->
+  <!-- 0DTE COUNTDOWNS -->
   <div class="pro-card col-12" style="margin-bottom: 14px;">
     <div class="pro-card-header">
       <div class="pro-card-title">
-        <span class="pro-icon" style="background: linear-gradient(135deg,#f5b342,#d97706);">⏱</span>
+        <span class="pro-icon" style="background: linear-gradient(135deg,#f5b342,#d97706);">T</span>
         <span>0DTE Countdowns</span>
         <span class="pro-card-sub">today's expiry timeline</span>
       </div>
     </div>
     <div class="pro-card-body">
       <div class="cd-grid" id="cdGrid">
-        <div class="cd-cell"><div class="t" id="cd_open">--</div><div class="l">Market open 09:15</div></div>
-        <div class="cd-cell"><div class="t" id="cd_soft">--</div><div class="l">Soft force-square 14:15</div></div>
-        <div class="cd-cell"><div class="t" id="cd_hard">--</div><div class="l">Hard force-square 15:15</div></div>
-        <div class="cd-cell"><div class="t" id="cd_close">--</div><div class="l">Market close 15:30</div></div>
+        <div class="cd-cell"><div class="t" id="cd_open">--</div><div class="l">Market open · 09:15</div></div>
+        <div class="cd-cell"><div class="t" id="cd_soft">--</div><div class="l">Soft force-square · 14:15</div></div>
+        <div class="cd-cell"><div class="t" id="cd_hard">--</div><div class="l">Hard force-square · 15:15</div></div>
+        <div class="cd-cell"><div class="t" id="cd_close">--</div><div class="l">Market close · 15:30</div></div>
       </div>
     </div>
   </div>
 
-  <!-- ACCOUNT — 4 metric cards -->
+  <!-- ACCOUNT METRICS — 4 cards -->
   <div class="pro-card col-3">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">₹</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">1</span>
       <span>Cash</span>
     </div></div>
     <div class="pro-card-body">
@@ -795,7 +797,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
   <div class="pro-card col-3">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">▲</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">2</span>
       <span>Realized P&amp;L</span>
     </div></div>
     <div class="pro-card-body">
@@ -805,7 +807,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
   <div class="pro-card col-3">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">◐</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">3</span>
       <span>Unrealized P&amp;L</span>
     </div></div>
     <div class="pro-card-body">
@@ -815,7 +817,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
   <div class="pro-card col-3">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">◆</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">4</span>
       <span>Total Value</span>
     </div></div>
     <div class="pro-card-body">
@@ -824,33 +826,69 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- BOT HEALTH / MARKET / BRAIN DECISION -->
-  <div class="pro-card col-4">
+  <!-- UNDERLYING SPOT STRIP — all 4 indices live -->
+  <div class="pro-card col-12" style="margin-bottom: 14px;">
+    <div class="pro-card-header">
+      <div class="pro-card-title">
+        <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">S</span>
+        <span>Spot &amp; Day Change · All Underlyings</span>
+        <span class="pro-card-sub">5 indices + 24 stocks via yfinance / Kotak Neo</span>
+      </div>
+    </div>
+    <div class="pro-card-body" style="padding: 0;">
+      <div class="scroll pro-table-wrap"><table class="pro-table" id="spotTable">
+        <thead><tr>
+          <th>Symbol</th>
+          <th>Type</th>
+          <th class="num">Last</th>
+          <th class="num">Chg</th>
+          <th class="num">Chg%</th>
+          <th class="num">Open</th>
+          <th class="num">High</th>
+          <th class="num">Low</th>
+          <th class="num">Prev Close</th>
+          <th class="num">Volume</th>
+          <th>Source</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- BOT HEALTH / MARKET / BRAIN DECISION / VIX -->
+  <div class="pro-card col-3">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">◉</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">H</span>
       <span>Bot Health</span>
     </div></div>
     <div class="pro-card-body"><div id="botKv" class="kv-grid"></div></div>
   </div>
-  <div class="pro-card col-4">
+  <div class="pro-card col-3">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">▦</span>
-      <span>Market <span class="dot green pulse" style="margin-left:6px"></span><span class="pro-card-sub" style="margin-left:0">live</span></span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">M</span>
+      <span>Market</span>
     </div></div>
     <div class="pro-card-body"><div id="marketKv" class="kv-grid"></div></div>
   </div>
-  <div class="pro-card col-4">
+  <div class="pro-card col-3">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">◈</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">B</span>
       <span>Last Brain Decision</span>
     </div></div>
     <div class="pro-card-body"><div id="brainKv" class="kv-grid"></div></div>
+  </div>
+  <div class="pro-card col-3">
+    <div class="pro-card-header"><div class="pro-card-title">
+      <span class="pro-icon" style="background: linear-gradient(135deg,#f5b342,#d97706);">V</span>
+      <span>Volatility &amp; Risk</span>
+    </div></div>
+    <div class="pro-card-body"><div id="vixKv" class="kv-grid"></div></div>
   </div>
 
   <!-- OPEN POSITIONS -->
   <div class="pro-card col-8">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">▤</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">P</span>
       <span>Open Positions</span>
       <span class="pro-card-sub" id="posCount">(0)</span>
     </div></div>
@@ -869,8 +907,8 @@ HTML = r"""<!DOCTYPE html>
   <!-- TODAY'S TRADES -->
   <div class="pro-card col-4">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">▥</span>
-      <span>Today's Trades</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">F</span>
+      <span>Today's Fills</span>
       <span class="pro-card-sub" id="trdCount">(0)</span>
     </div></div>
     <div class="pro-card-body" style="padding: 0;">
@@ -881,19 +919,19 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- THESIS + CRONS -->
+  <!-- MARKET THESIS + CRON SCHEDULE -->
   <div class="pro-card col-6">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#f5b342,#d97706);">◆</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#f5b342,#d97706);">Θ</span>
       <span>Market Thesis</span>
     </div></div>
     <div class="pro-card-body"><div id="thesisBody">—</div></div>
   </div>
   <div class="pro-card col-6">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">⏰</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">S</span>
       <span>Cron Schedule</span>
-      <span class="pro-card-sub">kotak-* jobs</span>
+      <span class="pro-card-sub">in-process schedulers</span>
     </div></div>
     <div class="pro-card-body" style="padding: 0;">
       <div class="scroll pro-table-wrap" style="max-height:280px"><table class="pro-table" id="cronTable">
@@ -906,7 +944,7 @@ HTML = r"""<!DOCTYPE html>
   <!-- LOG + PROCESSES -->
   <div class="pro-card col-8">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">▤</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">L</span>
       <span>bot.log (tail)</span>
       <span class="pro-card-sub">last 20 INFO/ERROR</span>
     </div></div>
@@ -916,8 +954,8 @@ HTML = r"""<!DOCTYPE html>
   </div>
   <div class="pro-card col-4">
     <div class="pro-card-header"><div class="pro-card-title">
-      <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">⌥</span>
-      <span>kotak-neo-bot Processes</span>
+      <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">π</span>
+      <span>Process Tree</span>
     </div></div>
     <div class="pro-card-body" style="padding: 0;">
       <div class="scroll pro-table-wrap" id="procScroll" style="max-height:280px"><table class="pro-table" id="procTable">
@@ -927,58 +965,67 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ========== TRADING TERMINAL (full-width section, own padding) ========== -->
-  <div style="background: linear-gradient(180deg, #0a1020 0%, #0b0f17 100%); border-top: 3px solid var(--accent); padding: 24px 24px 32px; margin-top: 16px;">
+  <!-- ========== TRADING TERMINAL ========== -->
+  <div class="col-12" style="background: linear-gradient(180deg, #0a1020 0%, #0b0f17 100%); border-top: 3px solid var(--accent); padding: 24px 24px 32px; margin-top: 16px;">
 
-    <!-- SECTION HEADER -->
     <div style="display: flex; align-items: baseline; gap: 16px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--line);">
-      <div style="font-size: 20px; font-weight: 700; color: var(--accent); letter-spacing: 0.5px;">📊 TRADING TERMINAL</div>
-      <div style="font-size: 12px; color: var(--muted);">Real-time NIFTY / BANKNIFTY 5min candles · live option chain · positions terminal · iron-condor risk matrix · P&L scenarios</div>
+      <div style="font-size: 20px; font-weight: 700; color: var(--accent); letter-spacing: 0.5px;">TRADING TERMINAL</div>
+      <div style="font-size: 12px; color: var(--muted);">NIFTY · BANKNIFTY · FINNIFTY · MIDCPNIFTY · SENSEX — 5min candles · option chains · positions · risk matrix · P&amp;L scenarios</div>
     </div>
 
-    <!-- ROW 1: CANDLES (full width, side by side, taller) -->
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
-
-      <!-- NIFTY CANDLES -->
+    <!-- CANDLES: 4 indices side-by-side, smaller height for compactness -->
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
       <div class="pro-card">
-        <div class="pro-card-header">
-          <div class="pro-card-title">
-            <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">📈</span>
-            <span>NIFTY 5min</span>
-            <span style="font-size: 22px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace; margin-left: 8px;" id="niftySpotPill">--</span>
-            <span class="pro-card-sub" style="margin-left:auto" id="niftyCandleMeta">—</span>
-          </div>
+        <div class="pro-card-header"><div class="pro-card-title">
+          <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">N</span>
+          <span>NIFTY 5m</span>
+          <span class="pro-card-sub" style="margin-left:auto" id="niftyCandleMeta">—</span>
         </div>
-        <div class="pro-card-body" style="padding: 12px 16px;">
-          <div id="niftyCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 6px; height: 320px; width: 100%;">
-            <div style="padding: 10px; color: var(--muted); font-size: 11px;">fetching candles...</div>
-          </div>
+        <div class="pro-card-title" style="font-size: 20px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace; padding: 0 14px;" id="niftySpotPill">--</div>
+        <div class="pro-card-body" style="padding: 8px;">
+          <div id="niftyCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 6px; height: 220px; width: 100%;"></div>
         </div>
       </div>
-
-      <!-- BANKNIFTY CANDLES -->
       <div class="pro-card">
-        <div class="pro-card-header">
-          <div class="pro-card-title">
-            <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">📈</span>
-            <span>BANKNIFTY 5min</span>
-            <span style="font-size: 22px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace; margin-left: 8px;" id="bnfSpotPill">--</span>
-            <span class="pro-card-sub" style="margin-left:auto" id="bnfCandleMeta">—</span>
-          </div>
+        <div class="pro-card-header"><div class="pro-card-title">
+          <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">B</span>
+          <span>BANKNIFTY 5m</span>
+          <span class="pro-card-sub" style="margin-left:auto" id="bnfCandleMeta">—</span>
         </div>
-        <div class="pro-card-body" style="padding: 12px 16px;">
-          <div id="bnfCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 6px; height: 320px; width: 100%;">
-            <div style="padding: 10px; color: var(--muted); font-size: 11px;">fetching candles...</div>
-          </div>
+        <div class="pro-card-title" style="font-size: 20px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace; padding: 0 14px;" id="bnfSpotPill">--</div>
+        <div class="pro-card-body" style="padding: 8px;">
+          <div id="bnfCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 6px; height: 220px; width: 100%;"></div>
+        </div>
+      </div>
+      <div class="pro-card">
+        <div class="pro-card-header"><div class="pro-card-title">
+          <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">F</span>
+          <span>FINNIFTY 5m</span>
+          <span class="pro-card-sub" style="margin-left:auto" id="finCandleMeta">—</span>
+        </div>
+        <div class="pro-card-title" style="font-size: 20px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace; padding: 0 14px;" id="finSpotPill">--</div>
+        <div class="pro-card-body" style="padding: 8px;">
+          <div id="finCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 6px; height: 220px; width: 100%;"></div>
+        </div>
+      </div>
+      <div class="pro-card">
+        <div class="pro-card-header"><div class="pro-card-title">
+          <span class="pro-icon" style="background: linear-gradient(135deg,#9b6bff,#7c3aed);">S</span>
+          <span>SENSEX 5m</span>
+          <span class="pro-card-sub" style="margin-left:auto" id="sensexCandleMeta">—</span>
+        </div>
+        <div class="pro-card-title" style="font-size: 20px; font-weight: 700; color: var(--accent); font-family: 'Consolas', monospace; padding: 0 14px;" id="sensexSpotPill">--</div>
+        <div class="pro-card-body" style="padding: 8px;">
+          <div id="sensexCandles" style="background: #050810; border: 1px solid #1a2236; border-radius: 6px; height: 220px; width: 100%;"></div>
         </div>
       </div>
     </div>
 
-    <!-- ROW 2: POSITIONS TERMINAL (full width) -->
+    <!-- POSITIONS TERMINAL -->
     <div class="pro-card" style="margin-bottom: 16px;">
       <div class="pro-card-header">
         <div class="pro-card-title">
-          <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">💼</span>
+          <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">P</span>
           <span>Positions Terminal</span>
           <span class="pro-card-sub" id="termPosCount">(0 legs)</span>
           <span class="pro-card-sub" style="margin-left:auto">LTP from bot's last MTM tick · bid/ask estimated 0.5% (0DTE) / 1% (1D+)</span>
@@ -1007,26 +1054,22 @@ HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- ROW 3: RISK MATRIX + SCENARIOS (2 columns) -->
+    <!-- IRON CONDOR RISK MATRIX + P&L SCENARIOS -->
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
-
-      <!-- IRON CONDOR RISK MATRIX -->
       <div class="pro-card" id="riskMatrixCard">
         <div class="pro-card-header">
           <div class="pro-card-title">
-            <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">▣</span>
+            <span class="pro-icon" style="background: linear-gradient(135deg,#4f9cff,#2563eb);">R</span>
             <span>Iron Condor Risk Matrix</span>
             <span class="pro-card-sub">at expiry · live from positions</span>
           </div>
         </div>
         <div id="riskMatrix" class="pro-card-body">—</div>
       </div>
-
-      <!-- SCENARIOS -->
       <div class="pro-card" id="scenariosCard">
         <div class="pro-card-header">
           <div class="pro-card-title">
-            <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">◉</span>
+            <span class="pro-icon" style="background: linear-gradient(135deg,#1fbf75,#0d9668);">π</span>
             <span>P&amp;L Scenarios</span>
             <span class="pro-card-sub">P&amp;L at various underlying levels</span>
           </div>
@@ -1035,13 +1078,13 @@ HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- ROW 4: OPTION CHAIN (full width) -->
+    <!-- OPTION CHAIN -->
     <div class="pro-card" style="margin-top: 16px;">
       <div class="pro-card-header">
         <div class="pro-card-title">
-          <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">▦</span>
+          <span class="pro-icon" style="background: linear-gradient(135deg,#2dd4d4,#0891b2);">C</span>
           <span>NIFTY Option Chain</span>
-          <span class="pro-card-sub">27-Aug-2026 · 0DTE</span>
+          <span class="pro-card-sub" id="ocSub">—</span>
           <span class="pro-card-sub" id="ocMeta" style="margin-left:auto">—</span>
         </div>
       </div>
@@ -1062,51 +1105,46 @@ HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- ========== 🧠 MAVIS BRAIN (quant trader AI, not template) ========== -->
+    <!-- ========== MAVIS BRAIN (quant trader AI) ========== -->
     <div style="border-top: 3px solid #9b6bff; margin-top: 24px; padding-top: 16px;">
       <div style="background: linear-gradient(90deg, rgba(155,107,255,0.15) 0%, rgba(155,107,255,0.03) 100%); border: 1px solid #9b6bff; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
         <div style="display: flex; align-items: baseline; gap: 14px;">
-          <div style="font-size: 20px; font-weight: 700; color: #9b6bff;">🧠 MAVIS BRAIN</div>
-          <div style="font-size: 12px; color: var(--muted);">quant trader AI · not template · data-driven decisions</div>
+          <div style="font-size: 18px; font-weight: 700; color: #9b6bff; letter-spacing: 0.5px;">MAVIS BRAIN</div>
+          <div style="font-size: 12px; color: var(--muted);">quant trader AI · not template · data-driven decisions · sole decision authority at 09:00-15:30 IST</div>
         </div>
       </div>
 
-      <!-- Brain state: regime, trend, key levels -->
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
         <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
-          <div style="font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 10px;">📊 Market Regime</div>
+          <div style="font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Market Regime</div>
           <div id="brainRegime" class="muted">fetching...</div>
         </div>
         <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
-          <div style="font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 10px;">🎯 Key Levels & Expected Move</div>
+          <div style="font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Key Levels &amp; Expected Move</div>
           <div id="brainLevels" class="muted">fetching...</div>
         </div>
       </div>
 
-      <!-- Mavis trade plan -->
       <div style="background: linear-gradient(90deg, rgba(31,191,117,0.10) 0%, rgba(31,191,117,0.02) 100%); border: 1px solid #1fbf75; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
-        <div style="font-size: 14px; font-weight: 700; color: #1fbf75; margin-bottom: 8px;">💡 Mavis's Trade Plan (data-driven, dynamic)</div>
+        <div style="font-size: 13px; font-weight: 700; color: #1fbf75; margin-bottom: 8px;">Mavis Trade Plan (data-driven, dynamic)</div>
         <div id="mavisPlan" class="muted">fetching...</div>
       </div>
 
-      <!-- Mavis real-time live presence -->
       <div style="background: linear-gradient(90deg, rgba(155,107,255,0.12) 0%, rgba(155,107,255,0.02) 100%); border: 1px solid #9b6bff; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
-        <div style="font-size: 14px; font-weight: 700; color: #9b6bff; margin-bottom: 8px;">🧠 Mavis live (event-driven, real-time)</div>
+        <div style="font-size: 13px; font-weight: 700; color: #9b6bff; margin-bottom: 8px;">Mavis live (event-driven, real-time)</div>
         <div id="mavisLive" class="muted">fetching...</div>
       </div>
 
-      <!-- Mavis event ticker -->
       <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-          <div style="font-size: 13px; font-weight: 700; color: var(--accent);">📡 Mavis Event Ticker (last 10)</div>
+          <div style="font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Mavis Event Ticker (last 10)</div>
           <div style="font-size: 10px; color: var(--muted);">— auto-refresh 2.5s —</div>
         </div>
         <div id="mavisEvents" class="muted">fetching...</div>
       </div>
 
-      <!-- Intraday decision tree -->
       <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px;">
-        <div style="font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 10px;">🌳 Mavis's Intraday Decision Tree</div>
+        <div style="font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Mavis Intraday Decision Tree</div>
         <div id="mavisTree" class="muted">fetching...</div>
       </div>
     </div>
@@ -1158,7 +1196,7 @@ function render(s) {
   const cd = s.countdowns || {};
   $('clock').textContent = (cd.now_ist || '--:--:--') + ' IST · ' + (cd.now_date || '');
 
-  // top pills
+  // top pills (declare bot FIRST so other blocks can use it)
   const bot = s.bot || {};
   const alive = !!bot.alive && !!bot.main_thread_alive;
   $('botPill').className = 'pill ' + (alive ? 'alive' : 'dead');
@@ -1168,6 +1206,30 @@ function render(s) {
   $('dataPill').textContent = 'data ' + (bot.data_source || '?');
   $('dataPill').className = 'pill ' + (bot.data_source === 'live_kotak' ? 'alive' : 'warn');
   $('tickPill').textContent = 'tick ' + (bot.tick || '?') + ' · uptime ' + fmtUptime(bot.uptime_sec);
+
+  // sessionPill (Kotak session status)
+  fetch('/api/session').then(r => r.json()).then(sess => {
+    const el = $('sessionPill');
+    if (!el) return;
+    if (!sess.available) { el.textContent = 'session n/a'; el.className = 'pill dead'; return; }
+    const r = sess.remaining_hours || 0;
+    const txt = 'session ' + (r >= 1 ? r.toFixed(1) + 'h' : Math.max(1, Math.floor(r * 60)) + 'm');
+    el.textContent = txt;
+    let cls = 'pill ';
+    if (r > 1) cls += 'alive';
+    else if (r > 0.083) cls += 'warn';
+    else cls += 'dead';
+    el.className = cls;
+    el.title = 'authed ' + (sess.authed_at || '?') + ' · expires ' + (sess.expires_at || '?') + ' · env=' + (sess.env || '?');
+  }).catch(() => {});
+
+  // data age (bot liveness)
+  const lastLiveness = (bot.last_liveness_age_sec || 0);
+  const dataAgeEl = $('dataAge');
+  if (dataAgeEl) {
+    dataAgeEl.textContent = 'data age: ' + lastLiveness.toFixed(1) + 's';
+    dataAgeEl.className = 'mono' + (lastLiveness > 60 ? ' red' : (lastLiveness > 15 ? ' yellow' : ' muted'));
+  }
 
   // countdowns
   $('cd_open').textContent = cd.market_open_0915 ? cd.market_open_0915.label : '--';
@@ -1217,6 +1279,9 @@ function render(s) {
   // thesis (rich — from thesis/latest.json, updated every 30m)
   const mt = s.market_thesis || {};
   const t = mt;
+  // Hydrate new UI elements (VIX card, spot table) on every render
+  fetch('/api/vix_card').then(r => r.json()).then(v => renderVix(v)).catch(() => {});
+  fetch('/api/spot').then(r => r.json()).then(t => renderSpotTable(t)).catch(() => {});
   if (t && t.available) {
     const regCls = t.regime === 'range' ? 'green' : (t.regime === 'trend' ? 'accent' : 'yellow');
     const biasCls = t.bias === 'bullish' ? 'green' : (t.bias === 'bearish' ? 'red' : 'muted');
@@ -1342,9 +1407,11 @@ function render(s) {
   // Update spot pills from terminal data
   fetch('/api/terminal').then(r => r.json()).then(t => renderTerminal(t))
     .catch(e => { /* keep prev */ });
-  // Refresh candles
+  // Refresh candles (4 indices: NIFTY / BANKNIFTY / FINNIFTY / SENSEX)
   fetch('/api/candles?symbol=NIFTY&interval=5m&period=1d').then(r => r.json()).then(d => renderCandles(d, 'nifty'));
   fetch('/api/candles?symbol=BANKNIFTY&interval=5m&period=1d').then(r => r.json()).then(d => renderCandles(d, 'bnf'));
+  fetch('/api/candles?symbol=FINNIFTY&interval=5m&period=1d').then(r => r.json()).then(d => renderCandles(d, 'fin'));
+  fetch('/api/candles?symbol=SENSEX&interval=5m&period=1d').then(r => r.json()).then(d => renderCandles(d, 'sensex'));
   // Option chain (expiry auto-calculated server-side to next Thursday)
   fetch('/api/option_chain?symbol=NIFTY&expiry=auto&spot=' + (s.market_thesis && s.market_thesis.nifty_spot || 24260)).then(r => r.json()).then(d => renderOC(d));
 
@@ -1368,12 +1435,12 @@ function renderMavisLive(st) {
   const ts = (c.ts || '').substring(11, 19);
   const lastThought = m.last_thought || 'Standing by';
   const minsToForce = m.mins_to_force_square;
-  const mktOpen = m.mkt_open ? '🟢 MARKET OPEN' : '⚪ market closed';
+  const mktOpen = m.mkt_open ? '<span class="green">MARKET OPEN</span>' : '<span class="muted">market closed</span>';
   const forceLine = minsToForce != null ? `<span class="muted"> · </span><span class="yellow">${minsToForce}m to force-square</span>` : '';
   const mtmLine = c.open_positions > 0 ? `<span class="muted"> · MTM </span><span class="${c.mtm_total >= 0 ? 'green' : 'red'}">Rs.${c.mtm_total.toFixed(0)}</span>` : '';
   el.innerHTML =
     `<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px;">` +
-    `<span style="color: var(--accent); font-weight: 700;">🧠 Mavis live</span>` +
+    `<span style="color: var(--accent); font-weight: 700;">Mavis live</span>` +
     `<span class="muted">${ts}</span>` +
     `<span class="muted">·</span><span class="${m.mkt_open ? 'green' : 'muted'}">${mktOpen}</span>` +
     `<span class="muted">·</span><span>NIFTY <b>${(c.nifty || 0).toFixed(2)}</b></span>` +
@@ -1501,7 +1568,7 @@ function renderMavisPlan(d) {
     const atShort = at.length >= 16 ? at.substring(11, 16) : at;
     const staleBanner = isStale
       ? '<div style="font-size: 11px; margin-top: 8px; padding: 6px 10px; background: rgba(245,179,66,0.10); border-left: 3px solid #f5b342; border-radius: 3px;">' +
-        '⏰ <b>Stale plan</b> from ' + (validDateStr || '?') + ' — pre-market cron will refresh at 08:25 IST</div>'
+        '<b>Stale plan</b> from ' + (validDateStr || '?') + ' — pre-market cron will refresh at 08:25 IST</div>'
       : '';
     planHtml += '<div style="background: ' + actionBg + '; border: 1px solid ' + actionBorder + '; border-radius: 6px; padding: 12px; margin-bottom: 12px;">' +
       '<div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">' +
@@ -1837,6 +1904,74 @@ function renderOC(d) {
       + '<td class="num muted">' + (pe.iv || 0).toFixed(1) + '</td>'
       + '</tr>';
   }).join('') || '<tr><td colspan="11" class="muted">no strikes</td></tr>';
+  // Set the ocSub element (HTML has it; populate with expiry date)
+  const subEl = $('ocSub');
+  if (subEl) {
+    if (d.expiry) subEl.textContent = d.expiry + ' · 0DTE';
+    else if (d.error) subEl.textContent = 'NSE blocked from this IP';
+    else subEl.textContent = '—';
+  }
+}
+
+function renderVix(v) {
+  const el = $('vixKv');
+  if (!el) return;
+  if (!v || !v.vix) {
+    el.innerHTML = '<div class="muted" style="font-size:11px; padding:6px 0">no VIX data</div>';
+    return;
+  }
+  const chgCls = v.vix_change > 0 ? 'red' : (v.vix_change < 0 ? 'green' : 'muted');
+  const chgTxt = v.vix_change > 0 ? '+' + v.vix_change.toFixed(2) : v.vix_change.toFixed(2);
+  const niftyRange = (v.nifty_expected_range && v.nifty_expected_range.length === 2)
+    ? Math.round(v.nifty_expected_range[0]) + ' – ' + Math.round(v.nifty_expected_range[1])
+    : 'n/a';
+  el.innerHTML = renderKv({
+    'India VIX': {value: v.vix.toFixed(2), color: v.regime_color || 'cyan'},
+    'VIX chg': {value: chgTxt, color: chgCls},
+    'Regime': {value: v.regime || '--', color: v.regime_color || 'muted'},
+    'NIFTY spot': {value: v.nifty_spot ? v.nifty_spot.toFixed(2) : '--', color: 'accent'},
+    'BNF spot': {value: v.bnf_spot ? v.bnf_spot.toFixed(2) : '--', color: 'accent'},
+    'NIFTY 1d σ': {value: (v.nifty_1d_expected_move || 0) + ' pts', color: 'yellow'},
+    'BNF 1d σ': {value: (v.bnf_1d_expected_move || 0) + ' pts', color: 'yellow'},
+    'PCR': {value: v.pcr != null ? v.pcr.toFixed(2) : 'n/a', color: 'muted'},
+    'FII net': {value: v.fii_net != null ? v.fii_net : 'n/a', color: 'muted'},
+    'DII net': {value: v.dii_net != null ? v.dii_net : 'n/a', color: 'muted'},
+    'NIFTY 1σ range': {value: niftyRange, color: 'muted'},
+  });
+}
+
+function renderSpotTable(d) {
+  const tbody = $('spotTable');
+  if (!tbody) return;
+  const tb = tbody.querySelector('tbody');
+  if (!d || !d.rows) { return; }
+  tb.innerHTML = d.rows.map(r => {
+    const symCls = (r.symbol === 'NIFTY' || r.symbol === 'BANKNIFTY') ? 'green' : 'accent';
+    const chgCls = r.chg > 0 ? 'green' : (r.chg < 0 ? 'red' : 'muted');
+    const sign = r.chg > 0 ? '+' : (r.chg < 0 ? '−' : '');
+    const lastStr = r.last ? r.last.toFixed(2) : '—';
+    const chgStr = r.chg ? sign + r.chg.toFixed(2) : '—';
+    const chgPctStr = r.chg_pct ? sign + r.chg_pct.toFixed(2) + '%' : '—';
+    const openStr = r.open ? r.open.toFixed(2) : '—';
+    const highStr = r.high ? r.high.toFixed(2) : '—';
+    const lowStr = r.low ? r.low.toFixed(2) : '—';
+    const pcStr = r.prev_close ? r.prev_close.toFixed(2) : '—';
+    const volStr = r.volume ? (r.volume >= 1e6 ? (r.volume/1e6).toFixed(2) + 'M' : (r.volume >= 1e3 ? (r.volume/1e3).toFixed(0) + 'K' : r.volume.toLocaleString('en-IN'))) : '—';
+    const errNote = r.error ? ' <span class="muted" style="font-size:10px">(' + r.error + ')</span>' : '';
+    return '<tr>'
+      + '<td class="mono"><b>' + r.symbol + '</b>' + errNote + '</td>'
+      + '<td class="muted">' + (r.type || 'Index') + '</td>'
+      + '<td class="num ' + symCls + '"><b>' + lastStr + '</b></td>'
+      + '<td class="num ' + chgCls + '">' + chgStr + '</td>'
+      + '<td class="num ' + chgCls + '">' + chgPctStr + '</td>'
+      + '<td class="num muted">' + openStr + '</td>'
+      + '<td class="num muted">' + highStr + '</td>'
+      + '<td class="num muted">' + lowStr + '</td>'
+      + '<td class="num muted">' + pcStr + '</td>'
+      + '<td class="num muted">' + volStr + '</td>'
+      + '<td class="muted" style="font-size:10px">' + (r.source || 'yfinance') + '</td>'
+      + '</tr>';
+  }).join('');
 }
 
 function renderKv(obj) {
@@ -1893,7 +2028,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(err)))
                 self.end_headers()
                 self.wfile.write(err)
-        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades") or self.path.startswith("/api/mavis_events") or self.path.startswith("/api/mavis_state"):
+        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/spot") or self.path.startswith("/api/vix_card") or self.path.startswith("/api/session") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades") or self.path.startswith("/api/mavis_events") or self.path.startswith("/api/mavis_state"):
             try:
                 body = handle_api(self.path).encode("utf-8")
                 self.send_response(200)
@@ -1939,6 +2074,12 @@ def handle_api(path):
         return json.dumps(get_option_chain(sym, expiry, spot), default=str)
     if u.path == "/api/terminal":
         return json.dumps(get_terminal(), default=str)
+    if u.path == "/api/spot":
+        return json.dumps(get_spot_table(), default=str)
+    if u.path == "/api/vix_card":
+        return json.dumps(get_vix_card(), default=str)
+    if u.path == "/api/session":
+        return json.dumps(get_session_info(), default=str)
     if u.path == "/api/quant_brain":
         return json.dumps(get_quant_brain(), default=str)
     if u.path == "/api/mavis_trades":
@@ -1956,6 +2097,136 @@ def get_quant_brain():
         p = os.path.join(DCACHE, "quant_brain.json")
         return _read_json(p, {"available": False})
     return _cached("qb", _read, 30.0)
+
+
+def get_session_info():
+    """Read Kotak session state (auth time, expires_at, remaining hours)."""
+    def _read():
+        try:
+            j = _read_json(os.path.join(DCACHE, "kotak_prod_session.json"), {})
+            if not j:
+                return {"available": False, "message": "no session file"}
+            now = time.time()
+            exp = j.get("expires_at", 0)
+            authed = j.get("authed_at", 0)
+            return {
+                "available": True,
+                "authed_at": datetime.fromtimestamp(authed, IST).isoformat() if authed else None,
+                "expires_at": datetime.fromtimestamp(exp, IST).isoformat() if exp else None,
+                "remaining_sec": max(0, int(exp - now)) if exp else 0,
+                "remaining_hours": round((exp - now) / 3600, 2) if exp else 0,
+                "status": "healthy" if (exp - now) > 1800 else ("warning" if (exp - now) > 0 else "expired"),
+                "env": j.get("environment") or "uat",
+            }
+        except Exception as e:
+            return {"available": False, "error": str(e)}
+    return _cached("session_info", _read, 30.0)
+
+
+def get_vix_card():
+    """Volatility + risk summary. VIX, realized vol, regime, PCR, FII/DII if available."""
+    def _read():
+        th = _read_json(os.path.join(DCACHE, "thesis", "latest.json"), {})
+        xmkt = (th.get("data") or {}).get("xmkt") or {}
+        vix = xmkt.get("india_vix") or 0
+        # Regime from VIX level
+        if vix < 12:
+            regime, regime_color = "low", "green"
+        elif vix < 16:
+            regime, regime_color = "normal", "accent"
+        elif vix < 20:
+            regime, regime_color = "elevated", "yellow"
+        else:
+            regime, regime_color = "high", "red"
+        # PCR
+        pcr = None
+        try:
+            pcr_j = _read_json(os.path.join(DCACHE, "oi_change_detector.json"), {})
+            pcr = pcr_j.get("pcr")
+        except Exception:
+            pass
+        # FII/DII from macro snapshot
+        fii_net = xmkt.get("fii_net") or xmkt.get("fii_net_oi")
+        dii_net = xmkt.get("dii_net")
+        # Expected move (1d) = VIX% * spot
+        nifty_spot = xmkt.get("nifty_spot") or 0
+        bnf_spot = xmkt.get("banknifty_spot") or 0
+        # 1d move = (VIX/100) * sqrt(1/252) * spot ≈ VIX% * spot * 0.063
+        nifty_1d_move = round(nifty_spot * vix / 100 * 0.063, 0) if nifty_spot and vix else 0
+        bnf_1d_move = round(bnf_spot * vix / 100 * 0.063, 0) if bnf_spot and vix else 0
+        return {
+            "vix": vix,
+            "vix_prev_close": xmkt.get("india_vix_prev_close") or 0,
+            "vix_change": round(vix - (xmkt.get("india_vix_prev_close") or vix), 2),
+            "regime": regime,
+            "regime_color": regime_color,
+            "pcr": pcr,
+            "fii_net": fii_net,
+            "dii_net": dii_net,
+            "nifty_spot": nifty_spot,
+            "bnf_spot": bnf_spot,
+            "nifty_1d_expected_move": nifty_1d_move,
+            "bnf_1d_expected_move": bnf_1d_move,
+            "nifty_expected_range": [nifty_spot - nifty_1d_move, nifty_spot + nifty_1d_move] if nifty_spot else [],
+            "ts": datetime.now(IST).isoformat(),
+        }
+    return _cached("vix_card", _read, 5.0)
+
+
+def get_spot_table():
+    """5-row spot & day change table for NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX.
+    Source: yfinance (^NSEI, ^NSEBANK, ^NSEFIN, ^NSEMDCP50, ^BSESN).
+    Cached 5s."""
+    yf_map = {
+        "NIFTY": "^NSEI",
+        "BANKNIFTY": "^NSEBANK",
+        "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+        "MIDCPNIFTY": "^NSEMDCP50",
+        "SENSEX": "^BSESN",
+    }
+    index_type = {
+        "NIFTY": "Index",
+        "BANKNIFTY": "Index",
+        "FINNIFTY": "Index",
+        "MIDCPNIFTY": "Index",
+        "SENSEX": "Index (BSE)",
+    }
+    rows = []
+    for sym, yf_sym in yf_map.items():
+        row = {
+            "symbol": sym,
+            "type": index_type[sym],
+            "last": 0, "chg": 0, "chg_pct": 0,
+            "open": 0, "high": 0, "low": 0, "prev_close": 0,
+            "volume": 0, "source": "yfinance",
+            "ts": None, "error": None,
+        }
+        try:
+            import yfinance as yf
+            t = yf.Ticker(yf_sym)
+            h = t.history(period="2d", interval="1d")
+            if h is not None and len(h) > 0:
+                last = h["Close"].iloc[-1]
+                row["last"] = round(float(last), 2)
+                if len(h) >= 2:
+                    prev = h["Close"].iloc[-2]
+                    row["prev_close"] = round(float(prev), 2)
+                    row["chg"] = round(float(last - prev), 2)
+                    row["chg_pct"] = round(float((last - prev) / prev * 100), 2)
+                row["open"] = round(float(h["Open"].iloc[-1]), 2)
+                row["high"] = round(float(h["High"].iloc[-1]), 2)
+                row["low"] = round(float(h["Low"].iloc[-1]), 2)
+                try:
+                    row["volume"] = int(h["Volume"].iloc[-1]) if not pd_isnan(h["Volume"].iloc[-1]) else 0
+                except Exception:
+                    row["volume"] = 0
+                row["ts"] = h.index[-1].strftime("%Y-%m-%d %H:%M")
+            else:
+                row["error"] = "no data"
+        except Exception as e:
+            row["error"] = str(e)[:100]
+        rows.append(row)
+    return {"rows": rows, "ts": datetime.now(IST).isoformat()}
 
 
 def get_mavis_trades():
@@ -2092,8 +2363,15 @@ def get_mavis_realtime_state() -> dict:
 
 
 def get_candles(symbol, interval, period):
-    """yfinance OHLC candles for NIFTY/BANKNIFTY."""
-    yf_sym = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "NIFTY50": "^NSEI", "NSEBANK": "^NSEBANK"}.get(symbol, symbol)
+    """yfinance OHLC candles for NIFTY/BANKNIFTY/FINNIFTY/SENSEX."""
+    yf_sym_map = {
+        "NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "NIFTY50": "^NSEI", "NSEBANK": "^NSEBANK",
+        # yfinance doesn't have ^NSEFIN; NIFTY_FIN_SERVICE.NS is the NSE-listed ETF that tracks it
+        "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+        "MIDCPNIFTY": "^NSEMDCP50",
+        "SENSEX": "^BSESN",
+    }
+    yf_sym = yf_sym_map.get(symbol, symbol)
     try:
         import yfinance as yf
         t = yf.Ticker(yf_sym)
