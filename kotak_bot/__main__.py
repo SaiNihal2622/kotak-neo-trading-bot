@@ -601,6 +601,64 @@ def run_paper() -> None:
         ]
         n_phantoms = sum(1 for p in all_broker_pos if _is_phantom_0dte(p))
         n_expired_filtered = len(all_broker_pos) - len(broker_pos)
+
+        # FIX 2026-09-02 12:25: production-grade phantom-qty audit.
+        # The 5625 qty (75 lots) phantom-position incident was caused by the bot
+        # multiplying brain's qty (which it sent in shares not lots) by lot_size.
+        # This self-check catches ANY position with qty > 5x the maximum sane size
+        # (10 lots × max_lot_size 120 = 1200) and marks it for closure.
+        # Defense in depth: even if the LLM hallucinates a wrong qty, the cost
+        # cap (now fixed to look for "available" not "available_cash") and this
+        # qty cap will both stop the bleed.
+        _LOT_SIZE = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65, "MIDCPNIFTY": 120, "SENSEX": 10}
+        _PHANTOM_QTY_THRESHOLD = 5  # > 5x max allowed = 50 lots of NIFTY
+        _phantom_oversized = []
+        for _p in broker_pos:
+            _u = (getattr(_p, 'underlying', '') or '').upper()
+            _lot = _LOT_SIZE.get(_u, 75)
+            _max_qty = 10 * _lot  # 10 lots max per leg
+            _qty = abs(int(getattr(_p, 'qty', 0) or 0))
+            if _qty > _max_qty * _PHANTOM_QTY_THRESHOLD:
+                _phantom_oversized.append((_p, _qty, _max_qty))
+        if _phantom_oversized:
+            logger.error(
+                f"STARTUP RECONCILE: PHANTOM OVERSIZED positions detected "
+                f"({len(_phantom_oversized)}) — qty > 5x max sane size"
+            )
+            for _p, _qty, _max in _phantom_oversized:
+                logger.error(
+                    f"  PHANTOM: {getattr(_p, 'symbol', '?')} qty={_qty} "
+                    f"(max sane={_max}) — WILL BE FORCE-CLOSED AT MARKET"
+                )
+            # Force-close the phantom positions at market
+            for _p, _qty, _max in _phantom_oversized:
+                try:
+                    _sym = getattr(_p, 'symbol', '')
+                    _close_side = "SELL" if int(getattr(_p, 'qty', 0)) > 0 else "BUY"
+                    from kotak_bot.broker import Order, OrderSide, OrderType, ProductType
+                    _order = Order(
+                        symbol=_sym, side=OrderSide(_close_side),
+                        qty=_qty, order_type=OrderType.MARKET, product=ProductType.MIS,
+                        price=0.0, tag='PHANTOM_RECONCILE',
+                        exchange=getattr(_p, 'exchange', 'NFO'),
+                        strike=getattr(_p, 'strike', 0),
+                        option_type=getattr(_p, 'option_type', 'CE'),
+                        expiry=str(getattr(_p, 'expiry', '')),
+                        underlying=getattr(_p, 'underlying', ''),
+                    )
+                    _res = broker.place_order(_order)
+                    logger.warning(
+                        f"  PHANTOM RECONCILE: placed {_close_side} {_sym} qty={_qty} "
+                        f"status={_res.status.value if _res.status else '?'} "
+                        f"reason={_res.rejection_reason or 'force-close'}"
+                    )
+                except Exception as _pr_err:
+                    logger.error(f"  PHANTOM RECONCILE: failed to close {_p.symbol}: {_pr_err}")
+            alerter.send(
+                f"[PHANTOM RECONCILE] Closed {len(_phantom_oversized)} oversized positions "
+                f"at startup. Quantities: {[(s, q) for s, q, _ in _phantom_oversized]}. "
+                f"This is automatic — review paper_state.phantom_audit.json for details."
+            )
         if n_phantoms:
             logger.info(
                 f"STARTUP RECONCILE: filtered {n_phantoms} phantom 0DTE positions "
@@ -1005,7 +1063,16 @@ def run_paper() -> None:
                                     # Hard risk caps
                                     _max_positions = 6
                                     _max_position_pct = 0.05  # 5% of cash per position
-                                    _cash = broker.get_margins().get("available_cash", 0) or 0
+                                    # FIX 2026-09-02 12:25: paper_client returns key "available",
+                                    # neo_client returns "available_cash". Accept BOTH so the cap
+                                    # is actually enforced in paper mode (was silently bypassed
+                                    # since 2026-08 — see paper_state.phantom_audit.json for the
+                                    # 5625 qty incident that this prevents).
+                                    _margins = broker.get_margins() if hasattr(broker, 'get_margins') else {}
+                                    _cash = (_margins.get("available_cash")
+                                             or _margins.get("available")
+                                             or _margins.get("cash")
+                                             or 0)
                                     _open_count = len(order_mgr.open_trades())
                                     if _open_count >= _max_positions:
                                         logger.warning(f"[QUANT-ACTION] REJECT: max positions reached ({_open_count}/{_max_positions})")
@@ -1054,6 +1121,19 @@ def run_paper() -> None:
                                             _opt_type = str(_leg.get("opt_type", "")).upper()
                                             _side = str(_leg.get("side", "BUY")).upper()
                                             _qty_lots = int(_leg.get("qty", 1))
+                                            # FIX 2026-09-02 12:25: hard cap on qty_lots to prevent
+                                            # brain mis-sized orders (e.g. 75 lots when it meant 1 lot).
+                                            # The brain's LLM prompt says qty=1 for 1 lot, but earlier
+                                            # it sent qty=75 (interpreted as 75 shares = 1 lot for NIFTY).
+                                            # This double-handling caused 75x oversize. Now we clamp
+                                            # to a sane max of MAX_LOTS_PER_LEG.
+                                            MAX_LOTS_PER_LEG = 10  # safety cap, way above any real strategy
+                                            if _qty_lots < 1:
+                                                logger.warning(f"[QUANT-ACTION] leg qty={_qty_lots} < 1, clamping to 1")
+                                                _qty_lots = 1
+                                            elif _qty_lots > MAX_LOTS_PER_LEG:
+                                                logger.warning(f"[QUANT-ACTION] leg qty={_qty_lots} > MAX={MAX_LOTS_PER_LEG} lots, clamping")
+                                                _qty_lots = MAX_LOTS_PER_LEG
                                             _order_type = str(_leg.get("order_type", "MARKET")).upper()
                                             _price = _leg.get("price")
                                             if _price is None and _order_type == "LIMIT":

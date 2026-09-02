@@ -356,7 +356,9 @@ If you've worked through these and have an edge, TAKE THE TRADE. A small loss on
 
 OUTPUT FORMAT — strict JSON, one line, no markdown, no prose. Use this exact schema:
 
-{"type":"OPEN|CLOSE|HOLD","underlying":"NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX|RELIANCE|HDFCBANK|...","expiry":"YYYY-MM-DD","strategy":"iron_condor|bull_call_vertical|bear_put_vertical|long_call|long_put|short_strangle|short_straddle|calendar_spread|custom","legs":[{"side":"BUY|SELL","qty":N,"strike":N,"opt_type":"CE|PE","order_type":"MARKET|LIMIT","price":N_or_null}],"target":N_or_null,"stop":N_or_null,"max_hold_minutes":N,"rationale":"2-3 sentences min — explain WHY you chose to act or HOLD. STOP field REQUIRED on every OPEN: it must be sized so (entry-stop) × qty ≤ Rs.1,000."}
+{"type":"OPEN|CLOSE|HOLD","underlying":"NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX|RELIANCE|HDFCBANK|...","expiry":"YYYY-MM-DD","strategy":"iron_condor|bull_call_vertical|bear_put_vertical|long_call|long_put|short_strangle|short_straddle|calendar_spread|custom","legs":[{"side":"BUY|SELL","qty":N,"strike":N,"opt_type":"CE|PE","order_type":"MARKET|LIMIT","price":N_or_null}],"target":N_or_null,"stop":N_or_null,"max_hold_minutes":N,"rationale":"2-3 sentences min — explain WHY you chose to act or HOLD. STOP field REQUIRED on every OPEN: it must be sized so (entry-stop) × qty × lot_size ≤ Rs.1,000."}
+
+⚠️  CRITICAL: qty in legs is in LOTS, NOT shares. 1 lot = NIFTY=75, BANKNIFTY=30, FINNIFTY=65, MIDCPNIFTY=120. Almost always use qty=1 (one lot). The bot multiplies by lot size. qty=75 would be 75 lots = 5625 shares = 4-5x capital — INSTANT REJECTION.
 
 For HOLD: {"type":"HOLD","note":"reason","rationale":"..."}
 
@@ -891,17 +893,33 @@ def _normalize_decision(d: dict) -> dict:
     # strategy
     out["strategy"] = str(d.get("strategy") or d.get("setup") or "custom")
     # legs — accept either proper array OR single-leg fields (side, qty, strike, opt_type, etc.)
+    # FIX 2026-09-02 12:25: qty is in LOTS. Default 1 (one lot), not 75 (which was the source
+    # of the 5625-share phantom-position incident — the brain sent qty=75 thinking it
+    # was 1 NIFTY lot, the bot multiplied by lot_size=75 to get 5625 shares = 75 lots).
     legs = d.get("legs")
     if not legs and d.get("strike"):
-        # LLM gave a single leg as flat fields
+        # LLM gave a single leg as flat fields — default qty=1 (1 lot)
         legs = [{
             "side": str(d.get("side") or "BUY").upper(),
-            "qty": int(d.get("qty") or d.get("quantity") or 75),
+            "qty": int(d.get("qty") or d.get("quantity") or 1),  # FIX: was 75
             "strike": int(d["strike"]),
             "opt_type": str(d.get("opt_type") or d.get("instrument") or "CE").upper(),
             "order_type": str(d.get("order_type") or "MARKET").upper(),
             "price": d.get("price") or d.get("limit_price"),
         }]
+    # FIX 2026-09-02 12:25: hard cap qty in legs to 10 lots per leg. This prevents
+    # any future brain mis-sizing from creating 5625-share positions.
+    if legs:
+        for _leg in legs:
+            if isinstance(_leg, dict):
+                try:
+                    _q = int(_leg.get("qty", 0) or 0)
+                    if _q < 1:
+                        _leg["qty"] = 1
+                    elif _q > 10:
+                        _leg["qty"] = 10
+                except (ValueError, TypeError):
+                    _leg["qty"] = 1
     out["legs"] = legs or []
     # target / stop / hold time
     out["target"] = d.get("target")
@@ -915,11 +933,120 @@ def _normalize_decision(d: dict) -> dict:
     return out
 
 
+def reconcile_unfilled_actions() -> int:
+    """FIX 2026-09-02 11:30: scan quant_actions.json for actions that the bot
+    saw but failed to fill (placed_legs: 0). Mark them as `failed: true` and
+    rename to `quant_actions.failed.json` so the LLM context doesn't keep
+    showing them as live or recent.
+
+    This prevents the LLM from hallucinating 'still long from X' because
+    the unfilled action is now clearly marked as failed, not pending.
+
+    Returns the number of actions reconciled.
+    """
+    qa_path = DATA / "quant_actions.json"
+    failed_path = DATA / "quant_actions.failed.json"
+    if not qa_path.exists():
+        return 0
+    try:
+        qa = json.loads(qa_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    if not isinstance(qa, dict):
+        return 0
+    # If this action was marked consumed but no legs were placed, move it
+    if qa.get("consumed") and int(qa.get("placed_legs") or 0) == 0 and qa.get("actions"):
+        # Append to failed log
+        qa["failed"] = True
+        qa["failed_at"] = now_iso()
+        qa["failed_reason"] = "bot_rejected_or_crash_no_legs_placed"
+        # Append to a rolling failed history file
+        try:
+            history = []
+            if failed_path.exists():
+                try:
+                    history = json.loads(failed_path.read_text(encoding="utf-8"))
+                    if not isinstance(history, list):
+                        history = []
+                except Exception:
+                    history = []
+            history.append(qa)
+            # Keep only last 50
+            history = history[-50:]
+            failed_path.write_text(json.dumps(history, indent=2, default=str), encoding="utf-8")
+        except Exception as _hf_err:
+            log(f"RECONCILE-FAILED-HIST-ERR: {_hf_err}")
+        # Now clear the live file (so the next brain cycle starts fresh)
+        try:
+            qa_path.write_text(json.dumps({"ts": now_iso(), "source": "reconciled", "actions": [], "consumed": True, "note": "previous action failed, see quant_actions.failed.json"}, indent=2, default=str), encoding="utf-8")
+            log(f"RECONCILE: moved unfilled action (ts={qa.get('ts', '?')}, actions={len(qa.get('actions', []))}) to {failed_path.name}")
+            return 1
+        except Exception as _clr_err:
+            log(f"RECONCILE-CLEAR-ERR: {_clr_err}")
+    return 0
+
+
+def _sanitize_rationale(rationale: str, executed: bool, open_symbols: set) -> str:
+    """FIX 2026-09-02 11:40: strip self-referential claims that the LLM might
+    confuse for evidence. If the decision claims 'already long' / 'still long' /
+    'I am holding X' but the trade is NOT actually executed, replace the
+    self-referential claim with a fact-correct version. Without this, the LLM
+    re-reads its own past lies as evidence on the next call.
+
+    Examples:
+      'Already long NIFTY 24000 PE from 10:31 capturing the bearish regime'
+      -> '[not_executed: trade was never filled; do NOT assume this exposure]'
+    """
+    if not rationale:
+        return rationale
+    if executed:
+        return rationale  # if the trade was actually filled, keep the rationale
+    # Patterns that mean "I already have a position" — replace with a fact
+    import re as _re
+    bad_patterns = [
+        (r"(?i)already long [^\.\,\n]+", "[no live position]"),
+        (r"(?i)already short [^\.\,\n]+", "[no live position]"),
+        (r"(?i)still long [^\.\,\n]+", "[no live position]"),
+        (r"(?i)still short [^\.\,\n]+", "[no live position]"),
+        (r"(?i)already (?:entered|opened|initiated) [^\.\,\n]+", "[trade was not filled]"),
+        (r"(?i)i (?:am|'m) (?:long|short|holding) [^\.\,\n]+", "[no live position]"),
+        (r"(?i)my (?:existing|open) (?:long|short|position) [^\.\,\n]+", "[no live position]"),
+    ]
+    out = rationale
+    for pat, repl in bad_patterns:
+        out = _re.sub(pat, repl, out)
+    return out
+
+
 def _get_recent_performance(n: int = 8) -> dict:
     """Get last N decisions and their outcomes (if closed). Used to give the LLM
     a sense of 'what has worked' so it can learn from history.
-    Returns a compact summary."""
+    Returns a compact summary.
+
+    FIX 2026-09-02 11:30: cross-check each brain-side OPEN against the bot's
+    actual paper_state positions. If the brain OPENed something but the bot
+    never filled it, mark the decision as `executed: false` with a `note`.
+    Without this cross-check the LLM hallucinates "still long from X" because
+    it sees an OPEN in its own log with no corresponding CLOSE.
+
+    FIX 2026-09-02 11:40: sanitize the rationale text — strip self-referential
+    claims like 'Already long X' from unfilled decisions. Otherwise the LLM
+    re-reads its own past lies as evidence on the next call.
+    """
     try:
+        # Cross-check: build set of currently-open symbols from the bot's paper_state
+        # This is the AUTHORITATIVE source for "is the trade actually open".
+        _paper = _safe_read_json(DATA / "paper_state.json", default={})
+        _open_symbols = set()
+        try:
+            for _pid, _p in (_paper.get("positions") or {}).items():
+                if isinstance(_p, dict):
+                    _sym = (_p.get("symbol") or "").upper()
+                    if _sym:
+                        _open_symbols.add(_sym)
+        except Exception:
+            pass
+
         # Read recent decisions from performance/decisions.jsonl
         perf_path = DATA / "performance" / "decisions.jsonl"
         if not perf_path.exists():
@@ -946,20 +1073,47 @@ def _get_recent_performance(n: int = 8) -> dict:
                     # Brain format: has 'decision' nested, 'event', 'context'
                     decision = d.get("decision", {}) or {}
                     if decision.get("type") == "HOLD":
+                        _raw_rationale = decision.get("rationale") or ""
+                        # FIX 2026-09-02 11:40: sanitize self-referential claims
+                        # (HOLDs often say 'already long from X' which becomes a lie
+                        # the LLM re-reads next call)
+                        _clean = _sanitize_rationale(_raw_rationale, executed=True, open_symbols=_open_symbols)
                         recent.append({
                             "ts": ts,
                             "action_type": "HOLD",
                             "underlying": decision.get("underlying") or
                                           (d.get("context", {}).get("largest_event") or {}).get("symbol") or "?",
-                            "rationale": (decision.get("rationale") or "")[:200],
+                            "rationale": _clean[:200],
                         })
                     elif decision.get("type") == "OPEN":
+                        # FIX 2026-09-02: cross-check against actual paper_state positions.
+                        # If this OPEN's leg symbols are NOT in the bot's current positions,
+                        # the bot never filled it. Mark `executed: false` so the LLM
+                        # doesn't hallucinate "still long from X".
+                        _leg_syms = []
+                        _ctx_legs = (((d.get("context") or {}).get("paper") or {}).get("orders") or [])
+                        for _leg in _ctx_legs:
+                            _s = (_leg.get("symbol") or "").upper()
+                            if _s:
+                                _leg_syms.append(_s)
+                        # Default: assume filled (executed=true)
+                        _executed = True
+                        _exec_note = ""
+                        if _leg_syms and not any(_s in _open_symbols for _s in _leg_syms):
+                            # None of the leg symbols are in current positions
+                            _executed = False
+                            _exec_note = "NOT FILLED by bot (check quant_actions.json placed_legs)"
+                        _raw_rationale = decision.get("rationale") or ""
+                        # Sanitize — strip self-referential claims (always for unfilled)
+                        _clean = _sanitize_rationale(_raw_rationale, executed=_executed, open_symbols=_open_symbols)
                         recent.append({
                             "ts": ts,
                             "action_type": "OPEN",
                             "underlying": decision.get("underlying", ""),
                             "strategy": decision.get("strategy", ""),
-                            "rationale": (decision.get("rationale") or "")[:200],
+                            "executed": _executed,
+                            "exec_note": _exec_note,
+                            "rationale": _clean[:200],
                         })
                 except Exception:
                     continue
@@ -1095,6 +1249,50 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             }
     except Exception:
         pass
+
+    # FIX 2026-09-02 11:45: explicit ground-truth of current open positions
+    # Added at the very end of context building so it overrides any stale text.
+    # The LLM has a strong tendency to read its own past rationales (which may
+    # contain lies like "Already long NIFTY 24000 PE from 10:31") as evidence.
+    # This block gives it the FACTS right before deciding.
+    try:
+        _truth = _safe_read_json(DATA / "paper_state.json", default={})
+        _truth_positions = _truth.get("positions", {}) or {}
+        _truth_symbols = sorted([
+            (p.get("symbol") or sym).upper()
+            for sym, p in _truth_positions.items()
+            if isinstance(p, dict) and p.get("symbol")
+        ])
+        # Each position as {symbol, qty, side, avg, ltp, pnl, expiry}
+        _truth_position_details = []
+        for sym, p in _truth_positions.items():
+            if not isinstance(p, dict):
+                continue
+            _sym = (p.get("symbol") or sym).upper()
+            _qty = int(p.get("qty", 0) or 0)
+            _side = "LONG" if _qty > 0 else "SHORT" if _qty < 0 else "?"
+            _avg = float(p.get("avg_price", 0) or 0)
+            _ltp = float(p.get("ltp", 0) or 0)
+            _pnl = round(float(p.get("pnl", 0) or 0), 0)
+            _truth_position_details.append({
+                "symbol": _sym, "qty": _qty, "side": _side,
+                "avg": round(_avg, 2), "ltp": round(_ltp, 2), "pnl": _pnl,
+                "expiry": p.get("expiry", "?"),
+            })
+        context["GROUND_TRUTH_OPEN_POSITIONS"] = {
+            "count": len(_truth_symbols),
+            "symbols": _truth_symbols,
+            "details": _truth_position_details,
+            "source_of_truth": "data_cache/paper_state.json (written by bot, not brain)",
+            "interpretation": "This is the AUTHORITATIVE list of open positions. "
+                              "If count=0, you have ZERO live positions. Do not "
+                              "assume you have a position from past decisions. "
+                              "ANY past rationale text claiming 'Already long X' "
+                              "is HISTORICAL and was either filled-and-closed, "
+                              "or never filled. Trust only THIS block for current state.",
+        }
+    except Exception as _gt_err:
+        log(f"GROUND-TRUTH-ERR: {_gt_err}")
     # Macro calendar: upcoming events + FII/DII flows
     try:
         from macro_calendar import get_macro_state
@@ -1155,6 +1353,15 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         "  5. SIZING: (entry - stop) × qty <= 1% of capital. Higher conviction = wider stop allowed.\n"
         "  6. EXECUTION: ATM for max delta, slightly OTM for cheaper, weekly for intraday.\n"
         "  7. LESSON: am I defaulting to HOLD? If yes, am I being too cautious?\n\n"
+        "CRITICAL — STATE-OF-TRUTH RULES (read carefully):\n"
+        "  - Open positions = ONLY the symbols in `paper.positions` of FULL STATE. Nothing else.\n"
+        "  - Past OPEN decisions in RECENT PERFORMANCE are HISTORICAL attempts. If `executed: false`\n"
+        "    or `exec_note: NOT FILLED`, that trade was NEVER entered. Do NOT add to or assume\n"
+        "    exposure from it. Only `executed: true` trades are live.\n"
+        "  - If paper.positions is empty, you have ZERO live positions. Entering fresh is fine.\n"
+        "  - If you propose an OPEN, the bot will place it within 1-3s if pre-09:15, within 1% risk\n"
+        "    cap, and not EOD. Then `quant_actions.json` will show `placed_legs: 2` and the symbol\n"
+        "    will appear in paper.positions.\n\n"
         "Decide now. Output ONE JSON object only. Pay attention to delta (directional risk) and gamma (convexity). Iron condors should be delta-neutral (delta < 5). Long options should have positive delta for CE, negative for PE."
     )
     result = call_llm_direct(PROFESSIONAL_QUANT_SYSTEM + get_prompt_addition(), user_content, max_tokens=2000)
@@ -1180,6 +1387,29 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         return {"type": "HOLD", "note": f"parse-err: {text[:80]}"}
     decision = _normalize_decision(raw)
     HISTORY.append({"ts": now_iso(), "events": events, "decision": decision})
+    # FIX 2026-09-02 11:50: scrub self-referential lies from the decision before
+    # saving it. If the LLM claims 'Already long X' but we have no live position,
+    # replace with a fact-correct version. Otherwise this text becomes a lie
+    # the LLM re-reads as evidence on subsequent calls.
+    try:
+        _live_paper = _safe_read_json(DATA / "paper_state.json", default={})
+        _live_symbols = set()
+        for _pid, _p in (_live_paper.get("positions") or {}).items():
+            if isinstance(_p, dict):
+                _s = (_p.get("symbol") or "").upper()
+                if _s:
+                    _live_symbols.add(_s)
+        if isinstance(decision, dict) and decision.get("type") in ("HOLD", "OPEN"):
+            _clean = _sanitize_rationale(
+                decision.get("rationale", "") or "",
+                executed=(decision.get("type") == "OPEN" and len(_live_symbols) > 0),
+                open_symbols=_live_symbols,
+            )
+            if _clean != decision.get("rationale"):
+                decision["rationale"] = _clean
+                decision["rationale_scrubbed"] = True
+    except Exception as _scrub_err:
+        log(f"RATIONALE-SCRUB-ERR: {_scrub_err}")
     log(f"LLM-DECISION: {decision.get('type', '?')} {decision.get('underlying', '?')} {decision.get('strategy', '?')} legs={len(decision.get('legs',[]))}")
     # Telegram the decision
     if decision.get("type") in ("OPEN", "CLOSE"):
@@ -2130,6 +2360,15 @@ def main() -> int:
         pass
 
     SERVICE_STATE["status"] = "running"
+
+    # FIX 2026-09-02 11:30: on startup, reconcile stale unfilled actions.
+    # Sweep quant_actions.json for `consumed: true, placed_legs: 0` entries
+    # (bot saw the action but failed to place any legs). These pollute the file
+    # and confuse the LLM into thinking the trade was filled.
+    try:
+        reconcile_unfilled_actions()
+    except Exception as _recon_err:
+        log(f"STARTUP-RECONCILE-ERR: {_recon_err}")
 
     # HTTP control server in background thread
     http_thread = threading.Thread(target=http_server, daemon=True)
