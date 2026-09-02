@@ -49,7 +49,6 @@ class TestBuildBroker(unittest.TestCase):
         cfg = _paper_config()
         broker = build_broker(cfg)
         # Should be a PaperClient, no exception
-        from kotak_bot.broker.paper_client import PaperClient
         self.assertIsInstance(broker, PaperClient)
 
     def test_live_mode_refuses_without_confirmation(self):

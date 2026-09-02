@@ -27,6 +27,8 @@ sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv
 load_dotenv(ROOT / "config" / "credentials.env")
 
+from kotak_bot.broker import NeoClient
+
 
 def _serialize(obj):
     """Best-effort JSON-safe serializer."""
@@ -44,7 +46,7 @@ def _serialize(obj):
 
 
 def _client():
-    from kotak_bot.broker.neo_client import NeoClient
+    # Use the top-level import — never `from X import Y` inside a function (shadowing trap)
     nc = NeoClient()
     if not nc._connected:
         nc.connect()
