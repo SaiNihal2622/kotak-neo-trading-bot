@@ -635,7 +635,10 @@ def run_paper() -> None:
                 try:
                     _sym = getattr(_p, 'symbol', '')
                     _close_side = "SELL" if int(getattr(_p, 'qty', 0)) > 0 else "BUY"
-                    from kotak_bot.broker import Order, OrderSide, OrderType, ProductType
+                    # FIX 2026-09-02 14:01: do NOT re-import Order here — Python would
+                    # mark Order as local for the entire run_paper() function, breaking
+                    # the Order() call on the next line. The top-level import at line 26
+                    # already provides Order. Same trap as 2026-09-02 11:00 (5dc58ef).
                     _order = Order(
                         symbol=_sym, side=OrderSide(_close_side),
                         qty=_qty, order_type=OrderType.MARKET, product=ProductType.MIS,

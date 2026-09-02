@@ -183,11 +183,16 @@ try:
     if log_path.exists():
         today = datetime.now(IST).strftime('%Y-%m-%d')
         with log_path.open(encoding='utf-8') as f:
-            today_lines = [l for l in f if l.startswith('{' + today)]
-        n_hold = sum(1 for l in today_lines if '"type": "HOLD"' in l or '"type":"HOLD"' in l)
-        n_open = sum(1 for l in today_lines if '"type": "OPEN"' in l or '"type":"OPEN"' in l)
-        n_close = sum(1 for l in today_lines if '"type": "CLOSE"' in l or '"type":"CLOSE"' in l)
+            all_lines = f.readlines()
+        # FIX 2026-09-02 14:15: match the date anywhere in the line (format is
+        # {"ts": "2026-09-02T...", not {"2026-09-02...
+        today_lines = [l for l in all_lines if f'"{today}' in l[:50]]
+        n_hold = sum(1 for l in today_lines if '"type": "HOLD"' in l)
+        n_open = sum(1 for l in today_lines if '"type": "OPEN"' in l)
+        n_close = sum(1 for l in today_lines if '"type": "CLOSE"' in l)
         ok(f'today: {len(today_lines)} decisions ({n_hold} HOLD, {n_open} OPEN, {n_close} CLOSE)')
+        if n_open > 0:
+            warn(f'{n_open} OPEN actions today — verify each placed (check quant_actions.json placed_legs)')
     else:
         warn('no decisions log')
 except Exception as e:

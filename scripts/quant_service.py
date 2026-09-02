@@ -479,6 +479,14 @@ PROFIT ENGINE (this is the compound/edge system, USE IT):
 - If you have a 4-win iron_condor setup in range regime, take it. The
   data says it works. Don't reinvent.
 
+NSE INTRADAY TRADING RULES — KNOW BEFORE YOU ACT:
+- Market hours: 09:15-15:30 IST. New entries only 09:15-13:30 IST (no_new_trades_after: 13:30).
+- Force-square-off at 14:30 IST (intraday only — no overnight).
+- After 13:30 IST: do NOT open new positions. Any setup is "too late" for intraday. HOLD.
+- After 15:00 IST: only CLOSE actions are valid.
+- Outside 09:15-15:30 IST: only CLOSE actions are valid (in case brain somehow issues). HOLD otherwise.
+- If you see a "perfect setup" at 13:45, you missed it. Tomorrow is a new day.
+
 GLOBAL MARKETS (use this 24/7 context, polled every 5 min):
 - `global_markets` includes US (S&P, NASDAQ, DOW, VIX), Asia (Nikkei, Hang Seng),
   US sector ETFs (XLF/XLK/XLE for sector rotation), commodities (gold/WTI/silver),
@@ -1457,6 +1465,13 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
     if action_doc["actions"] and any(a.get("type") == "OPEN" for a in action_doc["actions"]):
         if not _in_trading_window:
             log(f"ACTION-SUPPRESSED: OPEN outside trading window (IST {_h:02d}:{_m:02d}); dropping action to file. Decision logged only.")
+            action_doc["actions"] = []  # strip the OPEN
+        # FIX 2026-09-02 14:02: also suppress OPENs after no_new_trades_after (13:30 IST default).
+        # Bot's intraday mode rejects new entries after 13:30 — brain should know this too.
+        # Use 13:30 as the brain-side cutoff; bot's settings.yaml may have a different value,
+        # but for safety the brain enforces 13:30 hard.
+        elif _h > 13 or (_h == 13 and _m >= 30):
+            log(f"ACTION-SUPPRESSED: OPEN after 13:30 IST (intraday no_new_trades_after); dropping to log only.")
             action_doc["actions"] = []  # strip the OPEN
     if action_doc["actions"]:
         ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
