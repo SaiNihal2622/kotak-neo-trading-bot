@@ -306,6 +306,81 @@ def _fetch_live_option_ltps(symbols):
     return out
 
 
+def _compute_mtm() -> dict:
+    """FIX 2026-09-03 14:30: Live MTM from option_chains.json with B/S fallback for OTM strikes not in chain.
+    Returns per-leg MTM and total. Used by /api/mtm endpoint."""
+    import math
+    try:
+        ps = json.loads((DATA / "paper_state.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {"error": "paper_state unreadable"}
+    try:
+        chains = json.loads((DATA / "option_chains.json").read_text(encoding="utf-8"))
+    except Exception:
+        chains = {}
+
+    def bs_price(spot, strike, t_years, vol, rate=0.06, opt_type="CE"):
+        if t_years <= 0 or vol <= 0 or spot <= 0 or strike <= 0:
+            return 0.0
+        d1 = (math.log(spot / strike) + (rate + 0.5 * vol * vol) * t_years) / (vol * math.sqrt(t_years))
+        d2 = d1 - vol * math.sqrt(t_years)
+
+        def cdf(x):
+            return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+        if opt_type == "CE":
+            return spot * cdf(d1) - strike * math.exp(-rate * t_years) * cdf(d2)
+        return strike * math.exp(-rate * t_years) * cdf(-d2) - spot * cdf(-d1)
+
+    def get_ltp(sym, und, strike, opt):
+        chain = chains.get("chains", {}).get(und, {})
+        strikes = chain.get("strikes", {})
+        key = f"{strike}_{opt}"
+        if key in strikes:
+            return strikes[key].get("price", 0), "chain", chain
+        for k, v in strikes.items():
+            if v.get("strike") == strike and v.get("opt_type") == opt:
+                return v.get("price", 0), "chain", chain
+        # B/S fallback using ATM IV
+        spot = chain.get("spot", 0)
+        atm_iv = 0.16
+        atm_strike = chain.get("atm_strike", strike)
+        for k, v in strikes.items():
+            if abs(v.get("strike", 0) - atm_strike) < 50 and v.get("iv"):
+                atm_iv = v.get("iv", 0.16)
+                break
+        est = bs_price(spot, strike, 0.02, atm_iv, opt_type=opt)
+        return est, f"BS(iv={atm_iv:.3f})", chain
+
+    positions = ps.get("positions", {})
+    legs = []
+    total_mtm = 0.0
+    for sym, p in positions.items():
+        qty = p.get("qty", 0) or 0
+        avg = p.get("avg_price", 0) or 0
+        und = p.get("underlying", "")
+        strike = int(p.get("strike", 0))
+        opt = p.get("option_type", "")
+        ltp, source, _ = get_ltp(sym, und, strike, opt)
+        mtm = (ltp - avg) * qty
+        total_mtm += mtm
+        legs.append({
+            "symbol": sym, "qty": qty, "avg": avg,
+            "live_ltp": round(ltp, 2) if ltp else None,
+            "mtm": round(mtm, 2),
+            "source": source,
+        })
+
+    cash = ps.get("cash", 0)
+    return {
+        "ts": datetime.now(IST).isoformat(),
+        "legs": legs,
+        "total_mtm": round(total_mtm, 2),
+        "cash": cash,
+        "total_value": round(cash + total_mtm, 2),
+    }
+
+
 def aggregate_state():
     # Parallelize: each source already cached, but launch in threads to overlap
     import concurrent.futures
@@ -2028,7 +2103,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(err)))
                 self.end_headers()
                 self.wfile.write(err)
-        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/spot") or self.path.startswith("/api/vix_card") or self.path.startswith("/api/session") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades") or self.path.startswith("/api/mavis_events") or self.path.startswith("/api/mavis_state"):
+        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/spot") or self.path.startswith("/api/vix_card") or self.path.startswith("/api/session") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades") or self.path.startswith("/api/mavis_events") or self.path.startswith("/api/mavis_state") or self.path == "/api/mtm":
             try:
                 body = handle_api(self.path).encode("utf-8")
                 self.send_response(200)
@@ -2050,7 +2125,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def handle_api(path):
-    """Dispatch /api/candles, /api/option_chain, /api/terminal, /api/quant_brain, /api/mavis_trades."""
+    """Dispatch /api/candles, /api/option_chain, /api/terminal, /api/quant_brain, /api/mavis_trades, /api/mtm."""
     from urllib.parse import urlparse, parse_qs
     u = urlparse(path)
     qs = parse_qs(u.query)
@@ -2059,6 +2134,9 @@ def handle_api(path):
         interval = qs.get("interval", ["5m"])[0]
         period = qs.get("period", ["1d"])[0]
         return json.dumps(get_candles(sym, interval, period), default=str)
+    elif u.path == "/api/mtm":
+        # FIX 2026-09-03 14:30: live MTM from option_chains.json with B/S fallback for OTM strikes.
+        return json.dumps(_compute_mtm(), default=str)
     if u.path == "/api/option_chain":
         sym = (qs.get("symbol", ["NIFTY"])[0]).upper()
         expiry = qs.get("expiry", ["auto"])[0]
