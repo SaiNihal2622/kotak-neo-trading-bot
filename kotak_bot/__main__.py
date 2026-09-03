@@ -932,8 +932,35 @@ def run_paper() -> None:
                         _fa_reason = str(_fa.get("reason", "mavis_force_action"))[:200]
                         if _fa_action == "CLOSE_ALL":
                             n = order_mgr.square_off_all(reason=f"mavis_force:{_fa_reason[:80]}")
-                            logger.info(f"[MAVIS-FORCE] CLOSE_ALL executed: closed {n} trades. reason={_fa_reason[:120]}")
-                            alerter.send(f"[Mavis force] CLOSE_ALL executed. {n} trades closed. Reason: {_fa_reason[:120]}")
+                            # FIX 2026-09-03 14:55: fall back to broker positions if order_mgr is empty
+                            # (brain-driven OPENs may have bypassed execute_plan).
+                            n_broker = 0
+                            if n == 0:
+                                try:
+                                    broker_positions = broker.get_positions() if hasattr(broker, 'get_positions') else []
+                                    from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
+                                    for _pos in broker_positions:
+                                        if _pos.qty == 0:
+                                            continue
+                                        _close_side = OrderSide.SELL if _pos.qty > 0 else OrderSide.BUY
+                                        _sym = getattr(_pos, 'symbol', None) or f"{getattr(_pos, 'underlying', 'X')}{getattr(_pos, 'strike', 0)}{getattr(_pos, 'option_type', '')}"
+                                        _ord = Order(
+                                            symbol=_sym, side=_close_side, qty=abs(_pos.qty),
+                                            order_type=OrderType.MARKET, product=ProductType.MIS,
+                                            price=0.0, tag='MAVIS-FORCE-ORPHAN',
+                                            exchange=getattr(_pos, 'exchange', 'NFO'),
+                                            strike=float(getattr(_pos, 'strike', 0) or 0),
+                                            option_type=getattr(_pos, 'option_type', '') or '',
+                                            expiry=getattr(_pos, 'expiry', '') or '',
+                                            underlying=getattr(_pos, 'underlying', 'X') or 'X',
+                                        )
+                                        _res = broker.place_order(_ord)
+                                        if _res.status.value in ('complete', 'filled', 'open'):
+                                            n_broker += 1
+                                except Exception as _fb_err:
+                                    logger.warning(f"[MAVIS-FORCE] orphan fallback failed: {_fb_err}")
+                            logger.info(f"[MAVIS-FORCE] CLOSE_ALL executed: closed {n} order_mgr trades, {n_broker} broker orphans. reason={_fa_reason[:120]}")
+                            alerter.send(f"[Mavis force] CLOSE_ALL executed. {n + n_broker} trades closed ({n} order_mgr, {n_broker} broker orphans). Reason: {_fa_reason[:120]}")
                         elif _fa_action.startswith("CLOSE_UNDERLYING="):
                             u = _fa_action.split("=", 1)[1].strip().upper()
                             # square_off_all is the safe path; log which underlying was targeted
@@ -1421,6 +1448,42 @@ def run_paper() -> None:
                 if open_trades:
                     closed = order_mgr.square_off_all(reason="intraday_force_close")
                     logger.warning(f"[INTRADAY] force-closed {closed} open trades (force_square_off_time hit)")
+                else:
+                    # FIX 2026-09-03 14:55: order_mgr may have 0 trades because brain-driven OPENs
+                    # bypassed execute_plan (FIX 947a25b added register_external_managed_trade but
+                    # pre-existing positions in paper_client aren't registered). Fall back to
+                    # reading broker positions directly and force-close them.
+                    try:
+                        broker_positions = broker.get_positions() if hasattr(broker, 'get_positions') else []
+                        if broker_positions:
+                            from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
+                            closed_orphans = 0
+                            for _pos in broker_positions:
+                                if _pos.qty == 0:
+                                    continue
+                                _close_side = OrderSide.SELL if _pos.qty > 0 else OrderSide.BUY
+                                _close_qty = abs(_pos.qty)
+                                _sym = getattr(_pos, 'symbol', None) or f"{getattr(_pos, 'underlying', 'X')}{getattr(_pos, 'strike', 0)}{getattr(_pos, 'option_type', '')}"
+                                _strike = float(getattr(_pos, 'strike', 0) or 0)
+                                _opt = getattr(_pos, 'option_type', '') or ''
+                                _und = getattr(_pos, 'underlying', 'X') or 'X'
+                                _exp = getattr(_pos, 'expiry', '') or ''
+                                _ord = Order(
+                                    symbol=_sym, side=_close_side, qty=_close_qty,
+                                    order_type=OrderType.MARKET, product=ProductType.MIS,
+                                    price=0.0, tag='FORCE-SQUARE-ORPHAN',
+                                    exchange=getattr(_pos, 'exchange', 'NFO'),
+                                    strike=_strike, option_type=_opt,
+                                    expiry=_exp, underlying=_und,
+                                )
+                                _res = broker.place_order(_ord)
+                                if _res.status.value in ('complete', 'filled', 'open'):
+                                    closed_orphans += 1
+                            if closed_orphans:
+                                logger.warning(f"[INTRADAY] force-closed {closed_orphans} ORPHAN positions from broker (order_mgr had 0 trades — brain-driven OPENs not registered)")
+                                alerter.send(f"⏰ [INTRADAY] force-closed {closed_orphans} orphan positions at {now.strftime('%H:%M')} IST (force_square_off_time hit; order_mgr had 0 trades)")
+                    except Exception as _orphan_err:
+                        logger.warning(f"[INTRADAY] orphan force-close failed: {_orphan_err}")
                     try:
                         alerter.send(f"⏰ [INTRADAY] force-closed {closed} open trades at {now.strftime('%H:%M')} IST — overnight positions blocked")
                     except Exception:
@@ -1449,6 +1512,36 @@ def run_paper() -> None:
                         alerter.send(f"🚨 [HARD-KILL] bot force-closed {len(open_trades)} trades at {_now_hm} IST — should have closed at 14:30!")
                     except Exception:
                         pass
+                else:
+                    # FIX 2026-09-03 14:55: same orphan fallback as the 14:30 force-square.
+                    try:
+                        broker_positions = broker.get_positions() if hasattr(broker, 'get_positions') else []
+                        if broker_positions:
+                            from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
+                            killed = 0
+                            for _pos in broker_positions:
+                                if _pos.qty == 0:
+                                    continue
+                                _close_side = OrderSide.SELL if _pos.qty > 0 else OrderSide.BUY
+                                _sym = getattr(_pos, 'symbol', None) or f"{getattr(_pos, 'underlying', 'X')}{getattr(_pos, 'strike', 0)}{getattr(_pos, 'option_type', '')}"
+                                _ord = Order(
+                                    symbol=_sym, side=_close_side, qty=abs(_pos.qty),
+                                    order_type=OrderType.MARKET, product=ProductType.MIS,
+                                    price=0.0, tag='HARD-KILL-ORPHAN',
+                                    exchange=getattr(_pos, 'exchange', 'NFO'),
+                                    strike=float(getattr(_pos, 'strike', 0) or 0),
+                                    option_type=getattr(_pos, 'option_type', '') or '',
+                                    expiry=getattr(_pos, 'expiry', '') or '',
+                                    underlying=getattr(_pos, 'underlying', 'X') or 'X',
+                                )
+                                _res = broker.place_order(_ord)
+                                if _res.status.value in ('complete', 'filled', 'open'):
+                                    killed += 1
+                            if killed:
+                                logger.error(f"[HARD-KILL-ORPHAN] force-closed {killed} orphan positions at {_now_hm} IST")
+                                alerter.send(f"🚨 [HARD-KILL-ORPHAN] bot force-closed {killed} orphan positions at {_now_hm} IST — order_mgr had 0 trades!")
+                    except Exception as _hk_err:
+                        logger.error(f"[HARD-KILL] orphan sweep failed: {_hk_err}")
             # 3) news ingestion every N seconds
             if news and (now - last_news_ingest).total_seconds() >= news_interval:
                 try:
