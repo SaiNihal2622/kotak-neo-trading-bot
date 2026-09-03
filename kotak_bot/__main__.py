@@ -1209,6 +1209,56 @@ def run_paper() -> None:
                                         except Exception as _rec_err:
                                             logger.debug(f"record_decision failed: {_rec_err}")
                                     _placed_total += _placed
+                                    # FIX 2026-09-03 14:38: register the brain-driven trade with
+                                    # OrderManager so force-square can find it. Without this, the
+                                    # bot's order_mgr._trades dict doesn't see brain OPENs and
+                                    # positions stay open past 14:30 force-square time.
+                                    if _leg_records:
+                                        try:
+                                            from kotak_bot.strategy.trade_plan import TradePlan, StrategyName
+                                            _tp_legs = []
+                                            for _lr in _leg_records:
+                                                _tp_legs.append({
+                                                    "side": _lr["side"],
+                                                    "qty": max(1, int(_lr["qty"]) // {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65, "MIDCPNIFTY": 120}.get(_qa_inst, 75)),
+                                                    "strike": int(_filled.strike) if hasattr(_filled, "strike") and _filled.strike else 0,
+                                                    "opt_type": _filled.option_type if hasattr(_filled, "option_type") else "",
+                                                    "order_type": "MARKET",
+                                                    "price": _lr["fill_price"],
+                                                    "tag": f"QUANT-{_qa_a.get('strategy','?')}"[:30],
+                                                })
+                                            # Pull actual strike/opt from the last filled order
+                                            if hasattr(_filled, "strike") and _filled.strike:
+                                                for _l in _tp_legs:
+                                                    _l["strike"] = int(_filled.strike)
+                                                    _l["opt_type"] = _filled.option_type
+                                            _plan = TradePlan(
+                                                underlying=_qa_inst,
+                                                strategy=StrategyName.CUSTOM,
+                                                legs=_tp_legs,
+                                                target=_qa_a.get("target"),
+                                                stop=_qa_a.get("stop"),
+                                                confidence=0.0,
+                                                reason=str(_qa_a.get("rationale", ""))[:200],
+                                            )
+                                            # Reconstruct filled Order objects from leg records
+                                            from kotak_bot.execution.broker_base import Order, OrderSide, OrderType, ProductType
+                                            _orders = []
+                                            for _lr in _leg_records:
+                                                _o = Order(
+                                                    symbol=_lr["symbol"],
+                                                    side=OrderSide(_lr["side"]),
+                                                    qty=int(_lr["qty"]),
+                                                    order_type=OrderType.MARKET,
+                                                    product=ProductType.MIS,
+                                                    price=float(_lr["fill_price"]),
+                                                    tag=f"QUANT-{_qa_a.get('strategy','?')}"[:30],
+                                                )
+                                                _orders.append(_o)
+                                            order_mgr.register_external_managed_trade(_plan, _orders)
+                                            logger.info(f"[QUANT-ACTION] registered {len(_orders)} legs in order_mgr (force-square will see this)")
+                                        except Exception as _reg_err:
+                                            logger.warning(f"[QUANT-ACTION] register_external failed: {_reg_err}")
                                     _summary = f"OPEN {_qa_a.get('strategy','?')} {_qa_inst} expiry={_expiry} legs_placed={_placed}/{len(_qa_legs)}"
                                     logger.info(f"[QUANT-ACTION] {_summary} target={_qa_a.get('target')} stop={_qa_a.get('stop')}")
                                     alerter.send(f"[Quant service] {_summary}\nRationale: {_qa_a.get('rationale','')[:200]}\nMax hold: {_qa_a.get('max_hold_minutes','?')}m")

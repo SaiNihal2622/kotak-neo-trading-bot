@@ -326,6 +326,34 @@ class OrderManager:
         self._save_state()
         return trade
 
+    def register_external_managed_trade(self, plan: 'TradePlan', filled_orders: list, opened_at: 'datetime' = None) -> 'ManagedTrade':
+        """FIX 2026-09-03 14:38: register a ManagedTrade from externally-filled orders
+        (e.g. brain-driven OPENs that bypass execute_plan and call broker.place_order directly).
+        Without this, force-square and open_trades() don't see the brain's trades, so
+        positions never get force-closed at 14:30.
+        """
+        from datetime import datetime, timezone
+        trade_id = f"T-{uuid.uuid4().hex[:10].upper()}"
+        trade = ManagedTrade(
+            trade_id=trade_id,
+            plan=plan,
+            opened_at=opened_at or datetime.now(timezone.utc),
+        )
+        for o in filled_orders:
+            trade.orders.append(o)
+        self._trades[trade_id] = trade
+        for o in filled_orders:
+            if o.symbol not in self._symbol_to_trade:
+                self._symbol_to_trade[o.symbol] = trade_id
+        logger.info(f"Registered EXTERNAL plan {trade_id}: {plan.strategy.value} {len(filled_orders)} legs (brain-driven)")
+        if self._on_trade_event:
+            try:
+                self._on_trade_event("opened", trade)
+            except Exception as e:
+                logger.exception(f"trade event cb: {e}")
+        self._save_state()
+        return trade
+
     def close_trade(self, trade_id: str, reason: str = "manual") -> ManagedTrade:
         trade = self._trades.get(trade_id)
         if not trade:
