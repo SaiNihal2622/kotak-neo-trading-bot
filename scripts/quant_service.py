@@ -1612,7 +1612,10 @@ def _spawn_llm_thread(events: list, context: dict, paper: dict) -> None:
 
 
 def _periodic_scan(context: dict) -> dict:
-    """Periodic LLM scan (every 90 min during market hours).
+    """Periodic LLM scan (every 15 min — 24/7 mode).
+
+    FIX 2026-09-03: lowered from 90 to 15 min (bde1778) for 24/7 mode.
+    User said 'no limits' on LLM calls.
 
     TRANSPARENCY rule (not a trade-forcing rule):
       - Calls the LLM with NO event trigger — just a market snapshot
@@ -1624,10 +1627,10 @@ def _periodic_scan(context: dict) -> dict:
     Why this helps:
       - Surfaces regime shifts that wouldn't cross the 0.3% event threshold
       - Forces the LLM to keep thinking between event-driven calls
-      - User sees regular updates in the dashboard (every ~90 min)
-      - Cheap: ~3-4 calls/day = ~$0.10-0.20 LLM cost
+      - User sees regular updates in the dashboard (every ~15 min)
+      - Cheap: ~$1-2/day in extra LLM calls
     """
-    log("PERIODIC-SCAN: 90-min transparency check (no event trigger)")
+    log("PERIODIC-SCAN: 15-min transparency check (no event trigger)")
     # Use the same invoke path as event-driven scans; pass a synthetic "event" so
     # the prompt knows this is a periodic check, not a price-move reaction.
     synthetic_event = {
@@ -1635,7 +1638,7 @@ def _periodic_scan(context: dict) -> dict:
         "symbol": "ALL",
         "pct": 0.0,
         "price": 0,
-        "trigger": "90min_timer",
+        "trigger": "15min_timer",
     }
     decision = invoke_llm_decision([synthetic_event], context)
     # Enforce 3-line minimum rationale (HOLD) or real trade. If the LLM returned
@@ -1656,7 +1659,7 @@ def _periodic_scan(context: dict) -> dict:
     SERVICE_STATE["last_decision_at"] = now_iso()
     SERVICE_STATE["llm_calls"] += 1
     write_decision(decision, context_snapshot={
-        "trigger": "periodic_90min",
+        "trigger": "periodic_15min" if is_market_hours() else "global_research_15min",
         "ltp_by_event": {},
         "cash": context.get("paper", {}).get("cash"),
         "open_positions": len(context.get("paper", {}).get("positions", {})),
