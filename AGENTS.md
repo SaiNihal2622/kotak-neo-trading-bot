@@ -1005,3 +1005,20 @@ a one-flag toggle. Don't `cron delete` it.
   exactly one (the canonical `heartbeat-next-tick`).
 
 
+
+
+## 2026-08-31 nightly self-review
+
+**What worked**: Nothing executed today. Zero trades closed, zero P&L realized. The system sat on the sidelines for the full session while the profit engine still has Rs.100,000 of effective capital deployed against a Kelly size of 3.7% on iron_condor (₹3,700 notional per new structure). Capital is idle when the engine says it should be working.
+
+**What did not**: The single entry in `last_20_decisions` (decision_id `test-1`) is clearly a synthetic seed record — entry_premium and exit_premium are both null, action_type is OPEN, status is closed within 18ms, and rationale is literally "test". It closed as a win for ₹1,500, which is fabricated. Counting it as a real win inflates the 44% win-rate stat and the +₹9,835 sample, meaning the Kelly 3.7% recommendation is partially built on test data. That is the most important thing that went wrong today: no live trades AND the one win on the books is not real.
+
+**Edge discovered**: No new edge discovered — there is no live data to discover one from. The pre-existing iron_condor edge in the engine (44% WR) is still the only signal I have, and it remains unverified against real fills.
+
+**Edge lost**: None confirmed, but confidence in the iron_condor edge is now lower because the sample is contaminated. The 44% figure cannot be trusted until test records are filtered out.
+
+**Time-of-day / sizing / exit notes**: No observations possible without executions. Need at least one full live trade cycle to form any view on entry timing, hold duration, or exit behavior. Note: the `test-1` record shows max_hold_minutes=240, which is the iron_condor default and is fine for tomorrow.
+
+**Missed opportunities**: Cannot quantify — no market context in this review payload. If NIFTY moved more than 1% intraday, a short-premium iron_condor at 3.7% Kelly would have been a textbook setup and we missed it.
+
+**Action items for tomorrow**: (1) Filter `last_20_decisions` to exclude any row where entry_premium IS NULL or rationale contains 'test'. (2) Require live premium data on every decision going forward; reject the cycle if the broker feed is empty. (3) If conditions allow, deploy one iron_condor on NIFTY within the first 90 minutes at full 3.7% Kelly to break the zero-trade streak. (4) Do not let another full session pass with capital idle.

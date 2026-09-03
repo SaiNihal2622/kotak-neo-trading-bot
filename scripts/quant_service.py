@@ -2172,16 +2172,17 @@ def watch_loop():
                         _dash()
                     except Exception as e:
                         log(f"dashboard-err: {e}")
-                # Periodic LLM scan every 90 min during market hours: forces the LLM
+                # Periodic LLM scan every 15 min (FIX 2026-09-03 05:25: lowered from 90 to 15
+                # for 24/7 mode; user said 'no limits' on LLM calls). Forces the LLM
                 # to either act or write a 3-line "why not" justification. This is a
                 # TRANSPARENCY rule, not a trade-forcing rule — the LLM has full
-                # discretion to HOLD, but it must justify. Cost: ~$0.10-0.20/day
+                # discretion to HOLD, but it must justify. Cost: ~$1-2/day
                 # in extra LLM calls; benefit: continuous reasoning + audit trail.
                 # FIX 2026-09-02 16:35: REMOVED is_market_hours() gate. The brain now
-                # thinks 24/7. The 90-min periodic scan fires always; outside NSE
+                # thinks 24/7. The 15-min periodic scan fires always; outside NSE
                 # hours, the LLM is in 'global_research' mode (analyses overnight
                 # US/Asia moves, prepares for NSE open, logs hypothetical plans).
-                if datetime.now().timestamp() - last_periodic_scan_ts > 5400:
+                if datetime.now().timestamp() - last_periodic_scan_ts > 900:  # 15 min
                     last_periodic_scan_ts = datetime.now().timestamp()
                     try:
                         _periodic_scan(context={
@@ -2192,7 +2193,7 @@ def watch_loop():
                             "candles": read_candles(),
                             "global_markets": _safe_read_json(DATA / "global_state.json", default={}),
                             "alpha": _safe_read_json(DATA / "quant_alpha.json", default={}),
-                            "trigger": "periodic_90min" if is_market_hours() else "global_research_90min",
+                            "trigger": "periodic_15min" if is_market_hours() else "global_research_15min",
                             "nse_status": "OPEN" if is_market_hours() else "CLOSED",
                         })
                     except Exception as e:
@@ -2320,12 +2321,12 @@ def watch_loop():
                     run_nightly_improvement()
                 except Exception as e:
                     log(f"SCHED-NIGHTLY-IMPROVEMENT-err: {e}")
-            # FIX 2026-09-02 16:35: 24/7 OVERNIGHT RESEARCH (every 2h when NSE closed).
-            # Logs hypothetical signals to data_cache/hypothetical_signals.jsonl.
-            # When NSE opens at 09:15, the morning brief can review overnight signals
-            # against actual NSE moves to learn from off-hours.
+            # FIX 2026-09-02 16:35 + 2026-09-03 05:25: 24/7 OVERNIGHT RESEARCH (every 30 min when NSE closed).
+            # Lowered from 2h to 30 min per user's 'no limits' request. Logs hypothetical
+            # signals to data_cache/hypothetical_signals.jsonl. When NSE opens at 09:15, the
+            # morning brief can review overnight signals against actual NSE moves.
             _now_unix = int(datetime.now().timestamp())
-            if not is_market_hours() and _now_unix - last_overnight_research_ts > 7200:
+            if not is_market_hours() and _now_unix - last_overnight_research_ts > 1800:  # 30 min
                 last_overnight_research_ts = _now_unix
                 try:
                     from datetime import datetime as _dt
@@ -2364,14 +2365,9 @@ def watch_loop():
                         "open_positions": len(paper.get("positions", {})),
                         "tick": tick_count,
                     })
-                # OI alert on every 60th tick (~1 min), offset to avoid batching
-                if tick_count % 60 == 30:
-                    try:
-                        oi_changes = get_oi_changes_for_llm("NIFTY", lookback_min=15)
-                        if oi_changes.get("n_changes", 0) > 0:
-                            tg_oi_alert(oi_changes, threshold_pct=15.0)
-                    except Exception:
-                        pass
+                # FIX 2026-09-03 05:25: REMOVED per-minute OI check. NSE is blocked from this IP
+                # (per AGENTS.md), so get_oi_changes_for_llm() hangs for 15+ seconds each call,
+                # slowing the main loop to 0.5Hz. OI is now checked only via the periodic scan.
             except Exception:
                 pass
 
