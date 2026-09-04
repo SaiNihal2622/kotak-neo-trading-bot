@@ -227,6 +227,31 @@ def main() -> int:
     else:
         lines.append("✅ Smoke test: all 11 checks pass")
 
+    # 3.6) FIX 2026-09-04 12:32: order-flow self-test. Verifies that
+    # order_mgr.execute_plan() + broker.place_order() actually fills orders.
+    # This is the regression check for the line 1283 Order shadow-import trap
+    # that silently failed 3 OPENs today. If the self-test fails, we know
+    # the bug has come back BEFORE any brain orders are attempted.
+    print("\n  [..] running order-flow self-test...")
+    try:
+        from scripts._self_test_orders import main as _self_test_main
+        # _self_test_orders.main() is a script entry point; we just import and run
+        # the body via the module. Simplest: subprocess for a clean exit.
+        import subprocess as _sp
+        _ret = _sp.run([sys.executable, str(ROOT / "scripts" / "_self_test_orders.py")],
+                       capture_output=True, text=True, timeout=60, cwd=str(ROOT))
+        if _ret.returncode == 0:
+            print("    [OK] order flow healthy (1-leg NIFTY test order filled + closed)")
+            lines.append("✅ Order flow self-test: healthy")
+        else:
+            print(f"    [FAIL] order flow self-test failed: rc={_ret.returncode}")
+            print(f"      stderr: {_ret.stderr[:500]}")
+            lines.append(f"🚫 Order flow self-test FAILED: rc={_ret.returncode}. Brain's orders are NOT being placed. URGENT: investigate line 1283 shadow trap in __main__.py")
+            critical_failures.append("order_flow_self_test")
+    except Exception as _st_err:
+        print(f"    [WARN] self-test error: {_st_err}")
+        lines.append(f"⚠️ Order flow self-test error: {_st_err}")
+
     # 4) Kotak re-auth (only if creds OK)
     if not [r for r in report["results"] if r["name"] == "kotak_creds" and not r["ok"]]:
         print("\n  [..] re-authenticating with Kotak Neo...")
