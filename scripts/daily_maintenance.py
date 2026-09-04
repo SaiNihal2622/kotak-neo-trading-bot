@@ -308,6 +308,41 @@ def main() -> int:
     print(f"  [{('OK' if ok else 'WARN')}] reconcile: {msg}")
     lines.append(f"✅ Reconcile: {msg}" if ok else f"⚠️ Reconcile: {msg}")
 
+    # 5.5) FIX 2026-09-04 13:55: EOD P&L evaluator
+    # If it's past 15:30 IST, evaluate today's open positions at last live LTP.
+    # Writes to trade_journal.jsonl (real outcomes) and performance/daily.json.
+    from datetime import datetime as _dt_eod
+    now_ist = _dt_eod.now()
+    if now_ist.hour >= 15 and now_ist.minute >= 30:
+        print("\n  [..] running EOD P&L evaluator (writes trade_journal)...")
+        try:
+            import subprocess as _sp_eod
+            _ret = _sp_eod.run(
+                [sys.executable, str(ROOT / "scripts" / "_eod_pnl_evaluator.py")],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+            )
+            print(_ret.stdout[-500:])
+            if _ret.returncode == 0:
+                lines.append("[OK] EOD P&L evaluator: wrote today's trades to journal")
+            else:
+                lines.append(f"[WARN] EOD P&L evaluator returned {ret.returncode}")
+        except Exception as _eod_err:
+            print(f"    [WARN] EOD P&L evaluator error: {_eod_err}")
+            lines.append(f"[WARN] EOD P&L evaluator error: {_eod_err}")
+
+    # 5.6) FIX 2026-09-04 13:55: Update self-test log (gates check 9)
+    print("\n  [..] updating self-test log for live-trading gates...")
+    try:
+        import subprocess as _sp_st
+        _ret = _sp_st.run(
+            [sys.executable, str(ROOT / "scripts" / "_update_self_test_log.py")],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+        )
+        if _ret.returncode == 0:
+            lines.append("[OK] Self-test log updated (gates check 9 ready)")
+    except Exception:
+        pass
+
     # 6) Compose + send Telegram (no emojis on Windows console to avoid cp1252 issues)
     header = "**Good morning — daily maintenance complete**\n"
     if critical_failures:

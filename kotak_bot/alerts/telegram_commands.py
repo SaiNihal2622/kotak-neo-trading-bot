@@ -80,6 +80,8 @@ class TelegramCommandHandler:
         # Live trading requires 10 hard gates. /live shows the report.
         # Even setting KOTAK_LIVE_CONFIRMED=YES won't enable live until all pass.
         self._commands["/live"] = self._cmd_live
+        # FIX 2026-09-04 13:58: /strategy command — per-strategy performance
+        self._commands["/strategy"] = self._cmd_strategy
         self._commands["/time"] = self._cmd_time
         self._commands["/force_trade"] = self._cmd_force_trade
         self._commands["/force"] = self._cmd_force_trade
@@ -416,6 +418,22 @@ class TelegramCommandHandler:
                 "3. Monitor closely for 7 days with 1% capital\n\n"
                 "<b>NOTE:</b> Even after /live confirm, the bot will ONLY go live after env is set + restart.\n"
                 "Confirm is recorded; gate status is in the bot log.")
+
+    # FIX 2026-09-04 13:58: /strategy — per-strategy performance
+    def _cmd_strategy(self, arg: str, msg: dict) -> str:
+        """Show per-strategy P&L from trade_journal.jsonl. Useful for deciding
+        which strategies to scale up / shut down.
+        """
+        try:
+            import subprocess as _sp
+            ret = _sp.run([sys.executable, str(Path("scripts/strategy_performance.py"))],
+                         cwd=str(Path.cwd()), capture_output=True, text=True, timeout=60)
+            # Extract just the strategy + underlying lines
+            lines = [l for l in ret.stdout.splitlines()
+                     if l.strip() and not l.startswith("=") and "wrote" not in l]
+            return "<b>STRATEGY PERFORMANCE</b>\n\n" + "\n".join(lines[:30])
+        except Exception as e:
+            return f"strategy perf failed: {e}"
 
     def _cmd_time(self, arg: str, msg: dict) -> str:
         from kotak_bot.utils.clock import now_ist, market_session

@@ -16,11 +16,43 @@ from loguru import logger
 
 
 def compute_pnl(positions: list, feed) -> dict:
-    """Compute current P&L for all open positions. Returns per-symbol + total."""
+    """Compute current P&L for all open positions. Returns per-symbol + total.
+
+    FIX 2026-09-04 13:50: was using feed.get_ltp(sym) only, which doesn't have option
+    LTPs (feed subscribes to NIFTY/BANKNIFTY spot but not option contracts).
+    Now also checks option_chains.json (live LTP from KotakProdFeed), which is
+    where option LTPs are stored.
+    """
     out = {"total": 0.0, "by_symbol": {}, "by_underlying": {}}
+    # FIX 2026-09-04 13:50: load option_chains.json once (avoid file I/O per position)
+    _chains_cache = {}
+    try:
+        from pathlib import Path as _P
+        for cf in _P("data_cache").glob("option_chain_*.json"):
+            try:
+                import json as _j
+                cd = _j.loads(cf.read_text(encoding="utf-8"))
+                _chains_cache[cd.get("spot", 0)] = cd
+            except Exception:
+                continue
+    except Exception:
+        pass
+    _chains_files = list(_chains_cache.values())
+
     for p in positions:
         sym = p.get("symbol", "")
-        cur = feed.get_ltp(sym)
+        cur = feed.get_ltp(sym) if feed else 0
+        # FIX 2026-09-04 13:50: if feed doesn't have this option LTP, try option_chains.json
+        if cur <= 0 and sym:
+            for cd in _chains_files:
+                strikes = cd.get("strikes", {})
+                for key, info in strikes.items():
+                    if info.get("symbol") == sym or key == sym:
+                        cur = info.get("price", 0)
+                        if cur > 0:
+                            break
+                if cur > 0:
+                    break
         if cur <= 0:
             continue
         avg = p.get("avg_price", 0)

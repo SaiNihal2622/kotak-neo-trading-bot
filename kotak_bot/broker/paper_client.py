@@ -123,19 +123,48 @@ class PaperClient(BrokerClient):
         Adds slippage in the direction of the trade.
 
         Fallback chain (in order):
+          0. FIX 2026-09-04 13:42: option_chains.json (live LTP from KotakProdFeed)
           1. Cached tick for the option symbol
           2. Order's limit price (if set)
           3. Order's expected_fill_price (if set)
           4. Underlying's last-known LTP (NIFTY/BANKNIFTY spot) — ATM option ≈ 0.5% of underlying
           5. Synthetic minimal price (Rs.1.00) — last resort, never skip a fill in paper mode
         """
-        tick = self._ticks.get(order.symbol)
-        if tick is not None and tick.ltp > 0:
-            ref_price = tick.ltp
-        elif order.price and order.price > 0:
+        ref_price = 0.0
+
+        # FIX 2026-09-04 13:42: step 0 — look up live option LTP from option_chains.json
+        # This is the most accurate source for paper fills (matches what live trading would do).
+        try:
+            from pathlib import Path as _P
+            chains_files = list((_P("data_cache")).glob("option_chain_*.json"))
+            for cf in chains_files:
+                try:
+                    import json as _j
+                    cd = _j.loads(cf.read_text(encoding="utf-8"))
+                    strikes = cd.get("strikes", {})
+                    key = f"{int(order.strike)}_{order.option_type}" if order.strike and order.option_type else None
+                    if key and key in strikes:
+                        lp = strikes[key].get("price", 0)
+                        if lp and lp > 0:
+                            ref_price = lp
+                            logger.debug(f"[PAPER] FORCE_FILL option_chain ref for {order.order_id} {order.symbol}: chain_key={key} -> {ref_price}")
+                            break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        if ref_price <= 0:
+            tick = self._ticks.get(order.symbol)
+            if tick is not None and tick.ltp > 0:
+                ref_price = tick.ltp
+        if ref_price <= 0 and order.price and order.price > 0:
             ref_price = order.price
-        elif order.expected_fill_price and order.expected_fill_price > 0:
+        if ref_price <= 0 and order.expected_fill_price and order.expected_fill_price > 0:
             ref_price = order.expected_fill_price
+
+        if ref_price > 0:
+            pass  # have a ref price
         else:
             # Fallback 4: derive from underlying's spot LTP. Most NIFTY/BANKNIFTY
             # weekly options trade in a Rs.5-200 band; ATM ≈ 0.5% of spot is a

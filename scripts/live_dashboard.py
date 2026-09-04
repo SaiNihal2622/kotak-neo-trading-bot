@@ -2103,7 +2103,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(err)))
                 self.end_headers()
                 self.wfile.write(err)
-        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/spot") or self.path.startswith("/api/vix_card") or self.path.startswith("/api/session") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades") or self.path.startswith("/api/mavis_events") or self.path.startswith("/api/mavis_state") or self.path == "/api/mtm" or self.path == "/api/confluence":
+        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/spot") or self.path.startswith("/api/vix_card") or self.path.startswith("/api/session") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades") or self.path.startswith("/api/mavis_events") or self.path.startswith("/api/mavis_state") or self.path == "/api/mtm" or self.path == "/api/confluence" or self.path == "/api/strategy_performance" or self.path == "/api/real_pnl":
             try:
                 body = handle_api(self.path).encode("utf-8")
                 self.send_response(200)
@@ -2156,6 +2156,25 @@ def handle_api(path):
                 "global_state_available": state is not None,
             }
             return json.dumps(payload, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, default=str)
+    elif u.path == "/api/strategy_performance":
+        # FIX 2026-09-04 13:58: per-strategy performance for the dashboard.
+        try:
+            sp_path = DATA / "performance" / "strategy_performance.json"
+            if sp_path.exists():
+                return sp_path.read_text(encoding="utf-8")
+            return json.dumps({"error": "strategy_performance.json not found — run scripts/strategy_performance.py"})
+        except Exception as e:
+            return json.dumps({"error": str(e)}, default=str)
+    elif u.path == "/api/real_pnl":
+        # FIX 2026-09-04 13:50: real P&L using live option LTPs from option_chains.json
+        # (not the paper client's default Rs.1.0). This is the "what would live
+        # trading show" P&L, which is the only meaningful metric.
+        try:
+            sys.path.insert(0, str(ROOT))
+            from scripts._mtm_now import compute_mtm_with_chains
+            return json.dumps(compute_mtm_with_chains(), default=str)
         except Exception as e:
             return json.dumps({"error": str(e)}, default=str)
     if u.path == "/api/option_chain":
