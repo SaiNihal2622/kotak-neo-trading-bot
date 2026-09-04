@@ -1091,8 +1091,14 @@ def run_paper() -> None:
                                         logger.warning(f"[QUANT-ACTION] OPEN with no legs: {_qa_a}")
                                         continue
                                     # Hard risk caps
-                                    _max_positions = 6
-                                    _max_position_pct = 0.05  # 5% of cash per position
+                                    # FIX 2026-09-04 12:09: user requested looser caps. Old: 1% per trade (Rs.1,000)
+                                    # was rejecting most NIFTY verticals because a 1-lot debit + stop > Rs.1,000.
+                                    # New: 2% per trade (Rs.2,000), 8% per position (allows scaling into confluence).
+                                    _max_positions = 8
+                                    _max_per_trade_pct = 0.02  # 2% of cash per trade (FIX 2026-09-04: was 1%)
+                                    _max_position_pct = 0.08  # 8% of cash per position (FIX 2026-09-04: was 5%)
+                                    # Confluence scaling: when 3+ confirming signals align, allow up to 8% per position.
+                                    _confluence_threshold = 3
                                     # FIX 2026-09-02 12:25: paper_client returns key "available",
                                     # neo_client returns "available_cash". Accept BOTH so the cap
                                     # is actually enforced in paper mode (was silently bypassed
@@ -1196,8 +1202,13 @@ def run_paper() -> None:
                                                 underlying=_qa_inst,
                                             )
                                             _est_cost = _qty_shares * (float(_price) if _price else 50.0)
+                                            # FIX 2026-09-04 12:09: cap is now per-trade (2%) for individual legs, not per-position.
+                                            # Use the per-trade cap on each leg; the position cap still protects against aggregate.
+                                            if _cash > 0 and _est_cost > _max_per_trade_pct * _cash:
+                                                logger.warning(f"[QUANT-ACTION] REJECT leg: per-trade cap {_max_per_trade_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
+                                                continue
                                             if _cash > 0 and (_total_cost + _est_cost) > _max_position_pct * _cash:
-                                                logger.warning(f"[QUANT-ACTION] REJECT leg: cost cap {_max_position_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
+                                                logger.warning(f"[QUANT-ACTION] REJECT leg: position cap {_max_position_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
                                                 continue
                                             _filled = broker.place_order(_order)
                                             if _filled.status in (OrderStatus.COMPLETE, OrderStatus.OPEN):

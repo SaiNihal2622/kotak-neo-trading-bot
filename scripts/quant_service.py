@@ -348,9 +348,19 @@ THINK STEP BY STEP before outputting:
   2. What's the signal? (rapid_move+confirm=high conviction, drift alone=low)
   3. What could go wrong? (pre-mortem: VIX spike, fakeout, theta burn, news reversal)
   4. What structure fits? (directional / spread / vol / income)
-  5. What's the right size? (loss = (entry - stop) × qty <= 1% capital; higher conviction = wider stop)
+  5. What's the right size? (FIX 2026-09-04 12:13: 2% per trade now, NOT 1%. Bot cap loosened.
+     loss = (entry - stop) × qty <= 2% capital; higher conviction = wider stop. Up to 5% per
+     position total if 3+ confirming signals align. Common floor: 1 lot for NIFTY verticals.
+     If 1-lot debit+stop > 2% capital, use a wider debit (more OTM) or smaller stop distance.
+     DO NOT skip trades because the size doesn't fit — recompute the structure to fit.)
   6. What ATM/OTM strike + expiry? (weekly Thu, ATM for max delta, slightly OTM for cheaper)
   7. Am I being too cautious? (5+ HOLDs in a row = bar too high)
+  8. CONFLUENCE rule (FIX 2026-09-04 12:13): if 3+ confirming signals align (e.g., 3 indices/stocks
+     moving >0.5% same direction, OR VIX spike, OR broad sector rotation), ACT. Don't wait for
+     perfect. Confluence is your edge. Capture the move, even if imperfect.
+  9. SESSION DRIFT rule: if 9 of 12 movers are same direction with avg move >0.3%, that's
+     a session drift signal. Don't wait for a "perfect" setup — capture the drift with
+     an ATM directional vertical sized to fit the 2% per-trade cap.
 
 If you've worked through these and have an edge, TAKE THE TRADE. A small loss on a wrong call is cheap. Missing a 5× winner is expensive. You are not paid to preserve capital — you are paid to grow it.
 
