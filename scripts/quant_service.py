@@ -2107,6 +2107,13 @@ def watch_loop():
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
     global last_candle_refresh_ts, last_alpha_refresh_ts, last_chain_refresh_ts, last_dashboard_refresh_ts
     global last_periodic_scan_ts, last_global_check_ts
+    # FIX 2026-09-04 23:48: missing global declaration for last_overnight_research_ts
+    # caused UnboundLocalError on the use at line 2363 (NSE closed check). 6th
+    # shadow-import-style bug — different variable each time, same root cause:
+    # a function assigns a module-level name, making it local for the whole
+    # function, and an earlier use fails. See commits 5dc58ef, ca2b043,
+    # 1edad1c, e31dd3f, 9f17f02, d8f475c, and lint_no_shadowing.py.
+    global last_overnight_research_ts
     # FIX 2026-09-04 14:16: declare RUNNING as global so the local 'RUNNING = False'
     # assignment below doesn't shadow the module-level global. Same class of bug as
     # the Order shadow-import trap (4 occurrences in this codebase).
