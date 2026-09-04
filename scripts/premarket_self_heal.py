@@ -70,10 +70,17 @@ def get_process_start(pid):
 
 
 def check_bot_brain_alive():
-    """Check if bot and brain are running."""
+    """Check if bot and brain are running.
+
+    FIX 2026-09-04 13:15: brain state file check was unreliable (brain makes
+    decisions but doesn't always write state). Now cross-checks with the brain's
+    decision log: if quant_service_decisions.jsonl has a recent decision, the
+    brain is alive even if state file is stale.
+    """
     print("\n[1/12] Bot/Brain liveness check...")
     bot_pid_path = ROOT / "data_cache" / "liveness.json"
     brain_state_path = ROOT / "data_cache" / "quant_service_state.json"
+    decisions_path = ROOT / "data_cache" / "quant_service_decisions.jsonl"
 
     # Bot
     bot_ok = False
@@ -81,7 +88,7 @@ def check_bot_brain_alive():
     if bot_pid_path.exists():
         age = time.time() - bot_pid_path.stat().st_mtime
         bot_detail = f"liveness.json age={age:.0f}s"
-        if age < 30:  # 30 sec
+        if age < 30:
             bot_ok = True
         else:
             bot_detail += " (STALE)"
@@ -89,18 +96,36 @@ def check_bot_brain_alive():
         bot_detail = "liveness.json missing"
     add_check("bot_liveness", bot_ok, bot_detail)
 
-    # Brain
+    # Brain: cross-check with decision log
     brain_ok = False
     brain_detail = ""
     if brain_state_path.exists():
-        age = time.time() - brain_state_path.stat().st_mtime
-        brain_detail = f"quant_service_state.json age={age:.0f}s"
-        if age < 300:  # 5 min
-            brain_ok = True
-        else:
-            brain_detail += " (STALE - brain may be stuck)"
+        state_age = time.time() - brain_state_path.stat().st_mtime
+        brain_detail = f"state file age={state_age:.0f}s"
+    # Cross-check: is the brain making decisions?
+    if decisions_path.exists():
+        try:
+            last_ts = None
+            with open(decisions_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if '"ts":' in line:
+                        last_ts = line
+            if last_ts:
+                d = json.loads(last_ts)
+                ts = d.get("ts", "")
+                if ts:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    now = datetime.now(dt.tzinfo)
+                    decision_age_min = (now - dt).total_seconds() / 60
+                    if decision_age_min < 30:
+                        brain_ok = True
+                        brain_detail += f" (BUT brain made decision {decision_age_min:.0f}m ago - ALIVE)"
+                    else:
+                        brain_detail += f" AND last decision {decision_age_min:.0f}m ago (STUCK)"
+        except Exception as e:
+            brain_detail += f" (decision log parse error: {e})"
     else:
-        brain_detail = "quant_service_state.json missing"
+        brain_detail += " (no decision log)"
     add_check("brain_liveness", brain_ok, brain_detail)
 
 
@@ -298,17 +323,26 @@ def check_dashboards():
 
 
 def check_confluence_loop_running():
-    """Check if confluence_loop.py is running."""
+    """Check if confluence_loop.py is running.
+
+    FIX 2026-09-04 13:00: previous version used tasklist with IMAGENAME filter which
+    didn't always work. Now uses the heartbeat file (data_cache/_confluence_loop.heartbeat)
+    which the loop writes every 30s. Heartbeat age < 600s = loop is alive.
+    """
     print("\n[11/12] Confluence loop...")
-    try:
-        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq pythonw.exe"],
-                          capture_output=True, text=True, timeout=5)
-        running = "_confluence_loop" in r.stdout or "confluence_loop" in r.stdout
-        add_check("confluence_loop_running", running,
-                 "background loop active (5 min confluence check)" if running else
-                 "NOT running — start with: Start-Process pythonw _confluence_loop.py")
-    except Exception as e:
-        add_check("confluence_loop_running", False, str(e))
+    hb_path = ROOT / "data_cache" / "_confluence_loop.heartbeat"
+    if hb_path.exists():
+        try:
+            age = time.time() - hb_path.stat().st_mtime
+            running = age < 600
+            add_check("confluence_loop_running", running,
+                     f"heartbeat {age:.0f}s ago" if running else
+                     f"heartbeat {age:.0f}s ago (no recent write - loop may be stuck)")
+        except Exception as e:
+            add_check("confluence_loop_running", False, str(e))
+    else:
+        add_check("confluence_loop_running", False,
+                 "no heartbeat file - start with: Start-Process pythonw scripts\\_confluence_loop.py")
 
 
 def check_global_state():

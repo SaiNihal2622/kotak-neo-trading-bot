@@ -105,14 +105,34 @@ def _disable_sleep_timeout() -> tuple[bool, str]:
 
 
 def _reauth_kotak() -> tuple[bool, str]:
-    """Re-authenticate with Kotak Neo. Reads creds from env (already loaded above)."""
+    """Re-authenticate with Kotak Neo. Reads creds from env (already loaded above).
+
+    FIX 2026-09-04 13:00: previously called NeoClient.connect() which doesn't write
+    the session file. Now uses KotakProdFeed._auth() which does. This was the
+    reason the daily-maintenance re-auth reported "OK" but the file was still
+    showing expired.
+    """
     try:
-        from kotak_bot.broker.neo_client import NeoClient
-        nc = NeoClient()
-        nc.connect()
-        if nc._client is not None and nc._connected:
-            return True, f"auth OK, env={os.environ.get('KOTAK_ENV')}"
-        return False, "connect returned but not in connected state"
+        # Use KotakProdFeed._auth() which actually writes kotak_prod_session.json.
+        from kotak_bot.data.kotak_prod_feed import KotakProdFeed
+        f = KotakProdFeed(
+            env=os.environ.get("KOTAK_ENV", "uat"),
+            access_token=os.environ["KOTAK_API_KEY"],
+            mobile=os.environ["KOTAK_MOBILE"],
+            ucc=os.environ["KOTAK_UCC"],
+            totp_secret=os.environ["KOTAK_TOTP_SECRET"],
+            mpin=os.environ["KOTAK_MPIN"],
+            poll_interval_sec=2.0,
+        )
+        ok = f._auth()
+        if not ok:
+            return False, "_auth() returned False"
+        # Verify the file was written
+        import json as _json
+        import time as _t
+        sess = _json.loads((ROOT / "data_cache" / "kotak_prod_session.json").read_text(encoding="utf-8"))
+        hrs = (sess.get("expires_at", 0) - _t.time()) / 3600
+        return True, f"auth OK, env={os.environ.get('KOTAK_ENV')}, expires in {hrs:+.1f}h"
     except Exception as e:
         return False, f"auth error: {e}"
 
