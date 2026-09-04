@@ -975,6 +975,31 @@ def run_paper() -> None:
                             risk.resume()
                             logger.info(f"[MAVIS-FORCE] RESUME_BOT")
                             alerter.send(f"[Mavis force] BOT RESUMED")
+                        elif _fa_action.startswith("BIAS_OVERRIDE="):
+                            # FIX 2026-09-04 12:25: confluence-detector writes BIAS_OVERRIDE=<bullish|bearish|defensive>
+                            # when 3+ signals align. The bot updates mavis_trades.json so the brain
+                            # sees the new bias on its next read cycle. No restart needed.
+                            try:
+                                _new_bias = _fa_action.split("=", 1)[1].strip().upper()
+                                _mt_path = Path("data_cache/mavis_trades.json")
+                                if _mt_path.exists():
+                                    _mt = json.loads(_mt_path.read_text(encoding="utf-8"))
+                                    if "mavis_decision" not in _mt:
+                                        _mt["mavis_decision"] = {}
+                                    _mt["mavis_decision"]["bias"] = _new_bias
+                                    _mt["mavis_decision"]["action"] = "EXECUTE_PLAN"
+                                    _mt["mavis_decision"]["confidence"] = 0.85
+                                    _mt["mavis_decision"]["max_positions"] = 5
+                                    _mt["mavis_decision"]["risk_budget_pct"] = 100
+                                    _mt["mavis_decision"]["refreshed_via"] = "BIAS_OVERRIDE"
+                                    _mt["mavis_decision"]["refreshed_at"] = now.isoformat()
+                                    _mt_path.write_text(json.dumps(_mt, indent=2), encoding="utf-8")
+                                    logger.info(f"[MAVIS-FORCE] BIAS_OVERRIDE applied: bias={_new_bias} (via {_fa_reason[:80]})")
+                                    alerter.send(f"[Mavis force] BIAS OVERRIDE: bias={_new_bias} (reason: {_fa_reason[:120]})")
+                                else:
+                                    logger.warning(f"[MAVIS-FORCE] BIAS_OVERRIDE: mavis_trades.json not found")
+                            except Exception as _bo_err:
+                                logger.warning(f"[MAVIS-FORCE] BIAS_OVERRIDE failed: {_bo_err}")
                         # Mark consumed so we don't repeat
                         _fa["consumed"] = True
                         _fa["consumed_at"] = now.isoformat()
@@ -1225,7 +1250,25 @@ def run_paper() -> None:
                                             else:
                                                 logger.warning(f"[QUANT-ACTION] REJECTED {_filled.symbol}: {_filled.rejection_reason}")
                                         except Exception as _leg_err:
-                                            logger.warning(f"[QUANT-ACTION] leg failed: {_leg_err}")
+                                            # FIX 2026-09-04 12:24: do NOT silently swallow UnboundLocalError.
+                                            # This bit us 3 times (Sep 2 Order, Sep 2 Path, Sep 3 Order at line 1283,
+                                            # Sep 4 Order at line 1283). The try/except at this level was hiding the
+                                            # fact that the brain's orders weren't being placed at all. Now we log
+                                            # the full traceback and the symbol so the failure is visible.
+                                            import traceback as _tb
+                                            if isinstance(_leg_err, UnboundLocalError):
+                                                logger.error(
+                                                    f"[QUANT-ACTION] CRITICAL: shadow-import trap on "
+                                                    f"{_leg_err}. This is the Order/Path UnboundLocalError class "
+                                                    f"of bug that has now hit us 4 TIMES (Sep 2 11:00, Sep 2 14:01, "
+                                                    f"Sep 3 14:30, Sep 4 12:14). Re-check kotak_bot/__main__.py for "
+                                                    f"any 'from X import Order' inside run_paper()."
+                                                )
+                                                logger.error(
+                                                    f"[QUANT-ACTION] full traceback:\n{_tb.format_exc()}"
+                                                )
+                                            else:
+                                                logger.warning(f"[QUANT-ACTION] leg failed: {_leg_err}")
                                     # Record the open decision in performance tracker (so EOD/weekly can compute outcomes)
                                     if _leg_records:
                                         try:
@@ -1663,6 +1706,28 @@ def run_paper() -> None:
                     margin_tracker.check_and_alert()
                 except Exception as e:
                     logger.debug(f"margin check failed: {e}")
+            # 3f) FIX 2026-09-04 12:24: candle data staleness watchdog (every 1 hour during market hours).
+            # If intraday_levels.json is older than 1 hour, trigger a refresh from yfinance.
+            # Today the candle engine was stuck on Aug 31 for 4 days — brain was making HOLDs because
+            # the data was fundamentally broken. This watchdog self-heals.
+            if cycle_counter % 120 == 0 and is_market_open(now):  # every 1 hour (30s * 120)
+                try:
+                    from pathlib import Path as _PathWatch
+                    _intraday_path = _PathWatch("data_cache/intraday_levels.json")
+                    if _intraday_path.exists():
+                        import time as _time_w
+                        _age_h = (_time_w.time() - _intraday_path.stat().st_mtime) / 3600
+                        if _age_h > 1.0:
+                            logger.warning(f"[CANDLE-WATCHDOG] intraday_levels.json is {_age_h:.1f}h old, refreshing from yfinance")
+                            try:
+                                from scripts.candle_engine import get_engine as _get_eng
+                                _eng = _get_eng()
+                                _bf = _eng.backfill_session_opens_from_yfinance()
+                                logger.info(f"[CANDLE-WATCHDOG] backfilled {_bf} symbols")
+                            except Exception as _cw_err:
+                                logger.warning(f"[CANDLE-WATCHDOG] backfill failed: {_cw_err}")
+                except Exception as _wd_err:
+                    logger.debug(f"candle-watchdog failed: {_wd_err}")
             # 4) scan every 30s during market hours
             cycle_counter += 1
             _cycle_counter = cycle_counter
