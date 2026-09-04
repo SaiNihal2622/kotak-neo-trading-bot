@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -31,6 +32,35 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(ROOT))
+
+
+# FIX 2026-09-04 15:50: scheduled tasks run as SYSTEM, which has no
+# user env vars. Load credentials.env so TELEGRAM_BOT_TOKEN, LLM_*, and
+# KOTAK_* are available. Idempotent: no-op if already in env.
+def _load_credentials() -> None:
+    candidates = [
+        ROOT / "config" / "credentials.env",
+        ROOT / ".env",
+        Path(os.environ.get("DOTENV_PATH", "")) if os.environ.get("DOTENV_PATH") else None,
+    ]
+    for cred_path in candidates:
+        if not cred_path or not cred_path.exists():
+            continue
+        try:
+            for line in cred_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+        except Exception as _e:
+            print(f"warn: failed to load {cred_path}: {_e}", file=sys.stderr)
+
+
+_load_credentials()
 
 
 def send_telegram(text: str) -> bool:

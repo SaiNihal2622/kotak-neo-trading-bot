@@ -14,7 +14,9 @@ import atexit
 import csv
 import json
 import os
+import shlex
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone, date
@@ -1000,6 +1002,85 @@ def run_paper() -> None:
                                     logger.warning(f"[MAVIS-FORCE] BIAS_OVERRIDE: mavis_trades.json not found")
                             except Exception as _bo_err:
                                 logger.warning(f"[MAVIS-FORCE] BIAS_OVERRIDE failed: {_bo_err}")
+                        # FIX 2026-09-04 15:40: INSTALL_TASKS action — install 3 daily scheduled
+                        # tasks (pre-market / EOD / nightly) using schtasks.exe. The bot runs as
+                        # LocalSystem (NSSM service), so it can call schtasks without UAC. This
+                        # is the no-UAC path for installing daily automation: the user (or
+                        # Mavis) writes mavis_force_action.json with action=INSTALL_TASKS, and
+                        # the bot registers the 3 tasks in <30 sec.
+                        # The /RU SYSTEM + /RL HIGHEST on the SCHTASKS call means each task
+                        # runs as SYSTEM — no UAC prompt will ever appear for them.
+                        elif _fa_action == "INSTALL_TASKS":
+                            try:
+                                _project_root = Path(__file__).resolve().parent.parent
+                                _py = _project_root / ".venv" / "Scripts" / "python.exe"
+                                _autonomy = _project_root / "scripts" / "daily_autonomy.py"
+                                _tasks = [
+                                    ("kotak-pre-market-self-heal", "08:25", "pre_market"),
+                                    ("kotak-eod-pnl-evaluator",  "15:30", "eod"),
+                                    ("kotak-nightly-state-backup","23:00", "nightly"),
+                                ]
+                                _install_log: list[str] = []
+                                for _tname, _ttime, _targs in _tasks:
+                                    _cmd = [
+                                        "schtasks", "/create",
+                                        "/tn", _tname,
+                                        "/tr", f'"{_py}" "{_autonomy}" {_targs}',
+                                        "/sc", "daily",
+                                        "/st", _ttime,
+                                        "/ru", "SYSTEM",
+                                        "/rl", "HIGHEST",
+                                        "/f",
+                                    ]
+                                    try:
+                                        _r = subprocess.run(
+                                            _cmd, capture_output=True, text=True,
+                                            timeout=20, shell=False,
+                                        )
+                                        if _r.returncode == 0:
+                                            _install_log.append(f"  OK   {_tname} @ {_ttime}")
+                                            logger.info(f"[MAVIS-FORCE] INSTALL_TASKS: registered {_tname} @ {_ttime}")
+                                        else:
+                                            _err = (_r.stderr or _r.stdout or "").strip()[:200]
+                                            _install_log.append(f"  FAIL {_tname}: {_err}")
+                                            logger.warning(f"[MAVIS-FORCE] INSTALL_TASKS: {_tname} FAILED: {_err}")
+                                    except Exception as _sc_err:
+                                        _install_log.append(f"  ERR  {_tname}: {_sc_err}")
+                                        logger.warning(f"[MAVIS-FORCE] INSTALL_TASKS: {_tname} exception: {_sc_err}")
+                                # Verify
+                                _verify = subprocess.run(
+                                    ["schtasks", "/query", "/fo", "list"],
+                                    capture_output=True, text=True, timeout=15, shell=False,
+                                )
+                                _found = sorted({
+                                    line.split(":", 1)[1].strip()
+                                    for line in (_verify.stdout or "").splitlines()
+                                    if line.lower().startswith("taskname:")
+                                    and "kotak-" in line.lower()
+                                })
+                                _summary = (
+                                    f"INSTALLED 3 DAILY TASKS (via SYSTEM, no UAC):\n"
+                                    + "\n".join(_install_log)
+                                    + f"\n\nVerified by schtasks /query: {_found}"
+                                )
+                                logger.info(f"[MAVIS-FORCE] INSTALL_TASKS summary: {_summary}")
+                                try:
+                                    alerter.send(
+                                        f"✅ [BOT-SCHEDULER] 3 daily tasks registered via SYSTEM (no UAC)\n"
+                                        f"  • kotak-pre-market-self-heal @ 08:25 IST\n"
+                                        f"  • kotak-eod-pnl-evaluator  @ 15:30 IST\n"
+                                        f"  • kotak-nightly-state-backup @ 23:00 IST\n\n"
+                                        f"`schtasks /query` confirms: {_found}\n\n"
+                                        f"reason: {_fa_reason[:120]}"
+                                    )
+                                except Exception:
+                                    pass
+                            except Exception as _it_err:
+                                logger.warning(f"[MAVIS-FORCE] INSTALL_TASKS failed: {_it_err}")
+                                try:
+                                    alerter.send(f"❌ [BOT-SCHEDULER] INSTALL_TASKS failed: {_it_err}")
+                                except Exception:
+                                    pass
                         # Mark consumed so we don't repeat
                         _fa["consumed"] = True
                         _fa["consumed_at"] = now.isoformat()
@@ -1168,7 +1249,12 @@ def run_paper() -> None:
                                         continue
                                     # Circuit breakers (daily loss + consecutive losses)
                                     try:
-                                        import sys
+                                        # FIX 2026-09-04 15:50: removed `import sys` (was shadowing
+                                        # module-level sys and breaking sys.exit(0) in RESTART_BOT
+                                        # branch earlier in this function). sys is already imported
+                                        # at module level (line 20). `scripts.*` is also reachable
+                                        # because the bot's CWD is the project root, and ROOT is
+                                        # appended to sys.path in run_paper() at startup.
                                         if str(ROOT) not in sys.path:
                                             sys.path.insert(0, str(ROOT))
                                         from scripts.performance_tracker import should_pause_new_entries
@@ -1291,7 +1377,9 @@ def run_paper() -> None:
                                     # Record the open decision in performance tracker (so EOD/weekly can compute outcomes)
                                     if _leg_records:
                                         try:
-                                            import sys
+                                            # FIX 2026-09-04 15:50: removed `import sys` (same shadow
+                                            # import bug as the circuit-breaker block above). sys is
+                                            # already imported at module level.
                                             if str(ROOT) not in sys.path:
                                                 sys.path.insert(0, str(ROOT))
                                             from scripts.performance_tracker import record_decision
