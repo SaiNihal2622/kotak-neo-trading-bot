@@ -22,6 +22,7 @@ os.environ.setdefault('KOTAK_MOBILE', '+910000000000')
 os.environ.setdefault('KOTAK_UCC', 'FAKE1')
 
 from kotak_bot.__main__ import build_broker
+from kotak_bot.broker import PaperClient
 
 
 def _paper_config():

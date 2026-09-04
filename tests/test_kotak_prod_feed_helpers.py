@@ -2,11 +2,16 @@
 
 Tests the new helpers (expiry selection, OI safe parsing) WITHOUT making any real
 network calls. The feed is built manually with a fake scrip master.
+
+FIX 2026-09-05 01:15: expiry-date test was using hardcoded 2026-08-26 which
+became a past date after the calendar rolled over, so the "use nearest expiry"
+assertion failed. Now uses dynamic future dates (today + 21d, today + 28d)
+so the test stays valid regardless of when it's run.
 """
 import os
 import sys
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +23,12 @@ os.environ.setdefault('KOTAK_MOBILE', '+910000000000')
 os.environ.setdefault('KOTAK_UCC', 'FAKE1')
 
 from kotak_bot.data.kotak_prod_feed import KotakProdFeed
+
+
+# Dynamic future dates for date-drift tests (3 weeks and 4 weeks out, both
+# are realistic NIFTY weekly+monthly expiries).
+_FUTURE_NEAR = date.today() + timedelta(days=21)
+_FUTURE_FAR  = date.today() + timedelta(days=28)
 
 
 # Mock scrip master CSV content — minimal valid rows for testing
@@ -114,18 +125,22 @@ class TestExpiryHelpers(unittest.TestCase):
         self.assertEqual(sym, "NIFTY11AUG2624500CE")
 
     def test_get_strategy_sym_uses_nearest_expiry(self):
-        # Use a future date (relative to "today" = 2026-08-23) so the
-        # un-annotated `get_strategy_sym` call finds a non-None exp.
+        # FIX 2026-09-05 01:15: use dynamic future dates (today+21d, today+28d)
+        # so the test stays valid as the calendar rolls over. The 2 scrip rows
+        # represent a weekly (NEAR) and monthly (FAR) expiry. Without explicit
+        # exp, get_strategy_sym should pick NEAR.
+        _near_str = _FUTURE_NEAR.strftime("%d%b%y").upper()
+        _far_str  = _FUTURE_FAR.strftime("%d%b%y").upper()
         f = _make_feed_with_scrip([
-            _scrip_row("NIFTY", "NIFTY26AUG2624500.00CE", "41100"),
-            _scrip_row("NIFTY", "NIFTY02SEP2624500.00CE", "41200"),
+            _scrip_row("NIFTY", f"NIFTY{_near_str}24500.00CE", "41100"),
+            _scrip_row("NIFTY", f"NIFTY{_far_str}24500.00CE", "41200"),
         ])
-        # We control the test environment by passing exp explicitly
-        sym = f.get_strategy_sym("NIFTY", 24500, "CE", exp=date(2026, 8, 26))
-        self.assertEqual(sym, "NIFTY26AUG2624500CE")
-        # And without exp, it should use the nearest one in the scrip master
+        # Explicit exp returns that specific symbol
+        sym = f.get_strategy_sym("NIFTY", 24500, "CE", exp=_FUTURE_NEAR)
+        self.assertEqual(sym, f"NIFTY{_near_str}24500CE")
+        # Without exp, the nearest (chronologically) one wins
         sym2 = f.get_strategy_sym("NIFTY", 24500, "CE")
-        self.assertEqual(sym2, "NIFTY26AUG2624500CE")
+        self.assertEqual(sym2, f"NIFTY{_near_str}24500CE")
 
 
 class TestOIParsing(unittest.TestCase):

@@ -1949,6 +1949,19 @@ def run_paper() -> None:
                                 logger.warning(f"[CANDLE-WATCHDOG] backfill failed: {_cw_err}")
                 except Exception as _wd_err:
                     logger.debug(f"candle-watchdog failed: {_wd_err}")
+            # 3e) 24/7 self-heal check every 5 min (cycle_counter % 10 = ~5 min at 30s/cycle).
+            # Detects liveness staleness, brain port down, shadow imports, missing
+            # daily tasks, etc. Applies the fix (writes a force-action JSON, restarts
+            # a service via NSSM, or escalates to Telegram). The user is not always
+            # available to debug — this runs whether or not the chat is open.
+            if cycle_counter % 10 == 0:
+                try:
+                    from kotak_bot.self_heal import self_heal_check
+                    _sh_results = self_heal_check(_liveness_state, alerter)
+                    for _r in _sh_results:
+                        logger.info(f"[SELF-HEAL] {_r.get('name', '?')}: applied={_r.get('applied')} msg={_r.get('msg','')[:120]}")
+                except Exception as _sh_err:
+                    logger.debug(f"self_heal check failed: {_sh_err}")
             # 4) scan every 30s during market hours
             cycle_counter += 1
             _cycle_counter = cycle_counter
