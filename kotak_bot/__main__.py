@@ -1143,6 +1143,53 @@ def run_paper() -> None:
                                     alerter.send(f"❌ [UAC-FIX] failed: {_uac_err}")
                                 except Exception:
                                     pass
+                        # FIX 2026-09-05 00:15: RUN_COMMAND action — generic admin executor.
+                        # The bot (LocalSystem) runs an arbitrary command from the JSON
+                        # action and reports stdout/stderr/exit-code via Telegram. This
+                        # eliminates the need for an elevated user-context PowerShell for
+                        # any HKLM write / service install / reg add / etc. Just write
+                        #   {action: "RUN_COMMAND", command: ["reg", "add", ...], timeout: 30}
+                        # to data_cache/mavis_force_action.json and the bot does it.
+                        # The bot is already SYSTEM, so no UAC. Result returned in <60s.
+                        elif _fa_action == "RUN_COMMAND":
+                            try:
+                                _cmd = _fa.get("command")
+                                if not _cmd or not isinstance(_cmd, list):
+                                    alerter.send(f"❌ [RUN-CMD] missing 'command' (list) field")
+                                else:
+                                    _timeout = int(_fa.get("timeout", 30))
+                                    _rrun = subprocess.run(
+                                        _cmd, capture_output=True, text=True,
+                                        timeout=_timeout, shell=False,
+                                    )
+                                    _out = (_rrun.stdout or "")[-1500:]
+                                    _err = (_rrun.stderr or "")[-800:]
+                                    _msg = (
+                                        f"🔧 [RUN-CMD] exit={_rrun.returncode} "
+                                        f"({' '.join(_cmd[:4])}{'...' if len(_cmd) > 4 else ''})\n"
+                                    )
+                                    if _out: _msg += f"  stdout: {_out[:600]}\n"
+                                    if _err: _msg += f"  stderr: {_err[:400]}\n"
+                                    if not _out and not _err:
+                                        _msg += "  (no output)\n"
+                                    _msg += f"  reason: {_fa_reason[:80]}"
+                                    logger.info(f"[MAVIS-FORCE] RUN_COMMAND exit={_rrun.returncode} cmd={_cmd[:3]}")
+                                    try:
+                                        alerter.send(_msg[:3800])
+                                    except Exception:
+                                        pass
+                            except subprocess.TimeoutExpired as _to:
+                                logger.warning(f"[MAVIS-FORCE] RUN_COMMAND timeout: {_fa.get('command')}")
+                                try:
+                                    alerter.send(f"⏱️ [RUN-CMD] timeout after {_fa.get('timeout', 30)}s")
+                                except Exception:
+                                    pass
+                            except Exception as _rc_err:
+                                logger.warning(f"[MAVIS-FORCE] RUN_COMMAND failed: {_rc_err}")
+                                try:
+                                    alerter.send(f"❌ [RUN-CMD] failed: {_rc_err}")
+                                except Exception:
+                                    pass
                         # Mark consumed so we don't repeat
                         _fa["consumed"] = True
                         _fa["consumed_at"] = now.isoformat()
