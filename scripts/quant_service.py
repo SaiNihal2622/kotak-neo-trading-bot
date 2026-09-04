@@ -2107,6 +2107,10 @@ def watch_loop():
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
     global last_candle_refresh_ts, last_alpha_refresh_ts, last_chain_refresh_ts, last_dashboard_refresh_ts
     global last_periodic_scan_ts, last_global_check_ts
+    # FIX 2026-09-04 14:16: declare RUNNING as global so the local 'RUNNING = False'
+    # assignment below doesn't shadow the module-level global. Same class of bug as
+    # the Order shadow-import trap (4 occurrences in this codebase).
+    global RUNNING
     while RUNNING:
         try:
             tick_count += 1
