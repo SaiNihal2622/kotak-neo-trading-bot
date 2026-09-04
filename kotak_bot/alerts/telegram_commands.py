@@ -76,6 +76,10 @@ class TelegramCommandHandler:
         # /diag: returns full diagnostic including 12-check self-heal results
         self._commands["/health"] = self._cmd_health
         self._commands["/diag"] = self._cmd_diag
+        # FIX 2026-09-04 13:40: /live command — show safety gates status.
+        # Live trading requires 10 hard gates. /live shows the report.
+        # Even setting KOTAK_LIVE_CONFIRMED=YES won't enable live until all pass.
+        self._commands["/live"] = self._cmd_live
         self._commands["/time"] = self._cmd_time
         self._commands["/force_trade"] = self._cmd_force_trade
         self._commands["/force"] = self._cmd_force_trade
@@ -163,6 +167,7 @@ class TelegramCommandHandler:
             "/restart [bot|brain|both] — self-restart (no UAC needed) (FIX 2026-09-04 12:42)\n"
             "/health — quick liveness summary (FIX 2026-09-04 13:00)\n"
             "/diag — full diagnostic + 12-check self-heal results (FIX 2026-09-04 13:00)\n"
+            "/live [enable|confirm] — live-trading safety gates report (FIX 2026-09-04 13:40)\n"
             "/force [NIFTY|BANKNIFTY] — force a paper trade now (bypass gates)\n"
             "/pause [reason]  — pause new entries (keeps monitoring)\n"
             "/resume  — resume new entries\n"
@@ -361,6 +366,56 @@ class TelegramCommandHandler:
             return f"<b>DIAG</b>\nrc={ret.returncode}\n\n(Check scripts/premarket_self_heal.py for full output)"
         except Exception as e:
             return f"diag failed: {e}"
+
+    # FIX 2026-09-04 13:40: /live — live-trading safety gates report
+    def _cmd_live(self, arg: str, msg: dict) -> str:
+        """Show live-trading safety gates. Live trading requires 9/9 gates passing.
+
+        Usage: /live        # show gates report
+               /live enable  # show enable instructions (manual: set env, restart)
+               /live confirm # second-factor confirm (only if ALL gates pass)
+        """
+        arg_clean = (arg or "").strip().lower()
+        try:
+            from scripts.live_trading_gates import run_all_gates, format_report
+            report = run_all_gates()
+            if arg_clean == "enable":
+                return self._live_enable_instructions(report)
+            if arg_clean == "confirm":
+                return self._live_confirm(report, msg)
+            # Default: just show the report
+            return format_report(report)
+        except Exception as e:
+            return f"live gate check failed: {e}"
+
+    def _live_enable_instructions(self, report: dict) -> str:
+        if not report["all_ok"]:
+            return ("<b>LIVE TRADING BLOCKED</b>\n\n"
+                    f"{sum(1 for r in report['results'] if not r['ok'])} gate(s) failing.\n"
+                    "Fix all gates before /live enable will work.\n\n"
+                    "Run /live (no arg) to see the full report.")
+        return ("<b>ALL 9 GATES PASSED</b>\n\n"
+                "To enable live trading:\n"
+                "1. Open admin PowerShell\n"
+                "2. Run: nssm set KotakBotPaper AppEnvironmentExtra KOTAK_LIVE_CONFIRMED=YES+KOTAK_ENV=prod\n"
+                "3. Run: nssm restart KotakBotPaper\n"
+                "4. The bot will then place real orders with real money.\n\n"
+                "<b>WARNING:</b> Once enabled, the bot will use your real Kotak account. "
+                "Test with 1% capital first for 7 days, then scale up.")
+
+    def _live_confirm(self, report: dict, msg: dict) -> str:
+        if not report["all_ok"]:
+            return ("<b>LIVE CONFIRM FAILED</b>\n\n"
+                    f"{sum(1 for r in report['results'] if not r['ok'])} gate(s) still failing.\n"
+                    "Run /live to see details.")
+        return ("<b>LIVE CONFIRM RECEIVED</b>\n\n"
+                f"From chat: {msg['chat']['id']}\n"
+                f"All 9 gates pass. To complete live mode:\n"
+                "1. Set KOTAK_LIVE_CONFIRMED=YES in env\n"
+                "2. Restart KotakBotPaper\n"
+                "3. Monitor closely for 7 days with 1% capital\n\n"
+                "<b>NOTE:</b> Even after /live confirm, the bot will ONLY go live after env is set + restart.\n"
+                "Confirm is recorded; gate status is in the bot log.")
 
     def _cmd_time(self, arg: str, msg: dict) -> str:
         from kotak_bot.utils.clock import now_ist, market_session
