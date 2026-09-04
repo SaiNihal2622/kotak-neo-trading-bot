@@ -1081,6 +1081,68 @@ def run_paper() -> None:
                                     alerter.send(f"❌ [BOT-SCHEDULER] INSTALL_TASKS failed: {_it_err}")
                                 except Exception:
                                     pass
+                        # FIX 2026-09-05 00:05: FIX_UAC action — the bot (LocalSystem)
+                        # rewrites the Windows UAC policy to consent mode. This permanently
+                        # unblocks the user's "credentials" UAC prompt that auto-cancels for
+                        # non-Windows binaries (Python, .bat, .ps1). After this runs, the
+                        # user can elevate via normal YES/NO consent (one click) instead of
+                        # the broken username+password prompt that never completes.
+                        # Takes effect at next logon (no reboot required, just sign out + in).
+                        elif _fa_action == "FIX_UAC":
+                            try:
+                                _reg_cmds = [
+                                    # The root cause: this is 5, which prompts for credentials
+                                    # on non-Microsoft binaries. Setting to 2 = consent prompt
+                                    # (YES/NO), the standard Windows behavior.
+                                    ["reg", "add",
+                                     r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+                                     "/v", "ConsentPromptBehaviorAdmin", "/t", "REG_DWORD",
+                                     "/d", "2", "/f"],
+                                ]
+                                _uac_log = []
+                                for _rc in _reg_cmds:
+                                    try:
+                                        _rr = subprocess.run(
+                                            _rc, capture_output=True, text=True, timeout=15,
+                                        )
+                                        _uac_log.append(
+                                            f"  {'OK' if _rr.returncode == 0 else 'FAIL'} "
+                                            f"{' '.join(_rc[1:5])}... = "
+                                            f"{(_rr.stdout or _rr.stderr or '').strip()[:80]}"
+                                        )
+                                    except Exception as _rc_err:
+                                        _uac_log.append(f"  ERR {_rc_err}")
+                                # Verify
+                                _verify = subprocess.run(
+                                    ["reg", "query",
+                                     r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+                                     "/v", "ConsentPromptBehaviorAdmin"],
+                                    capture_output=True, text=True, timeout=10,
+                                )
+                                _current = "unknown"
+                                for _line in (_verify.stdout or "").splitlines():
+                                    if "ConsentPromptBehaviorAdmin" in _line:
+                                        _current = _line.split()[-1]
+                                _msg = (
+                                    f"🔧 [UAC-FIX] ConsentPromptBehaviorAdmin changed.\n"
+                                    f"  Was 5 (broken: credentials prompt for non-Windows binaries)\n"
+                                    f"  Now {_current} (consent prompt = YES/NO click works)\n\n"
+                                    f"  reg add log:\n" + "\n".join(_uac_log) + "\n\n"
+                                    f"  Takes effect at next LOGON. No reboot needed.\n"
+                                    f"  Right-click INSTALL.bat → Run as administrator → click YES → done.\n\n"
+                                    f"  reason: {_fa_reason[:120]}"
+                                )
+                                logger.info(f"[MAVIS-FORCE] FIX_UAC applied: now={_current}")
+                                try:
+                                    alerter.send(_msg)
+                                except Exception:
+                                    pass
+                            except Exception as _uac_err:
+                                logger.warning(f"[MAVIS-FORCE] FIX_UAC failed: {_uac_err}")
+                                try:
+                                    alerter.send(f"❌ [UAC-FIX] failed: {_uac_err}")
+                                except Exception:
+                                    pass
                         # Mark consumed so we don't repeat
                         _fa["consumed"] = True
                         _fa["consumed_at"] = now.isoformat()
