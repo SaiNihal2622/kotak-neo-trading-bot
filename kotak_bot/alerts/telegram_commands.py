@@ -62,6 +62,11 @@ class TelegramCommandHandler:
         self._commands["/pnl"] = self._cmd_pnl
         self._commands["/regime"] = self._cmd_regime
         self._commands["/ping"] = self._cmd_ping
+        # FIX 2026-09-04 12:35: /bias command — user can override brain's bias
+        # from Telegram. Usage: /bias BULLISH, /bias BEARISH, /bias NEUTRAL,
+        # /bias DEFENSIVE, /bias MAX (raise caps). This writes to mavis_trades.json
+        # so the brain picks it up on next read cycle.
+        self._commands["/bias"] = self._cmd_bias
         self._commands["/time"] = self._cmd_time
         self._commands["/force_trade"] = self._cmd_force_trade
         self._commands["/force"] = self._cmd_force_trade
@@ -145,6 +150,7 @@ class TelegramCommandHandler:
             "/positions — current open positions\n"
             "/pnl      — today/week/month P&L\n"
             "/regime   — current market regime + ADX + VIX\n"
+            "/bias [BULLISH|BEARISH|NEUTRAL|DEFENSIVE|MAX] — override brain bias (FIX 2026-09-04 12:35)\n"
             "/force [NIFTY|BANKNIFTY] — force a paper trade now (bypass gates)\n"
             "/pause [reason]  — pause new entries (keeps monitoring)\n"
             "/resume  — resume new entries\n"
@@ -157,6 +163,87 @@ class TelegramCommandHandler:
 
     def _cmd_ping(self, arg: str, msg: dict) -> str:
         return f"Pong. Bot is alive. Chat id: {msg['chat']['id']}"
+
+    # FIX 2026-09-04 12:35: /bias command handler
+    def _cmd_bias(self, arg: str, msg: dict) -> str:
+        """Override the brain's bias for the current session.
+
+        Usage: /bias BULLISH | BEARISH | NEUTRAL | DEFENSIVE | MAX
+        - BULLISH/BEARISH/NEUTRAL/DEFENSIVE: set mavis_trades.json bias, action=EXECUTE_PLAN
+        - MAX: raise max_positions to 6, risk_budget to 100, per-trade cap to 3%
+        """
+        arg_clean = (arg or "").strip().upper()
+        if not arg_clean:
+            return ("Usage: /bias BULLISH | BEARISH | NEUTRAL | DEFENSIVE | MAX\n"
+                    "BULLISH: bias=bearish→bullish, max_positions=5, EXECUTE_PLAN\n"
+                    "BEARISH: bias=bullish→bearish, max_positions=5, EXECUTE_PLAN\n"
+                    "NEUTRAL: bias=neutral, max_positions=5, EXECUTE_PLAN\n"
+                    "DEFENSIVE: max_positions=2, risk_budget=50 (tighten)\n"
+                    "MAX: max_positions=6, per_trade=3%, risk_budget=100 (full send)")
+        valid = ("BULLISH", "BEARISH", "NEUTRAL", "DEFENSIVE", "MAX")
+        if arg_clean not in valid:
+            return f"Invalid bias '{arg_clean}'. Must be one of: {', '.join(valid)}"
+        try:
+            import json
+            mt_path = Path("data_cache/mavis_trades.json")
+            if not mt_path.exists():
+                return "mavis_trades.json not found"
+            mt = json.loads(mt_path.read_text(encoding="utf-8"))
+            if "mavis_decision" not in mt:
+                mt["mavis_decision"] = {}
+            md = mt["mavis_decision"]
+            if arg_clean == "BULLISH":
+                md["bias"] = "bullish"
+                md["action"] = "EXECUTE_PLAN"
+                md["max_positions"] = 5
+                md["risk_budget_pct"] = 100
+                md["confidence"] = 0.8
+                txt = "bias=BULLISH, max=5, risk=100%, EXECUTE_PLAN"
+            elif arg_clean == "BEARISH":
+                md["bias"] = "bearish"
+                md["action"] = "EXECUTE_PLAN"
+                md["max_positions"] = 5
+                md["risk_budget_pct"] = 100
+                md["confidence"] = 0.8
+                txt = "bias=BEARISH, max=5, risk=100%, EXECUTE_PLAN"
+            elif arg_clean == "NEUTRAL":
+                md["bias"] = "neutral"
+                md["action"] = "EXECUTE_PLAN"
+                md["max_positions"] = 5
+                md["risk_budget_pct"] = 100
+                md["confidence"] = 0.7
+                txt = "bias=NEUTRAL, max=5, risk=100%, EXECUTE_PLAN"
+            elif arg_clean == "DEFENSIVE":
+                md["bias"] = "neutral"
+                md["action"] = "EXECUTE_PLAN"
+                md["max_positions"] = 2
+                md["risk_budget_pct"] = 50
+                md["confidence"] = 0.7
+                txt = "bias=NEUTRAL, max=2, risk=50% (defensive)"
+            elif arg_clean == "MAX":
+                md["bias"] = "bullish"
+                md["action"] = "EXECUTE_PLAN"
+                md["max_positions"] = 6
+                md["risk_budget_pct"] = 100
+                md["confidence"] = 0.85
+                md["max_per_trade_pct"] = 3
+                txt = "bias=BULLISH, max=6, per_trade=3%, risk=100% (full send)"
+            md["refreshed_via"] = "TELEGRAM_BIAS_OVERRIDE"
+            md["refreshed_at"] = msg.get("date", "unknown")
+            mt_path.write_text(json.dumps(mt, indent=2), encoding="utf-8")
+            # FIX 2026-09-04 12:35: also write to mavis_force_action.json so the bot
+            # picks it up on next cycle (5-30s) regardless of when brain reads mavis_trades
+            fa_path = Path("data_cache/mavis_force_action.json")
+            fa = {
+                "ts": msg.get("date", "unknown"),
+                "action": f"BIAS_OVERRIDE={arg_clean}",
+                "reason": f"telegram /bias {arg_clean} from chat {msg['chat']['id']}",
+                "consumed": False,
+            }
+            fa_path.write_text(json.dumps(fa, indent=2), encoding="utf-8")
+            return f"✅ {txt}. Brain will pick up on next cycle. Bot via BIAS_OVERRIDE handler."
+        except Exception as e:
+            return f"bias override failed: {e}"
 
     def _cmd_time(self, arg: str, msg: dict) -> str:
         from kotak_bot.utils.clock import now_ist, market_session

@@ -2103,7 +2103,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(err)))
                 self.end_headers()
                 self.wfile.write(err)
-        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/spot") or self.path.startswith("/api/vix_card") or self.path.startswith("/api/session") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades") or self.path.startswith("/api/mavis_events") or self.path.startswith("/api/mavis_state") or self.path == "/api/mtm":
+        elif self.path.startswith("/api/candles") or self.path.startswith("/api/option_chain") or self.path.startswith("/api/terminal") or self.path.startswith("/api/spot") or self.path.startswith("/api/vix_card") or self.path.startswith("/api/session") or self.path.startswith("/api/quant_brain") or self.path.startswith("/api/mavis_trades") or self.path.startswith("/api/mavis_events") or self.path.startswith("/api/mavis_state") or self.path == "/api/mtm" or self.path == "/api/confluence":
             try:
                 body = handle_api(self.path).encode("utf-8")
                 self.send_response(200)
@@ -2125,7 +2125,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def handle_api(path):
-    """Dispatch /api/candles, /api/option_chain, /api/terminal, /api/quant_brain, /api/mavis_trades, /api/mtm."""
+    """Dispatch /api/candles, /api/option_chain, /api/terminal, /api/quant_brain, /api/mavis_trades, /api/mtm, /api/confluence."""
     from urllib.parse import urlparse, parse_qs
     u = urlparse(path)
     qs = parse_qs(u.query)
@@ -2137,6 +2137,27 @@ def handle_api(path):
     elif u.path == "/api/mtm":
         # FIX 2026-09-03 14:30: live MTM from option_chains.json with B/S fallback for OTM strikes.
         return json.dumps(_compute_mtm(), default=str)
+    elif u.path == "/api/confluence":
+        # FIX 2026-09-04 12:36: confluence detection status for the dashboard.
+        # Reads scripts/_confluence_check logic, returns current signal status.
+        try:
+            sys.path.insert(0, str(ROOT))
+            from scripts._confluence_check import load_global_state, find_confluence
+            state = load_global_state()
+            result = find_confluence(state) if state else None
+            payload = {
+                "ts": datetime.now(IST).isoformat(),
+                "global_state_ts": state.get("ts") if state else None,
+                "confluence": {
+                    "direction": result[0] if result else None,
+                    "count": result[1] if result else 0,
+                    "evidence": result[2] if result else "",
+                } if result else None,
+                "global_state_available": state is not None,
+            }
+            return json.dumps(payload, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, default=str)
     if u.path == "/api/option_chain":
         sym = (qs.get("symbol", ["NIFTY"])[0]).upper()
         expiry = qs.get("expiry", ["auto"])[0]
