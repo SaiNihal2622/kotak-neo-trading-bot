@@ -940,7 +940,12 @@ def run_paper() -> None:
                             if n == 0:
                                 try:
                                     broker_positions = broker.get_positions() if hasattr(broker, 'get_positions') else []
-                                    from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
+                                    # FIX 2026-09-05 00:35: removed in-function `from kotak_bot.broker.base import Order, ...`
+                                    # (was the 7th shadow-import bug — Order/OrderSide/OrderType/ProductType
+                                    # are already imported at module level line 26; re-importing them inside
+                                    # run_paper() makes them local for the WHOLE function, which broke
+                                    # `Order(...)` at line 1429 in the QUANT-ACTION OPEN handler.
+                                    # Result: every brain-driven OPEN since this code was added placed 0 legs.)
                                     for _pos in broker_positions:
                                         if _pos.qty == 0:
                                             continue
@@ -1730,7 +1735,7 @@ def run_paper() -> None:
                     try:
                         broker_positions = broker.get_positions() if hasattr(broker, 'get_positions') else []
                         if broker_positions:
-                            from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
+                            # FIX 2026-09-05 00:35: removed in-function Order import (7th shadow bug)
                             closed_orphans = 0
                             for _pos in broker_positions:
                                 if _pos.qty == 0:
@@ -1791,7 +1796,7 @@ def run_paper() -> None:
                     try:
                         broker_positions = broker.get_positions() if hasattr(broker, 'get_positions') else []
                         if broker_positions:
-                            from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
+                            # FIX 2026-09-05 00:35: removed in-function Order import (7th shadow bug)
                             killed = 0
                             for _pos in broker_positions:
                                 if _pos.qty == 0:
