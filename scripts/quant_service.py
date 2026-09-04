@@ -2114,6 +2114,11 @@ def watch_loop():
     # function, and an earlier use fails. See commits 5dc58ef, ca2b043,
     # 1edad1c, e31dd3f, 9f17f02, d8f475c, and lint_no_shadowing.py.
     global last_overnight_research_ts
+    # FIX 2026-09-05 00:55: 3 more missing-global-declaration bugs caught by
+    # the lint_no_shadowing.py sub-class C check (commit fbe4b0d). These
+    # would have crashed when their time windows fire tomorrow (15:25, 15:35,
+    # 17:30 IST). Same root cause as last_overnight_research_ts.
+    global last_eod_postmortem_date, last_pre_eod_check_date, last_post_eod_check_date
     # FIX 2026-09-04 14:16: declare RUNNING as global so the local 'RUNNING = False'
     # assignment below doesn't shadow the module-level global. Same class of bug as
     # the Order shadow-import trap (4 occurrences in this codebase).

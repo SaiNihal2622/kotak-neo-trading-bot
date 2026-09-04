@@ -75,3 +75,57 @@ def test_linter_passes_clean_function():
     """
     rc, out, _ = _run_linter_on(src)
     assert rc == 0, f"linter failed on clean code:\n{out}"
+
+
+def test_linter_catches_missing_global():
+    """The 6th production incident (Sep 4 23:47) was on
+    `last_overnight_research_ts` — `last_overnight_research_ts = _now_unix`
+    inside watch_loop() made it local for the whole function, and the
+    earlier `if ... > 1800:` check on the same line failed with
+    UnboundLocalError. Fix: add `global last_overnight_research_ts` to
+    the function. This is a different class from the import-based bugs:
+    an assignment shadows a module-level name.
+    """
+    src = """
+    last_x = 0
+
+    def watch_loop():
+        if last_x > 100:  # earlier use of module-level name
+            return
+        last_x = 50  # assignment makes it local — UnboundLocalError on the line above
+    """
+    rc, out, _ = _run_linter_on(src)
+    assert rc != 0, f"linter passed but should have caught missing global:\n{out}"
+    assert "last_x" in out, f"linter output missing last_x reference:\n{out}"
+    assert "missing_global_declaration" in out, f"linter output missing reason:\n{out}"
+
+
+def test_linter_passes_global_declared():
+    """A function that ASSIGNS to a module-level name WITH 'global X'
+    declaration should NOT be flagged (that's the proper pattern).
+    """
+    src = """
+    last_x = 0
+
+    def watch_loop():
+        global last_x
+        if last_x > 100:  # earlier use is fine because we declared global
+            return
+        last_x = 50
+    """
+    rc, out, _ = _run_linter_on(src)
+    assert rc == 0, f"linter failed on properly-declared global:\n{out}"
+
+
+def test_linter_passes_function_local():
+    """A function that assigns to a name that's NOT module-level should
+    NOT be flagged (function-local variables are fine).
+    """
+    src = """
+    def helper():
+        if some_local > 100:  # earlier use of function-local
+            return
+        some_local = 50
+    """
+    rc, out, _ = _run_linter_on(src)
+    assert rc == 0, f"linter failed on function-local variable:\n{out}"
