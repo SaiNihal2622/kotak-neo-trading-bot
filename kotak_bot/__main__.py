@@ -1009,6 +1009,25 @@ def run_paper() -> None:
                                 json.dump(_fa, _fw, ensure_ascii=False)
                         except Exception:
                             pass
+                        # FIX 2026-09-04 12:40: RESTART_BOT action — clean self-restart.
+                        # Triggers sys.exit(0), NSSM auto-respawns the bot with the latest code.
+                        # This eliminates the need for UAC restart when only code changes
+                        # are needed (not configuration).
+                        if _fa_action == "RESTART_BOT":
+                            logger.warning(
+                                f"[SELF-RESTART] action=RESTART_BOT reason={_fa_reason[:120]} cycle={cycle_counter}"
+                            )
+                            try:
+                                alerter.send(
+                                    f"🔄 [SELF-RESTART] bot exiting cleanly at {now.strftime('%H:%M:%S')} IST, "
+                                    f"NSSM will auto-respawn with latest code. reason={_fa_reason[:120]}"
+                                )
+                            except Exception:
+                                pass
+                            # Give the alert a moment to send, then exit
+                            import time as _t
+                            _t.sleep(0.5)
+                            sys.exit(0)
             except Exception as _fa_err:
                 # WARNING (not debug) so this class of bug surfaces. The previous
                 # silent-debug version masked a NameError on _read_json for the

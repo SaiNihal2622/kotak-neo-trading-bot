@@ -67,6 +67,10 @@ class TelegramCommandHandler:
         # /bias DEFENSIVE, /bias MAX (raise caps). This writes to mavis_trades.json
         # so the brain picks it up on next read cycle.
         self._commands["/bias"] = self._cmd_bias
+        # FIX 2026-09-04 12:42: /restart command — triggers bot/brain self-restart
+        # (no UAC needed). The bot reads RESTART_BOT from mavis_force_action.json
+        # and exits cleanly; NSSM auto-respawns with the latest code.
+        self._commands["/restart"] = self._cmd_restart
         self._commands["/time"] = self._cmd_time
         self._commands["/force_trade"] = self._cmd_force_trade
         self._commands["/force"] = self._cmd_force_trade
@@ -151,6 +155,7 @@ class TelegramCommandHandler:
             "/pnl      — today/week/month P&L\n"
             "/regime   — current market regime + ADX + VIX\n"
             "/bias [BULLISH|BEARISH|NEUTRAL|DEFENSIVE|MAX] — override brain bias (FIX 2026-09-04 12:35)\n"
+            "/restart [bot|brain|both] — self-restart (no UAC needed) (FIX 2026-09-04 12:42)\n"
             "/force [NIFTY|BANKNIFTY] — force a paper trade now (bypass gates)\n"
             "/pause [reason]  — pause new entries (keeps monitoring)\n"
             "/resume  — resume new entries\n"
@@ -244,6 +249,45 @@ class TelegramCommandHandler:
             return f"✅ {txt}. Brain will pick up on next cycle. Bot via BIAS_OVERRIDE handler."
         except Exception as e:
             return f"bias override failed: {e}"
+
+    # FIX 2026-09-04 12:42: /restart command — triggers self-restart without UAC
+    def _cmd_restart(self, arg: str, msg: dict) -> str:
+        """Self-restart bot/brain via mavis_force_action.json.
+
+        Usage: /restart bot | brain | both
+        The bot's main loop reads RESTART_BOT and exits cleanly; NSSM auto-respawns.
+        The brain's watch loop reads quant_service_restart.json and exits cleanly.
+        """
+        arg_clean = (arg or "both").strip().lower()
+        if arg_clean not in ("bot", "brain", "both"):
+            return "Usage: /restart bot | brain | both"
+        try:
+            import json as _json
+            from datetime import datetime as _dt
+            _now = _dt.now().isoformat()
+            if arg_clean in ("bot", "both"):
+                fa_path = Path("data_cache/mavis_force_action.json")
+                fa = {
+                    "ts": _now,
+                    "action": "RESTART_BOT",
+                    "reason": f"telegram /restart {arg_clean} from chat {msg['chat']['id']}",
+                    "consumed": False,
+                }
+                fa_path.write_text(_json.dumps(fa, indent=2), encoding="utf-8")
+            if arg_clean in ("brain", "both"):
+                rb_path = Path("data_cache/quant_service_restart.json")
+                rb = {
+                    "ts": _now,
+                    "reason": f"telegram /restart {arg_clean} from chat {msg['chat']['id']}",
+                    "consumed": False,
+                }
+                rb_path.write_text(_json.dumps(rb, indent=2), encoding="utf-8")
+            return (f"✅ {arg_clean.upper()} self-restart requested. "
+                    f"Bot/brain will exit cleanly on next cycle (5-30s), "
+                    f"NSSM auto-respawns with latest code (~10-30s downtime). "
+                    f"NO UAC NEEDED.")
+        except Exception as e:
+            return f"restart failed: {e}"
 
     def _cmd_time(self, arg: str, msg: dict) -> str:
         from kotak_bot.utils.clock import now_ist, market_session

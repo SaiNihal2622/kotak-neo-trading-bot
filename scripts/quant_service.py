@@ -2112,6 +2112,23 @@ def watch_loop():
             tick_count += 1
             SERVICE_STATE["tick_count"] = tick_count
             SERVICE_STATE["last_tick"] = now_iso()
+            # FIX 2026-09-04 12:40: self-restart marker — if data_cache/quant_service_restart.json
+            # exists, exit cleanly. NSSM auto-respawns the brain with the latest code.
+            # Replaces the need for UAC restart when only code changes are needed.
+            try:
+                _rb_path = Path("data_cache/quant_service_restart.json")
+                if _rb_path.exists():
+                    _rb = json.loads(_rb_path.read_text(encoding="utf-8"))
+                    if not _rb.get("consumed", False):
+                        log(f"SELF-RESTART: marker found ({_rb.get('reason', '?')}), exiting cleanly")
+                        _rb["consumed"] = True
+                        _rb_path.write_text(json.dumps(_rb, indent=2), encoding="utf-8")
+                        # Save state then exit
+                        STATE.write_text(json.dumps({**SERVICE_STATE, "history_size": len(HISTORY)}, default=str), encoding='utf-8')
+                        RUNNING = False
+                        return 0
+            except Exception as _rb_err:
+                log(f"self-restart check error: {_rb_err}")
             intraday = read_intraday()
             liveness = read_liveness()
             paper = read_paper()
