@@ -173,6 +173,25 @@ def main() -> int:
     lines: list[str] = []
     critical_failures: list[str] = []
 
+    # FIX 2026-09-04 12:53: run the comprehensive pre-market self-heal FIRST.
+    # It checks 12 things (bot/brain liveness, candle data, order flow, Kotak session,
+    # confluence loop, etc.) and self-heals where possible. If it fails critical
+    # checks (e.g., order flow broken), we shouldn't even try to start trading.
+    print("\n  [..] running pre-market self-heal (12 checks)...")
+    try:
+        import subprocess as _sp
+        _ret = _sp.run([sys.executable, str(ROOT / "scripts" / "premarket_self_heal.py")],
+                       cwd=str(ROOT), capture_output=True, text=True, timeout=180)
+        if _ret.returncode == 0:
+            print("    [OK] pre-market self-heal passed")
+            lines.append("[OK] Pre-market self-heal: all 12 checks passed")
+        else:
+            print(f"    [WARN] pre-market self-heal found issues (rc={_ret.returncode})")
+            print(_ret.stdout[-500:])
+            lines.append(f"[WARN] Pre-market self-heal found issues. See _premarket_self_heal output for details.")
+    except Exception as _psh_err:
+        print(f"    [WARN] pre-market self-heal error: {_psh_err}")
+
     # 1) Power plan
     ok, msg = _powercfg_active()
     print(f"  [{('OK' if ok else 'FIX')}] power plan: {msg}")

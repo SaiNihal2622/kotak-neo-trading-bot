@@ -71,6 +71,11 @@ class TelegramCommandHandler:
         # (no UAC needed). The bot reads RESTART_BOT from mavis_force_action.json
         # and exits cleanly; NSSM auto-respawns with the latest code.
         self._commands["/restart"] = self._cmd_restart
+        # FIX 2026-09-04 13:00: /health and /diag commands
+        # /health: returns quick liveness summary
+        # /diag: returns full diagnostic including 12-check self-heal results
+        self._commands["/health"] = self._cmd_health
+        self._commands["/diag"] = self._cmd_diag
         self._commands["/time"] = self._cmd_time
         self._commands["/force_trade"] = self._cmd_force_trade
         self._commands["/force"] = self._cmd_force_trade
@@ -156,6 +161,8 @@ class TelegramCommandHandler:
             "/regime   — current market regime + ADX + VIX\n"
             "/bias [BULLISH|BEARISH|NEUTRAL|DEFENSIVE|MAX] — override brain bias (FIX 2026-09-04 12:35)\n"
             "/restart [bot|brain|both] — self-restart (no UAC needed) (FIX 2026-09-04 12:42)\n"
+            "/health — quick liveness summary (FIX 2026-09-04 13:00)\n"
+            "/diag — full diagnostic + 12-check self-heal results (FIX 2026-09-04 13:00)\n"
             "/force [NIFTY|BANKNIFTY] — force a paper trade now (bypass gates)\n"
             "/pause [reason]  — pause new entries (keeps monitoring)\n"
             "/resume  — resume new entries\n"
@@ -288,6 +295,72 @@ class TelegramCommandHandler:
                     f"NO UAC NEEDED.")
         except Exception as e:
             return f"restart failed: {e}"
+
+    # FIX 2026-09-04 13:00: /health — quick liveness summary
+    def _cmd_health(self, arg: str, msg: dict) -> str:
+        """Quick liveness check: bot alive, brain alive, market open, today P&L."""
+        try:
+            import json as _json
+            from pathlib import Path as _P
+            from datetime import datetime as _dt
+            lines = ["<b>HEALTH</b>"]
+            # Bot
+            lpath = _P("data_cache/liveness.json")
+            if lpath.exists():
+                age = (lambda: (__import__("time").time() - lpath.stat().st_mtime))()
+                l = _json.loads(lpath.read_text(encoding="utf-8"))
+                bot_ok = "✓" if age < 30 else "✗"
+                lines.append(f"  {bot_ok} Bot: PID={l.get('pid')} tick={l.get('tick')} uptime={l.get('uptime_sec', 0)/3600:.1f}h (liveness {age:.0f}s ago)")
+            else:
+                lines.append("  ✗ Bot: liveness.json missing")
+            # Brain
+            bpath = _P("data_cache/quant_service_state.json")
+            if bpath.exists():
+                age = (lambda: (__import__("time").time() - bpath.stat().st_mtime))()
+                b = _json.loads(bpath.read_text(encoding="utf-8"))
+                brain_ok = "✓" if age < 600 else "✗ (stale)"
+                lines.append(f"  {brain_ok} Brain: LLM={b.get('llm_calls', 0)} state.ts={b.get('last_tick', '?')[:19]} (file {age:.0f}s ago)")
+            else:
+                lines.append("  ✗ Brain: state file missing")
+            # Paper
+            ppath = _P("data_cache/paper_state.json")
+            if ppath.exists():
+                p = _json.loads(ppath.read_text(encoding="utf-8"))
+                lines.append(f"  $ Cash: Rs.{p.get('cash', 0):,.0f} | Realized: Rs.{p.get('realized_pnl', 0):,.2f} | Positions: {len(p.get('positions', {}))}")
+            # Kotak
+            kpath = _P("data_cache/kotak_prod_session.json")
+            if kpath.exists():
+                k = _json.loads(kpath.read_text(encoding="utf-8"))
+                hrs = (k.get("expires_at", 0) - __import__("time").time()) / 3600
+                kk = "✓" if hrs > 1 else "✗ EXPIRED"
+                lines.append(f"  {kk} Kotak session: expires in {hrs:+.1f}h")
+            # Confluence loop
+            hb = _P("data_cache/_confluence_loop.heartbeat")
+            if hb.exists():
+                age = (lambda: (__import__("time").time() - hb.stat().st_mtime))()
+                cb = "✓" if age < 600 else "✗ (no heartbeat)"
+                lines.append(f"  {cb} Confluence loop: heartbeat {age:.0f}s ago")
+            else:
+                lines.append("  ✗ Confluence loop: no heartbeat file")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"health check failed: {e}"
+
+    # FIX 2026-09-04 13:00: /diag — full diagnostic
+    def _cmd_diag(self, arg: str, msg: dict) -> str:
+        """Run the 12-check premarket_self_heal and return a summary."""
+        try:
+            import subprocess as _sp
+            ret = _sp.run([sys.executable, str(Path("scripts/premarket_self_heal.py"))],
+                         cwd=str(Path.cwd()), capture_output=True, text=True, timeout=180)
+            output = ret.stdout[-2000:]  # last 2000 chars
+            # Extract just the SUMMARY line
+            for line in output.splitlines():
+                if "SUMMARY" in line or "ISSUES" in line or "SYSTEM READY" in line:
+                    return f"<b>DIAG</b>\n{line.strip()}\n\n(Full output: scripts/premarket_self_heal.py)"
+            return f"<b>DIAG</b>\nrc={ret.returncode}\n\n(Check scripts/premarket_self_heal.py for full output)"
+        except Exception as e:
+            return f"diag failed: {e}"
 
     def _cmd_time(self, arg: str, msg: dict) -> str:
         from kotak_bot.utils.clock import now_ist, market_session
