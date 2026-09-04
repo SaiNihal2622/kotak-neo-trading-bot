@@ -1280,7 +1280,11 @@ def run_paper() -> None:
                                                 reason=str(_qa_a.get("rationale", ""))[:200],
                                             )
                                             # Reconstruct filled Order objects from leg records
-                                            from kotak_bot.execution.broker_base import Order, OrderSide, OrderType, ProductType
+                                            # FIX 2026-09-04 12:18: do NOT re-import Order here — Python would
+                                            # mark Order as a local for the entire run_paper() function, breaking
+                                            # the Order() call on the next line. The top-level import at line 26
+                                            # already provides Order/OrderSide/etc. Same trap as 2026-09-02 11:00 (5dc58ef)
+                                            # and 2026-09-03 14:30 (1edad1c). Use the existing globals.
                                             _orders = []
                                             for _lr in _leg_records:
                                                 _o = Order(
