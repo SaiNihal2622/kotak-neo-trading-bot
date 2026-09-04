@@ -2171,12 +2171,8 @@ def handle_api(path):
         # FIX 2026-09-04 13:50: real P&L using live option LTPs from option_chains.json
         # (not the paper client's default Rs.1.0). This is the "what would live
         # trading show" P&L, which is the only meaningful metric.
-        try:
-            sys.path.insert(0, str(ROOT))
-            from scripts._mtm_now import compute_mtm_with_chains
-            return json.dumps(compute_mtm_with_chains(), default=str)
-        except Exception as e:
-            return json.dumps({"error": str(e)}, default=str)
+        # Alias for /api/mtm (same endpoint, clearer name for the dashboard).
+        return json.dumps(_compute_mtm(), default=str)
     if u.path == "/api/option_chain":
         sym = (qs.get("symbol", ["NIFTY"])[0]).upper()
         expiry = qs.get("expiry", ["auto"])[0]
