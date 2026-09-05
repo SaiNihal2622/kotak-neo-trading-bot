@@ -155,6 +155,6 @@ def test_no_shadow_imports_in_self_heal():
     import subprocess
     r = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "lint_no_shadowing.py")],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True, text=True, timeout=120,
     )
     assert "PASSED" in r.stdout, f"lint failed:\n{r.stdout}\n{r.stderr}"

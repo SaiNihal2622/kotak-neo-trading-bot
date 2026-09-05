@@ -2132,9 +2132,17 @@ def watch_loop():
             # exists, exit cleanly. NSSM auto-respawns the brain with the latest code.
             # Replaces the need for UAC restart when only code changes are needed.
             try:
-                _rb_path = Path("data_cache/quant_service_restart.json")
+                # FIX 2026-09-05 13:48: use absolute path (DATA/...) instead of
+                # relative "data_cache/...". NSSM sets the brain's CWD to
+                # .venv\Scripts, so a relative path resolves to
+                # C:\...\kotak-neo-bot\.venv\Scripts\data_cache\... which doesn't
+                # exist. The restart marker is at the project root's data_cache.
+                # FIX 2026-09-05 13:53: use utf-8-sig to handle UTF-8 BOM
+                # (PowerShell's Out-File -Encoding utf8 adds a BOM, which
+                # json.loads with utf-8 fails on).
+                _rb_path = DATA / "quant_service_restart.json"
                 if _rb_path.exists():
-                    _rb = json.loads(_rb_path.read_text(encoding="utf-8"))
+                    _rb = json.loads(_rb_path.read_text(encoding="utf-8-sig"))
                     if not _rb.get("consumed", False):
                         log(f"SELF-RESTART: marker found ({_rb.get('reason', '?')}), exiting cleanly")
                         _rb["consumed"] = True
@@ -2381,7 +2389,7 @@ def watch_loop():
                     # Spawn LLM call with overnight context
                     if not _llm_in_flight():
                         _t = threading.Thread(
-                            target=_invoke_llm_decision,
+                            target=invoke_llm_decision,
                             args=({
                                 "liveness": liveness,
                                 "paper": {k: paper.get(k) for k in ('cash', 'realized_pnl', 'positions', 'orders')},

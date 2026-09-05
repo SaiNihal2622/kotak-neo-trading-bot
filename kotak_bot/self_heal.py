@@ -204,6 +204,10 @@ def _restart_brain_via_signal() -> tuple[bool, str]:
     """Write the brain restart signal file. The brain watches for this and exits
     cleanly. The watchdog (or the next bot cycle) respawns it."""
     try:
+        # FIX 2026-09-05 13:55: use 'utf-8' explicitly without BOM (the default
+        # for 'utf-8' in Python doesn't add BOM, unlike PowerShell's
+        # Out-File -Encoding utf8 which does). The brain reads with utf-8-sig
+        # so both work, but be consistent.
         (DATA / "quant_service_restart.json").write_text(
             json.dumps({"reason": "self_heal: brain port down", "ts": _now()}, indent=2),
             encoding="utf-8",
