@@ -70,19 +70,17 @@ def get_process_start(pid):
 
 
 def check_bot_brain_alive():
-    """Check if bot and brain are running.
-
-    FIX 2026-09-04 13:15: brain state file check was unreliable (brain makes
-    decisions but doesn't always write state). Now cross-checks with the brain's
-    decision log: if quant_service_decisions.jsonl has a recent decision, the
-    brain is alive even if state file is stale.
+    """Check if bot and brain are running. FIX 2026-09-07 01:25: now also RESTARTS
+    the service if it's not running. The 3rd-layer NSSM watchdog (every 15 min)
+    and the daily tasks work together to ensure 24/7 uptime.
     """
-    print("\n[1/12] Bot/Brain liveness check...")
+    print("\n[1/12] Bot/Brain liveness check + auto-restart...")
+    NSSM = r"C:\Tools\nssm\nssm-2.24\win64\nssm.exe"
     bot_pid_path = ROOT / "data_cache" / "liveness.json"
     brain_state_path = ROOT / "data_cache" / "quant_service_state.json"
     decisions_path = ROOT / "data_cache" / "quant_service_decisions.jsonl"
 
-    # Bot
+    # --- Bot ---
     bot_ok = False
     bot_detail = ""
     if bot_pid_path.exists():
@@ -94,15 +92,36 @@ def check_bot_brain_alive():
             bot_detail += " (STALE)"
     else:
         bot_detail = "liveness.json missing"
+    if not bot_ok:
+        # FIX 2026-09-07 01:25: try to restart KotakBotPaper NSSM service.
+        # The premarket task runs as SYSTEM, so nssm start works without UAC.
+        try:
+            sc = subprocess.run(
+                ["sc", "query", "KotakBotPaper"],
+                capture_output=True, text=True, timeout=10,
+            )
+            is_stopped = "STOPPED" in (sc.stdout or "").upper() and "1  STOPPED" in (sc.stdout or "").upper()
+            if is_stopped:
+                bot_detail += " — NSSM STOPPED, attempting nssm start"
+                ns = subprocess.run(
+                    [NSSM, "start", "KotakBotPaper"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                bot_detail += f" (nssm exit={ns.returncode})"
+                add_fix("bot_liveness", f"nssm start KotakBotPaper exit={ns.returncode}")
+            else:
+                bot_detail += " — NSSM is RUNNING but liveness stale; will recover on next watchdog tick"
+        except Exception as e:
+            bot_detail += f" — restart attempt failed: {e}"
+            add_error("bot_restart", str(e))
     add_check("bot_liveness", bot_ok, bot_detail)
 
-    # Brain: cross-check with decision log
+    # --- Brain: cross-check with decision log ---
     brain_ok = False
     brain_detail = ""
     if brain_state_path.exists():
         state_age = time.time() - brain_state_path.stat().st_mtime
         brain_detail = f"state file age={state_age:.0f}s"
-    # Cross-check: is the brain making decisions?
     if decisions_path.exists():
         try:
             last_ts = None
@@ -126,6 +145,27 @@ def check_bot_brain_alive():
             brain_detail += f" (decision log parse error: {e})"
     else:
         brain_detail += " (no decision log)"
+    if not brain_ok:
+        # FIX 2026-09-07 01:25: try to restart KotakQuantService
+        try:
+            sc = subprocess.run(
+                ["sc", "query", "KotakQuantService"],
+                capture_output=True, text=True, timeout=10,
+            )
+            is_stopped = "STOPPED" in (sc.stdout or "").upper() and "1  STOPPED" in (sc.stdout or "").upper()
+            if is_stopped:
+                brain_detail += " — NSSM STOPPED, attempting nssm start"
+                ns = subprocess.run(
+                    [NSSM, "start", "KotakQuantService"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                brain_detail += f" (nssm exit={ns.returncode})"
+                add_fix("brain_liveness", f"nssm start KotakQuantService exit={ns.returncode}")
+            else:
+                brain_detail += " — NSSM is RUNNING but brain not making decisions"
+        except Exception as e:
+            brain_detail += f" — restart attempt failed: {e}"
+            add_error("brain_restart", str(e))
     add_check("brain_liveness", brain_ok, brain_detail)
 
 
