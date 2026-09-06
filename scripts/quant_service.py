@@ -2436,6 +2436,31 @@ def watch_loop():
             except Exception as e:
                 log(f"session-watch-err: {e}")
 
+            # --- Bot NSSM watchdog (every 5 min — restart bot if NSSM Stopped) ---
+            # FIX 2026-09-07 01:05: the brain (SYSTEM) is the ultimate watchdog for
+            # the bot. The bot's self-heal can only run when the bot is alive;
+            # if the bot dies AND NSSM gives up auto-restart (Stop state), the
+            # bot's self-heal is offline. The brain's watch_loop runs 24/7, so
+            # it can detect 'sc query KotakBotPaper' Stopped and 'nssm start'
+            # it. This closes the 24/7 autonomy loop: BRAIN watches BOT, and
+            # the user-side self-heal in the bot watches the brain.
+            try:
+                if tick_count % 300 == 0:  # every 5 min
+                    _sc = subprocess.run(
+                        ["sc", "query", "KotakBotPaper"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    _out = _sc.stdout or ""
+                    if "STOPPED" in _out and "1  STOPPED" in _out.upper():
+                        log("BOT-WATCHDOG: KotakBotPaper NSSM is STOPPED. Starting via nssm.")
+                        _ns = subprocess.run(
+                            [str(Path(r"C:\Tools\nssm\nssm-2.24\win64\nssm.exe")), "start", "KotakBotPaper"],
+                            capture_output=True, text=True, timeout=20,
+                        )
+                        log(f"BOT-WATCHDOG: nssm start exit={_ns.returncode}")
+            except Exception as _bw_err:
+                log(f"bot-watchdog-err: {_bw_err}")
+
             time.sleep(TICK_SEC)
         except Exception as e:
             log(f"LOOP-ERR: {e}\n{traceback.format_exc()[:300]}")
