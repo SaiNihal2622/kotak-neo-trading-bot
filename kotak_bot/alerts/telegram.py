@@ -32,6 +32,14 @@ class TelegramAlerter:
         self._env_path = "config/credentials.env"
         self.enabled = bool(self.bot_token)
         self.voice_enabled = voice_enabled
+        # FIX 2026-09-07 00:55: backoff state for DNS / network outages.
+        # Without backoff, the bot's main loop gets monopolized by 20s
+        # Telegram timeouts (see Logs/bot_stderr.log for 18:40-18:47 spam).
+        import time as _t
+        self._last_success_ts = 0.0
+        self._last_attempt_ts = 0.0
+        self._last_warn_ts = 0.0
+        self._consecutive_failures = 0
         if not self.bot_token:
             logger.warning("TelegramAlerter disabled — set TELEGRAM_BOT_TOKEN")
         elif not self._initial_chat_id:
@@ -82,16 +90,39 @@ class TelegramAlerter:
         if not self.enabled:
             logger.debug(f"[TG-DRY-RUN] {message}")
             return False
+        # FIX 2026-09-07 00:55: backoff on consecutive failures. Without this,
+        # a DNS outage (e.g. 6h on 2026-09-06) caused Telegram send() to be
+        # called 10+ times in 1 minute, monopolizing the bot's main loop and
+        # eventually contributing to NSSM SIGINT'ing the process. Now we
+        # back off to 1 attempt per 60s after the first failure, and skip
+        # entirely for 5 min after 3 consecutive failures.
+        import time as _t
+        now = _t.time()
+        # Reset the backoff window if last success was >5 min ago
+        if now - self._last_success_ts > 300:
+            self._consecutive_failures = 0
+        if self._consecutive_failures >= 3 and now - self._last_attempt_ts < 300:
+            return False  # in cool-down after repeated failures
+        if self._consecutive_failures > 0 and now - self._last_attempt_ts < 60:
+            return False  # slow down after a recent failure
         chat_id = self._get_chat_id()
         if not chat_id:
             return False
         kwargs = {"chat_id": chat_id, "text": message[:4000]}  # Telegram limit
         if parse_mode:
             kwargs["parse_mode"] = parse_mode
+        self._last_attempt_ts = now
         resp = self._api_call("sendMessage", **kwargs)
         if resp.get("ok"):
+            self._last_success_ts = now
+            self._consecutive_failures = 0
             return True
-        logger.warning(f"Telegram send failed: {resp}")
+        self._consecutive_failures += 1
+        # FIX 2026-09-07 00:56: don't log the warning on every failure.
+        # At most one warning per minute (avoid log spam during outages).
+        if now - self._last_warn_ts > 60:
+            logger.warning(f"Telegram send failed (failure #{self._consecutive_failures}): {resp}")
+            self._last_warn_ts = now
         return False
 
     def send_voice(self, mp3_path: Path, caption: str = "") -> bool:

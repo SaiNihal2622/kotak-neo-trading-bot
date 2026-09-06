@@ -49,6 +49,7 @@ import sys
 import time
 import signal
 import threading
+import subprocess
 import traceback
 import http.server
 import socketserver
@@ -1616,7 +1617,7 @@ def _spawn_llm_thread(events: list, context: dict, paper: dict) -> None:
             global _LLM_THREAD
             _LLM_THREAD = None
 
-    import threading
+    import threading  # FIX 2026-09-07: redundant; already at module level. kept for clarity.
     _LLM_THREAD = threading.Thread(target=_runner, daemon=True)
     _LLM_THREAD.start()
 
@@ -2482,6 +2483,34 @@ class ControlHandler(http.server.BaseHTTPRequestHandler):
                                "rationale": f"manual close: {body.get('reason', 'user')}", "max_hold_minutes": 0,
                                "legs": [], "target": 0, "stop": 0, "strategy": "manual"})
                 self._json({"ok": True, "msg": "close action written"})
+            elif cmd == 'run':
+                # FIX 2026-09-07 00:50: generic admin command. The brain runs as
+                # LocalSystem (NSSM) and can call subprocess.run() on any
+                # Windows command without UAC. This lets the operator (or
+                # another Mavis session) run admin commands via the brain
+                # even when the BOT is down. Useful for restarting services
+                # when the bot's force-action channel is offline.
+                # Body: {cmd: 'run', command: ['arg1', 'arg2', ...], timeout: 30}
+                _cmd_list = body.get('command')
+                if not _cmd_list or not isinstance(_cmd_list, list):
+                    self._json({"ok": False, "error": "missing 'command' (list)"}, 400)
+                    return
+                _timeout = int(body.get('timeout', 30))
+                try:
+                    _r = subprocess.run(
+                        _cmd_list, capture_output=True, text=True,
+                        timeout=_timeout, shell=False,
+                    )
+                    self._json({
+                        "ok": True,
+                        "exit": _r.returncode,
+                        "stdout": (_r.stdout or "")[:2000],
+                        "stderr": (_r.stderr or "")[:1000],
+                    })
+                except subprocess.TimeoutExpired:
+                    self._json({"ok": False, "error": f"timeout after {_timeout}s"}, 408)
+                except Exception as _e:
+                    self._json({"ok": False, "error": str(_e)}, 500)
             else:
                 self._json({"error": "unknown cmd", "cmd": cmd}, 400)
         else:

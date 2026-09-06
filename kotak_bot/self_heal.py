@@ -161,6 +161,63 @@ def _detect_daily_task_missing() -> bool:
         return False  # can't determine, don't fire the fix
 
 
+def _detect_nssm_service_stopped() -> bool:
+    """FIX 2026-09-07 00:55: detect if the NSSM service KotakBotPaper has gone to
+    Stopped state. This happened on 2026-09-06/07 at 00:42 IST when the
+    service got SIGINT'd and NSSM gave up auto-restarting. Without this
+    detector, the bot is alive but the NSSM service is dead, and there's
+    no automatic recovery.
+
+    The bot runs as SYSTEM, so it CAN call schtasks /scmanager to query
+    service state via the SCM. We use 'sc query' instead — it's a Windows
+    binary, runs without UAC, and returns service state directly.
+    """
+    try:
+        r = subprocess.run(
+            ["sc", "query", "KotakBotPaper"],
+            capture_output=True, text=True, timeout=10,
+        )
+        out = r.stdout or ""
+        # Look for "STATE" line. State code 1 = STOPPED, 4 = RUNNING.
+        for line in out.splitlines():
+            if line.strip().startswith("STATE"):
+                parts = line.split(":", 1)
+                if len(parts) == 2 and "STOPPED" in parts[1].upper():
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+def _fix_nssm_service_stopped() -> dict:
+    """FIX 2026-09-07 00:55: if KotakBotPaper is in STOPPED state, start it.
+    The bot is already running (we're inside it), but it's running because
+    someone manually started the python.exe. The NSSM service is the
+    'production' registration. If NSSM state is STOPPED, we start it so
+    NSSM takes over monitoring + auto-restart.
+
+    Uses NSSM directly (Windows binary, runs as SYSTEM without UAC)."""
+    try:
+        r = subprocess.run(
+            [str(NSSM), "start", "KotakBotPaper"],
+            capture_output=True, text=True, timeout=20,
+        )
+        return {
+            "applied": r.returncode == 0,
+            "msg": f"nssm start KotakBotPaper: exit={r.returncode} out={(r.stdout or r.stderr or '').strip()[:200]}",
+            "action_for_telegram": (
+                f"♻️ [SELF-HEAL] KotakBotPaper NSSM service was STOPPED. "
+                f"Started via nssm. exit={r.returncode}"
+            ),
+        }
+    except Exception as e:
+        return {
+            "applied": False,
+            "msg": f"nssm start failed: {e}",
+            "action_for_telegram": f"❌ [SELF-HEAL] nssm start KotakBotPaper failed: {e}",
+        }
+
+
 def _detect_brain_port_down() -> bool:
     """Check if the brain's HTTP :8503 responds."""
     try:
@@ -305,6 +362,12 @@ RECIPES["brain_loop_err"] = (_detect_brain_loop_err, _fix_brain_loop_err)
 RECIPES["kotak_session_error"] = (_detect_kotak_session, _fix_kotak_session)
 RECIPES["daily_task_missing"] = (_detect_daily_task_missing, _fix_daily_task_missing)
 RECIPES["brain_port_down"] = (_detect_brain_port_down, _fix_brain_port_down)
+# FIX 2026-09-07 00:55: NSSM service-state recipes use a longer cooldown
+# (NSSM_COOLDOWN_SEC) because NSSM state changes are rare and re-firing
+# is wasteful. The 7 above use COOLDOWN_SEC (10 min).
+_NSSM_RECIPES = {
+    "nssm_service_stopped": (_detect_nssm_service_stopped, _fix_nssm_service_stopped),
+}
 
 
 # ---- main entry point ----
@@ -312,6 +375,10 @@ RECIPES["brain_port_down"] = (_detect_brain_port_down, _fix_brain_port_down)
 # Cooldown: don't re-fire the same recipe within N seconds. Prevents alert spam.
 COOLDOWN_SEC = 600  # 10 min
 _last_fired: dict[str, float] = {}
+
+# FIX 2026-09-07 00:55: separate, longer cooldown for NSSM service-state recipes.
+# These should not be re-fired frequently because NSSM state changes are rare.
+NSSM_COOLDOWN_SEC = 1800  # 30 min
 
 
 def self_heal_check(liveness: dict, alerter=None) -> list[dict]:
@@ -323,15 +390,18 @@ def self_heal_check(liveness: dict, alerter=None) -> list[dict]:
     log_tail = _read_tail(BOT_LOG) + _read_tail(BRAIN_LOG)
     applied = []
     now_ts = time.time()
-    for name, (detect, fix_fn) in RECIPES.items():
+    # FIX 2026-09-07 00:55: iterate both regular and NSSM recipes with
+    # the appropriate cooldown for each.
+    for name, (detect, fix_fn) in {**RECIPES, **_NSSM_RECIPES}.items():
         try:
             if not detect(liveness) if name in ("liveness_stale", "main_thread_dead") else not detect(log_tail):
                 continue
         except Exception:
             continue
         # Cooldown
+        cooldown = NSSM_COOLDOWN_SEC if name in _NSSM_RECIPES else COOLDOWN_SEC
         last = _last_fired.get(name, 0)
-        if now_ts - last < COOLDOWN_SEC:
+        if now_ts - last < cooldown:
             continue
         try:
             result = fix_fn()
