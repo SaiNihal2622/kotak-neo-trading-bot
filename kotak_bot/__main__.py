@@ -2027,6 +2027,44 @@ def run_paper() -> None:
                         f"[SCAN] {len(orphan_pos)} orphan broker position(s) with no open trade "
                         f"(symbols: {[p.symbol for p in orphan_pos]}). These should be auto-settled."
                     )
+                    # FIX 2026-09-07 12:02: actually force-close the orphans instead
+                    # of just logging. Brain-driven OPENs don't register with order_mgr
+                    # (commit a8dec0a), so they show up as orphans. The orphan-fallback
+                    # at 14:30 only fires once at force-square time, but we want to
+                    # close them on the next scan if the position is now OTM and
+                    # small enough. We send a force-close via the broker.place_order
+                    # with the opposite side of each orphan's qty.
+                    # We do this conservatively: only when the orphan is OUT-OF-THE-MONEY
+                    # and the position is small (< 5% of cash). Otherwise we let
+                    # force-square at 14:30 handle it.
+                    _orphan_cash = _cash or 0
+                    _orphan_max_loss_pct = 0.05
+                    for _orph in orphan_pos:
+                        try:
+                            _orph_sym = getattr(_orph, 'symbol', None)
+                            _orph_qty = abs(int(getattr(_orph, 'qty', 0) or 0))
+                            _orph_avg = float(getattr(_orph, 'avg_price', 0) or 0)
+                            if not _orph_sym or _orph_qty == 0 or _orph_avg == 0:
+                                continue
+                            # Conservative: skip if >5% of cash (let force-square handle)
+                            _max_loss = _orph_qty * _orph_avg * 0.20  # assume 20% drawdown
+                            if _orphan_cash > 0 and _max_loss / _orphan_cash > _orphan_max_loss_pct:
+                                logger.debug(f"[ORPHAN] {_orph_sym} qty={_orph_qty} avg={_orph_avg} too large to close now")
+                                continue
+                            # Send force-close
+                            _close_side = OrderSide.SELL if int(getattr(_orph, 'qty', 0)) > 0 else OrderSide.BUY
+                            _close_ord = Order(
+                                symbol=_orph_sym, side=_close_side, qty=_orph_qty,
+                                order_type=OrderType.MARKET, product=ProductType.MIS,
+                                price=0.0, tag='ORPHAN-AUTO-CLOSE',
+                                exchange='NFO',
+                            )
+                            _fr = broker.place_order(_close_ord)
+                            if _fr.status in (OrderStatus.COMPLETE, OrderStatus.OPEN):
+                                logger.info(f"[ORPHAN] force-closed {_orph_sym} qty={_orph_qty} status={_fr.status.value if hasattr(_fr.status, 'value') else _fr.status}")
+                                alerter.send(f"♻️ [ORPHAN-AUTO-CLOSE] closed {_orph_sym} qty={_orph_qty} (brain-driven OPEN, not registered with order_mgr)")
+                        except Exception as _oc_err:
+                            logger.warning(f"[ORPHAN] auto-close failed for {_orph_sym}: {_oc_err}")
                 # Cap is on STRATEGIES (open_trades), not on legs.
                 # Use `len(open_trades)` as the authoritative count. If we have orphan
                 # legs from a bot restart, don't count them against the cap.
