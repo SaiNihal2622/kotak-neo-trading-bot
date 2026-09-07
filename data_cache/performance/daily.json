@@ -1,0 +1,36 @@
+{
+  "date": "2026-09-07",
+  "trades": 4,
+  "closed": 4,
+  "wins": 2,
+  "losses": 2,
+  "breakevens": 0,
+  "win_rate": 0.5,
+  "realized_pnl": 16883.7,
+  "profit_factor": 0,
+  "avg_win": 8441.85,
+  "avg_loss": 8441.85,
+  "expectancy": 0.0,
+  "drawdown": {
+    "max_dd": 0.0,
+    "current_dd": 0.0,
+    "in_drawdown": false,
+    "peak_pnl": 1500.0,
+    "current_pnl": 1500.0
+  },
+  "strategies": {
+    "bear_put_v": {
+      "wins": 2,
+      "losses": 2,
+      "pnl": 16883.699999999997,
+      "count": 4
+    }
+  },
+  "llm_cost_today": {
+    "calls": 464,
+    "input_tokens": 3512310,
+    "output_tokens": 81036,
+    "cost_usd": 2.4285
+  },
+  "last_updated": "2026-09-07T22:27:40"
+}

@@ -1119,3 +1119,70 @@ a one-flag toggle. Don't `cron delete` it.
 **Missed opportunities**: Cannot quantify — no market context in this review payload. If NIFTY moved more than 1% intraday, a short-premium iron_condor at 3.7% Kelly would have been a textbook setup and we missed it.
 
 **Action items for tomorrow**: (1) Filter `last_20_decisions` to exclude any row where entry_premium IS NULL or rationale contains 'test'. (2) Require live premium data on every decision going forward; reject the cycle if the broker feed is empty. (3) If conditions allow, deploy one iron_condor on NIFTY within the first 90 minutes at full 3.7% Kelly to break the zero-trade streak. (4) Do not let another full session pass with capital idle.
+
+
+## 2026-08-31 nightly self-review
+
+**What worked**: Zero. No live trades executed. The single closed iron_condor in the decision log is a test stub (entry_premium=null, pnl=1500 hardcoded) — it tells us nothing about edge, only that the tracking pipeline works. No real performance to celebrate.
+
+**What did not**: I sat out the entire session. NIFTY likely traded with non-trivial intraday range, and the strategy engine flagged directional_debit at 60% win rate with +105,675 cumulative — that's the strongest signal in the book. I took zero directional_debit trades. That's a miss.
+
+**Edge discovered**: None new. Existing data still says directional_debit is the workhorse (win_rate 0.60, Kelly 0.05, +105,675). Iron_condor is secondary (Kelly 0.037, currently the only 'win' logged is the test trade). Capital is healthy: 99,772 effective, drawdown 0.2% — I have room to deploy but I didn't.
+
+**Edge lost**: Potential — I had capital, a positive-EV strategy with 60% win rate, and a Kelly-prescribed sizing ready. Sitting on hands while the edge sits there is the same as paying the edge to someone else. Opportunity cost is the silent loser today.
+
+**Time-of-day pattern**: No data to extract. Need at least 5 live trades across a session to find intraday edges.
+
+**Sizing/exit review**: N/A — no live entries or exits to critique. Cannot evaluate my own discipline without trades. Iron_condor test was 240-min max hold, irrelevant since it was synthetic.
+
+**False positives / missed**: The strategy recommendation clearly said directional_debit, and I did not log any attempt. Either (a) the engine didn't fire qualifying signals (possible), or (b) I was too conservative given clean drawdown. Tomorrow I should audit the signal log to confirm (a) vs (b). If signals fired and I ignored them, that's a discipline bug, not a risk bug.
+
+**Tomorrow focus**: Re-engage directional_debit. Capital is fresh, drawdown is trivial, the engine's top-ranked strategy is ready. One to two live directional_debit setups, sized to Kelly 0.05, with hard stops. No more zero-trade days when edge is available.
+
+**Process note**: Track whether directional_debit signals actually fired today before I blame myself — must distinguish 'no signal' from 'ignored signal'.
+
+### 2026-09-07: Session v7 (this chat) — orphan-auto-close real prices + inline trade_journal
+
+**Rule**: A paper fill that lands at Rs.1.00 is almost always a bug. The orphan-auto-close path at __main__.py:2065 used to construct an Order(symbol=..., price=0.0) without setting strike/option_type/underlying. The paper client's _force_fill_market_like couldn't look up the strike in option_chains.json (step 0 needed order.strike + order.option_type) and had no underlying for the strike-aware intrinsic fallback (step 4). Result: 3 of today's 8 fills closed for Rs.1.00 instead of the real ~Rs.245 / ~Rs.307 / ~Rs.548.
+
+**Today's real P&L reconciliation** (2026-09-07):
+- 5 OPEN orders + 4 CLOSE orders (8 total fills), 2 strategies (BNF bear_put + NIFTY bear_put)
+- Per-leg P&L from paper_state.json orders, FIFO-matched:
+  - BNF 57200 PE (long, closed SELL @ 1.00 fake):  -Rs.11,746.50
+  - BNF 56800 PE (short, closed BUY @ 1.00 fake):   +Rs.7,339.20
+  - NIFTY 24100 PE (short, closed BUY @ 1.00 fake): +Rs.22,993.50
+  - NIFTY 24300 PE (long, closed SELL @ 525.89 real): -Rs.1,702.50
+  - **Today's trades total: +Rs.16,883.70** (4 trade-pair entries)
+- Pre-existing carryover: -Rs.264.00 (from prior-day activity)
+- Bot's running realized_pnl: **+Rs.16,619.70** (matches paper_state)
+- 2 wins / 2 losses; win_rate 50%; bear_put_v is the only strategy that fired
+
+**Critical caveat**: The BNF 56800 PE (+Rs.7,339.20) and NIFTY 24100 PE (+Rs.22,993.50) "gains" are FAKE — they came from short-closing at Rs.1.00 instead of the real ~Rs.246 / ~Rs.308. Without the bug, those legs would have been closed near-zero P&L (the spread was near worthless by 12:04 / 12:42 IST). The +Rs.30,332 from the 2 fake short-closes is the inflated component.
+
+**Real P&L estimate (without fake Rs.1.00 closes)**: ~-Rs.6,000 to -Rs.13,000 (the long-closed legs at fake Rs.1.00 lost ~Rs.11,746 + the spread was already OTM). The BNF trade was a real loss; the NIFTY trade was near-zero to slightly negative. **The +Rs.16,883 headline is mostly artifact.**
+
+**Fix 1 — orphan-auto-close real prices** (commit ab78e22):
+- __main__.py:2065 now passes strike/option_type/expiry/underlying to Order(), pulled from the position object (same as the 14:30 force-square at line 1754 does), with a _parse_option_symbol() fallback that recovers them from the raw symbol.
+- paper_client._force_fill_market_like defensively parses the same fields from the order's symbol if the Order object didn't carry them. Catches any other code path that forgets to set them.
+- After fill, the Order's option metadata is backfilled onto the Order so the resulting Position() carries them — preventing the same problem on a subsequent close.
+- 4 new tests in 	ests/test_orphan_auto_close_price.py.
+
+**Fix 2 — trade_journal.jsonl** (commits d60db8d + 6e7d977):
+- The 	rade_journal.py module had journal_open() and journal_close() helpers but NOTHING in the bot called them. The only writer to 	rade_journal.jsonl was the EOD P&L evaluator at 15:30 IST, which only writes entries for positions still OPEN at EOD. The bot force-squares everything at 14:30, so the journal stayed empty.
+- scripts/_reconstruct_today_journal.py (backstop) walks paper_state.json's orders, matches opens/closes by symbol+opposite-side+FIFO, and writes per-leg journal entries with the actual realized P&L. Also updates performance/daily.json. Wired into scripts/daily_autonomy.py eod() phase at 15:30 IST.
+- PaperClient.on_fill(callback) API: bot registers a callback that writes a FILL entry to 	rade_journal.jsonl inline (every fill, not just EOD). Trade_id is FILL-{order_id} so reconstruction and inline writes don't double-write.
+- 5 new tests in 	ests/test_paper_client_journal_callback.py + 4 in 	ests/test_reconstruct_today_journal.py.
+
+**Today's bot state** (2026-09-07 22:50 IST):
+- NSSM service: RUNNING (PID 3388, started 22:42:22 with new code)
+- Cash: Rs.116,619.70 | Realized P&L: +Rs.16,619.70 | Open positions: 0
+- trade_journal.jsonl: 4 reconstruction entries + future inline entries
+- performance/daily.json: 4 trades, 2W/2L, +Rs.16,883.70 today's trades, bear_put_v only
+- Tests: 382 pass (was 369; +13 from this session)
+
+**Apply when**:
+- Any code path that closes/force-closes a position MUST populate strike/option_type/underlying on the Order. The 14:30 force-square at __main__.py:1754 is the model.
+- A paper fill that lands at exactly Rs.1.00 is a red flag. Check the log for "FORCE_FILL last-resort ref" warnings.
+- The 3 fake Rs.1.00 fills on 2026-09-07 are in paper_state.json as the orphan-auto-close orders with vg_fill_price=1.0. They CANNOT be retroactively corrected — they're baked into the bot's _realized_pnl carryover. Honest P&L for that day is unknowable from the available data.
+- Going forward, the inline _append_trade_journal callback will record every fill with the actual vg_fill_price (including the option_chains.json expected_fill_price), so future days' P&L will be auditable end-to-end.
+
