@@ -146,6 +146,15 @@ def eod() -> int:
     rc, out = run_script("_eod_pnl_evaluator.py", timeout=60)
     print(f"  EOD rc={rc}")
 
+    # FIX 2026-09-07 22:30: reconstruct today's journal from paper_state.json
+    # orders. The EOD P&L evaluator above only writes journal entries for
+    # OPEN positions, but the bot force-squares everything at 14:30, so by
+    # 15:30 there are no open positions and the evaluator writes nothing.
+    # This reconstruction walks today's filled orders, matches open/close
+    # pairs, and writes per-leg journal entries with the actual realized P&L.
+    rc2, out2 = run_script("_reconstruct_today_journal.py", timeout=60)
+    print(f"  journal reconstruction rc={rc2}")
+
     # Read paper state
     ps_path = ROOT / "data_cache" / "paper_state.json"
     cash = 0
