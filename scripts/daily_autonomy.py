@@ -103,6 +103,18 @@ def pre_market() -> int:
     elif rc_reset != 0:
         print(f"  WARN: paper-state reset failed: {out_reset[-300:]}")
 
+    # FIX 2026-09-08 01:55: pre-flight check — verifies 24/7 reliability components
+    # are all healthy. If anything is broken, it auto-fixes what it can and
+    # alerts on Telegram. This is the "go/no-go" gate for market open.
+    rc_pf, out_pf = run_script("preflight_check.py", timeout=60)
+    print(f"  pre-flight rc={rc_pf}")
+    if rc_pf >= 2:
+        print(f"  CRITICAL: pre-flight found issues requiring attention:")
+        # Extract the summary lines for visibility
+        for line in out_pf.splitlines():
+            if "FAIL" in line or "CRITICAL" in line:
+                print(f"    {line.strip()}")
+
     # Read liveness
     liveness_path = ROOT / "data_cache" / "liveness.json"
     liveness_summary = "n/a"
