@@ -52,10 +52,12 @@ SESSION_OPENS_PATH = DATA / 'session_opens.json'
 # Note: SENSEX opens at 09:55 IST (not 09:15) — engine tolerates the gap and
 # backfills session_open from the first tick after the engine is up.
 INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX']
+# FIX 2026-09-07 12:50: removed TATAMOTORS (delisted from Yahoo Finance, causes
+# noisy "possibly delisted" warnings every 10 min from CANDLE-WATCHDOG).
 STOCKS = [
     'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'ITC', 'SBIN',
     'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK', 'ASIANPAINT', 'MARUTI',
-    'SUNPHARMA', 'TATAMOTORS', 'TATASTEEL', 'POWERGRID', 'NTPC', 'HINDUNILVR',
+    'SUNPHARMA', 'TATASTEEL', 'POWERGRID', 'NTPC', 'HINDUNILVR',
     'INDUSINDBK', 'BAJFINANCE', 'M&M', 'HCLTECH', 'TITAN',
 ]
 SYMBOLS = INDICES + STOCKS

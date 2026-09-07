@@ -110,7 +110,12 @@ def main():
                 )
                 result = broker.place_order(close_order)
                 print(f"    closed {o.symbol} {close_side.value} {o.qty} @ {result.avg_fill_price}")
-        print("  OK: test position closed")
+        # FIX 2026-09-07 12:48: also mark the trade as CLOSED in order_mgr.
+        # Without this, trade.closed_at stays None and open_trades() returns it
+        # as a phantom open position. With MAX_OPEN_POSITIONS=2, 5 phantom self-test
+        # trades blocked the bot from placing any new entries for the whole day.
+        order_mgr.close_trade(trade.trade_id, reason="self-test cleanup")
+        print("  OK: test position closed (trade record marked closed)")
     except Exception as e:
         print(f"  WARN: cleanup failed: {e} — close it manually")
 

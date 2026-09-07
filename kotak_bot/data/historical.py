@@ -49,7 +49,7 @@ YFINANCE_TICKERS = {
     "ASIANPAINT": "ASIANPAINT.NS",
     "MARUTI": "MARUTI.NS",
     "M&M": "M&M.NS",
-    "TATAMOTORS": "TATAMOTORS.NS",
+    # FIX 2026-09-07 12:50: removed TATAMOTORS (delisted from Yahoo Finance).
     "TATASTEEL": "TATASTEEL.NS",
     "SUNPHARMA": "SUNPHARMA.NS",
     "HCLTECH": "HCLTECH.NS",
