@@ -1,0 +1,5 @@
+{
+  "reason": "2026-09-07 P&L poisoned by 3 fake Rs.1.00 fills (orphan-auto-close bug). The +Rs.16,619.70 in paper_state.json cannot be retroactively corrected. Reset to Rs.100,000 clean baseline for tomorrow's honest P&L tracking. The prior day's trades stay in trade_journal.jsonl as RECON-* entries for audit.",
+  "requested_at": "2026-09-07T23:15:00+05:30",
+  "requested_by": "user (chat)"
+}

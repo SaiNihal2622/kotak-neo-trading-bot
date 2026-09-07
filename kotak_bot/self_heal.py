@@ -370,6 +370,79 @@ _NSSM_RECIPES = {
 }
 
 
+# FIX 2026-09-07 23:15: inline trade_journal.jsonl writer recipe. If the bot
+# is running but the inline journal callback isn't registered (e.g. paper
+# client was replaced, or the bot was started in a way that bypassed
+# run_paper's callback registration), trade_journal.jsonl will go empty
+# until the EOD reconstruction backstop. We detect this by checking the
+# bot's stderr log for the "inline trade_journal callback registered"
+# message after the most recent restart. If we don't find it, the bot
+# needs a restart to pick up the callback.
+def _detect_inline_journal_missing() -> bool:
+    """Check if the inline trade_journal callback is registered in the
+    running bot. We do this by scanning the bot's stderr log for the
+    registration message that run_paper() emits on startup. If we don't
+    find it within the last 10 minutes, the bot is on old code (or
+    something stripped the callback) and needs a restart.
+    """
+    if not BOT_LOG.exists():
+        return False  # no log to scan — let other recipes handle
+    try:
+        from datetime import datetime, timezone, timedelta
+        cutoff = datetime.now() - timedelta(minutes=10)
+        with open(BOT_LOG, "rb") as f:
+            f.seek(0, 2)
+            sz = f.tell()
+            f.seek(max(0, sz - 100_000))
+            data = f.read().decode("utf-8", errors="ignore")
+        for line in data.splitlines():
+            if "inline trade_journal callback registered" in line:
+                # Parse loguru's timestamp and check it's within 10 min
+                try:
+                    ts_str = line.split(" | ", 1)[0].strip()
+                    if ts_str.startswith("\x1b["):
+                        # strip ANSI prefix
+                        ts_str = line[line.index("2") + 2:line.index(" | ")].strip()
+                    ts = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+                    if ts >= cutoff:
+                        return False  # registered recently — healthy
+                except Exception:
+                    return False  # can't parse, assume healthy
+        return True  # no recent registration message
+    except Exception:
+        return False
+
+
+def _fix_inline_journal_missing() -> dict:
+    """Restart the bot via NSSM so it picks up the inline journal callback."""
+    try:
+        r = subprocess.run(
+            [str(NSSM), "restart", "KotakBotPaper"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return {
+            "applied": r.returncode == 0,
+            "msg": f"nssm restart KotakBotPaper: exit={r.returncode} out={(r.stdout or r.stderr or '').strip()[:200]}",
+            "action_for_telegram": (
+                f"♻️ [SELF-HEAL] inline journal callback not detected in bot log; "
+                f"restarted via nssm. exit={r.returncode}"
+            ),
+        }
+    except Exception as e:
+        return {
+            "applied": False,
+            "msg": f"nssm restart failed: {e}",
+            "action_for_telegram": f"❌ [SELF-HEAL] nssm restart KotakBotPaper failed: {e}",
+        }
+
+
+# Register the inline journal recipe (after the function is defined to avoid
+# NameError at import time).
+RECIPES["inline_journal_missing"] = (
+    _detect_inline_journal_missing, _fix_inline_journal_missing
+)
+
+
 # ---- main entry point ----
 
 # Cooldown: don't re-fire the same recipe within N seconds. Prevents alert spam.

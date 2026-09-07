@@ -92,6 +92,17 @@ def pre_market() -> int:
     rc2, out2 = run_script("_self_test_orders.py", timeout=60)
     print(f"  self-test rc={rc2}")
 
+    # FIX 2026-09-07 23:15: paper-state reset for clean baseline. Runs BEFORE the
+    # self-heal so the bot picks up the reset state on its next scan. Only fires
+    # if RESET_PAPER_TOMORROW=YES env var or data_cache/_reset_marker.json exists.
+    # One-shot: the marker is consumed on first run.
+    rc_reset, out_reset = run_script("pre_market_reset_paper_state.py", timeout=30)
+    print(f"  paper-state reset rc={rc_reset}")
+    if "skipping" not in out_reset and rc_reset == 0:
+        print("  -> paper state was reset for clean baseline")
+    elif rc_reset != 0:
+        print(f"  WARN: paper-state reset failed: {out_reset[-300:]}")
+
     # Read liveness
     liveness_path = ROOT / "data_cache" / "liveness.json"
     liveness_summary = "n/a"

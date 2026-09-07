@@ -110,6 +110,8 @@ def _reconstruct_today(today: str) -> tuple:
     n_losses = 0
     n_breakeven = 0
     total_pnl = 0.0
+    suspect_pnl = 0.0
+    suspect_count = 0
     strategies = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0.0, "count": 0})
 
     for sym, sym_orders in by_symbol.items():
@@ -151,6 +153,14 @@ def _reconstruct_today(today: str) -> tuple:
                 pnl = (o_px - c_px) * c_qty
 
             tag = matched_open.get("tag", "") or c.get("tag", "")
+            close_tag = c.get("tag", "")
+            # FIX 2026-09-07 23:15: mark closes that used the Rs.1.00 last-resort
+            # fallback as suspect_price=true. These are the orphan-auto-close bug
+            # fills. Future audit reports can exclude them.
+            suspect = (
+                abs(c_px - 1.0) < 0.01
+                and "ORPHAN" in (close_tag or "").upper()
+            )
             entry = {
                 "trade_id": f"RECON-{today}-{sym[:20]}-{c.get('placed_at', '?')[-9:-3]}",
                 "symbol": sym,
@@ -162,12 +172,13 @@ def _reconstruct_today(today: str) -> tuple:
                 "avg_price": round(o_px, 2),
                 "exit_ltp": round(c_px, 2),
                 "realized_pnl": round(pnl, 2),
-                "exit_source": c.get("tag", "reconstructed"),
+                "exit_source": close_tag or "reconstructed",
                 "open_tag": tag,
-                "close_tag": c.get("tag", ""),
+                "close_tag": close_tag,
                 "opened_at": matched_open.get("placed_at", ""),
                 "closed_at": c.get("filled_at", "") or c.get("placed_at", ""),
                 "status": "closed_reconstructed",
+                "suspect_price": suspect,
             }
             entries.append(entry)
             total_pnl += pnl
@@ -177,6 +188,11 @@ def _reconstruct_today(today: str) -> tuple:
                 n_losses += 1
             else:
                 n_breakeven += 1
+            # Track suspect fills separately — the day's headline P&L should be
+            # discounted by the suspect component.
+            if suspect:
+                suspect_pnl += pnl
+                suspect_count += 1
             # Group by strategy (strip the QUANT-/TEMPLATE-/MAVIS- prefix)
             for prefix in ("QUANT-", "TEMPLATE-", "MAVIS-", "quant-", "template-", "mavis-"):
                 if tag.startswith(prefix):
@@ -189,6 +205,11 @@ def _reconstruct_today(today: str) -> tuple:
             elif pnl < 0:
                 strategies[tag]["losses"] += 1
 
+    # FIX 2026-09-07 23:15: honest_pnl_estimate = total_pnl - suspect_pnl. The
+    # suspect fills are the Rs.1.00 orphan-auto-close fills; their contribution
+    # to the day's P&L is artificial and should not be counted in performance
+    # metrics going forward. Audit / dashboard can show both numbers.
+    honest_pnl = total_pnl - suspect_pnl
     summary = {
         "date": today,
         "n_trades": len(entries),
@@ -197,6 +218,9 @@ def _reconstruct_today(today: str) -> tuple:
         "n_breakeven": n_breakeven,
         "win_rate": n_wins / len(entries) if entries else 0,
         "realized_pnl": round(total_pnl, 2),
+        "honest_pnl_estimate": round(honest_pnl, 2),
+        "suspect_count": suspect_count,
+        "suspect_pnl": round(suspect_pnl, 2),
         "strategies": {k: dict(v) for k, v in strategies.items()},
     }
     return entries, summary
@@ -247,6 +271,20 @@ def _update_daily_json(summary: dict, today: str) -> None:
     perf["avg_loss"] = round(avg_loss, 2)
     perf["strategies"] = summary["strategies"]
     perf["last_updated"] = datetime.now().isoformat(timespec="seconds")
+    # FIX 2026-09-07 23:15: data quality flag. If any of today's reconstructed
+    # trades had a suspect close (Rs.1.00 with no expected price + ORPHAN tag),
+    # mark the day as data_quality="partial_fake" so consumers know to discount
+    # the headline P&L. Also write suspect_count and honest_pnl_estimate that
+    # excludes suspect fills.
+    suspect_count = summary.get("suspect_count", 0)
+    honest_pnl = summary.get("honest_pnl_estimate", summary["realized_pnl"])
+    perf["suspect_fill_count"] = suspect_count
+    perf["suspect_pnl"] = summary.get("suspect_pnl", 0.0)
+    perf["honest_pnl_estimate"] = round(honest_pnl, 2)
+    if suspect_count > 0:
+        perf["data_quality"] = "partial_fake"
+    else:
+        perf["data_quality"] = "clean"
     PERF_PATH.write_text(json.dumps(perf, indent=2), encoding="utf-8")
 
 

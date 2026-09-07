@@ -350,8 +350,24 @@ def run_paper() -> None:
         """Inline trade_journal.jsonl writer. Fires on every paper fill.
         Writes one entry per fill with the realized P&L delta. Idempotent
         by order_id (we use order_id as trade_id prefix).
+
+        FIX 2026-09-07 23:15: mark any fill with avg_fill_price == 1.00 as
+        suspect_price=true. This was the bug today: orphan-auto-close fell
+        through to the Rs.1.00 last-resort path. Future fills at exactly
+        Rs.1.00 will be tagged so the audit report can exclude them.
         """
         try:
+            fill_px = round(order.avg_fill_price, 2)
+            expected_px = round(order.expected_fill_price, 2) if order.expected_fill_price else 0
+            # Heuristic: Rs.1.00 with no expected price AND no live tick is suspect.
+            # A genuine Rs.1.00 fill would have an expected price (option_chains.json
+            # always has a price for valid strikes). expected_px=0 + fill_px=1.00 is
+            # the orphan-auto-close signature.
+            suspect = (
+                abs(fill_px - 1.0) < 0.01
+                and expected_px <= 0
+                and "ORPHAN" in (order.tag or "").upper()
+            )
             entry = {
                 "trade_id": f"FILL-{order.order_id}",
                 "order_id": order.order_id,
@@ -361,8 +377,8 @@ def run_paper() -> None:
                 "option_type": order.option_type or "",
                 "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
                 "qty": order.filled_qty,
-                "avg_fill_price": round(order.avg_fill_price, 2),
-                "expected_fill_price": round(order.expected_fill_price, 2) if order.expected_fill_price else 0,
+                "avg_fill_price": fill_px,
+                "expected_fill_price": expected_px,
                 "tag": order.tag or "",
                 "realized_delta": round(realized_delta, 2),
                 "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
@@ -370,7 +386,15 @@ def run_paper() -> None:
                 "filled_at": order.filled_at.isoformat() if order.filled_at else "",
                 "event": "FILL",
                 "ts": datetime.now().isoformat(timespec="seconds"),
+                "suspect_price": suspect,
             }
+            if suspect:
+                logger.warning(
+                    f"[TRADE-JOURNAL] suspect fill: {order.symbol} {order.side.value} "
+                    f"qty={order.filled_qty} @ Rs.{fill_px} (tag={order.tag}, "
+                    f"expected=Rs.{expected_px}). avg_fill_price=1.00 with no expected price "
+                    f"and ORPHAN tag is the orphan-auto-close bug signature."
+                )
             _JOURNAL_PATH.parent.mkdir(parents=True, exist_ok=True)
             with _JOURNAL_PATH.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
@@ -2129,10 +2153,25 @@ def run_paper() -> None:
                             _ot_syms.add(_o.symbol)
                 orphan_pos = [p for p in open_pos if p.symbol not in _ot_syms]
                 if orphan_pos:
+                    # FIX 2026-09-07 23:15: gate orphan-auto-close on no-new-trades time.
+                    # Before 13:30, the brain-driven positions are still in their planned
+                    # hold window (theta capture through Thursday expiry). Closing them
+                    # early in the morning destroyed 2 trades today (12:04 BNF + 12:42 NIFTY,
+                    # both at fake Rs.1.00 prices — separate bug, already fixed). Now we
+                    # only auto-close orphans AFTER no-new-trades time (13:30) so the brain
+                    # gets a fair hold window. Before 13:30, we just log the warning and
+                    # let force-square at 14:30 handle it.
+                    _orphan_close_allowed = is_past_no_new_trades_time(now)
                     logger.warning(
                         f"[SCAN] {len(orphan_pos)} orphan broker position(s) with no open trade "
-                        f"(symbols: {[p.symbol for p in orphan_pos]}). These should be auto-settled."
+                        f"(symbols: {[p.symbol for p in orphan_pos]}). "
+                        f"{'Will auto-close (past no-new-trades time).' if _orphan_close_allowed else 'Auto-close deferred until 13:30 (brain hold window).'}"
                     )
+                    if not _orphan_close_allowed:
+                        # Skip the close loop entirely — just log and let force-square handle it
+                        last_scan = now
+                        time.sleep(5)
+                        continue
                     # FIX 2026-09-07 12:02: actually force-close the orphans instead
                     # of just logging. Brain-driven OPENs don't register with order_mgr
                     # (commit a8dec0a), so they show up as orphans. The orphan-fallback

@@ -149,6 +149,23 @@ def test_reconstruct_pairs_opens_with_closes(tmp_path, monkeypatch):
     assert "bear_put_v" in summary["strategies"]
     assert summary["strategies"]["bear_put_v"]["count"] == 4
     assert abs(summary["strategies"]["bear_put_v"]["pnl"] - 16883.70) < 0.01
+    # FIX 2026-09-07 23:15: suspect_price marking. 3 of 4 closes used the Rs.1.00
+    # fallback (the orphan-auto-close bug). The 4th close (NIFTY 24300 PE) used
+    # the real chain price. So 3 entries should be suspect, 1 not.
+    suspect_flags = {e["symbol"]: e["suspect_price"] for e in entries}
+    assert suspect_flags["BANKNIFTY10SEP2657200PE"] is True
+    assert suspect_flags["BANKNIFTY10SEP2656800PE"] is True
+    assert suspect_flags["NIFTY10SEP2624100PE"] is True
+    assert suspect_flags["NIFTY10SEP2624300PE"] is False  # FORCE-SQUARE-ORPHAN, real price
+    # suspect totals
+    assert summary["suspect_count"] == 3
+    suspect_pnl_sum = sum(e["realized_pnl"] for e in entries if e["suspect_price"])
+    assert abs(summary["suspect_pnl"] - suspect_pnl_sum) < 0.01
+    # honest_pnl = total - suspect
+    expected_honest = summary["realized_pnl"] - summary["suspect_pnl"]
+    assert abs(summary["honest_pnl_estimate"] - expected_honest) < 0.01
+    # The only honest leg is NIFTY 24300 PE = -1702.50
+    assert abs(summary["honest_pnl_estimate"] - (-1702.50)) < 0.01
 
 
 def test_reconstruct_idempotent(tmp_path, monkeypatch):
@@ -213,6 +230,10 @@ def test_reconstruct_daily_json_update(tmp_path, monkeypatch):
     assert daily["trades"] == 4
     assert daily["realized_pnl"] == pytest.approx(16883.70, abs=0.01)
     assert "bear_put_v" in daily["strategies"]
+    # FIX 2026-09-07 23:15: data quality fields
+    assert daily["suspect_fill_count"] == 3
+    assert daily["data_quality"] == "partial_fake"
+    assert daily["honest_pnl_estimate"] == pytest.approx(-1702.50, abs=0.01)
 
 
 def test_reconstruct_handles_no_today_orders(tmp_path, monkeypatch):

@@ -32,5 +32,9 @@
     "output_tokens": 81036,
     "cost_usd": 2.4285
   },
-  "last_updated": "2026-09-07T22:27:40"
+  "last_updated": "2026-09-07T23:17:29",
+  "suspect_fill_count": 3,
+  "suspect_pnl": 18586.2,
+  "honest_pnl_estimate": -1702.5,
+  "data_quality": "partial_fake"
 }
