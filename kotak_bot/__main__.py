@@ -87,6 +87,57 @@ def _read_json(path, default=None):
         return default
 
 
+# Option symbol parser. Used to recover strike/option_type/underlying/expiry
+# from a raw symbol like "NIFTY10SEP2624300PE" when an Order or Position
+# object doesn't carry them. Returns a dict with the parsed fields, or
+# None values if the symbol doesn't match the option-symbol pattern.
+#
+# FIX 2026-09-07 22:15: prior code in the orphan-auto-close path passed
+# Order(symbol=..., price=0.0) without setting strike/option_type/underlying.
+# The paper client's _force_fill_market_like could not look up the strike
+# from option_chains.json (step 0) and had no underlying for the strike-
+# aware fallback (step 4), so it fell through to a Rs.1.00 last-resort
+# price. That produced 3 fake fills today (12:04 BNF 57200/56800 PE,
+# 12:42 NIFTY 24100 PE) which inflated realized P&L by ~+Rs.30,000.
+# Now any order-construction site (orphan-auto-close, manual close) can
+# call _parse_option_symbol to recover the fields defensively.
+import re as _re
+
+_OPTION_SYMBOL_RE = _re.compile(
+    r'^(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)(\d{2})([A-Z]{3})(\d{2})(\d+)(CE|PE)$'
+)
+_MONTH_MAP = {
+    'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+    'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+}
+
+
+def _parse_option_symbol(symbol):
+    """Parse an NSE option symbol like 'NIFTY10SEP2624300PE' into
+    (underlying, expiry, strike, option_type) where expiry is a
+    'YYYY-MM-DD' string. Returns (None, None, 0, None) on no-match.
+    """
+    if not symbol or not isinstance(symbol, str):
+        return None, None, 0, None
+    m = _OPTION_SYMBOL_RE.match(symbol.upper())
+    if not m:
+        return None, None, 0, None
+    underlying, day, mon_tok, year, strike, opt_type = (
+        m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)
+    )
+    try:
+        mon = _MONTH_MAP.get(mon_tok.upper(), 0)
+        yr_i = 2000 + int(year)
+        expiry = f"{yr_i:04d}-{mon:02d}-{int(day):02d}"
+    except Exception:
+        expiry = None
+    try:
+        strike_i = int(strike)
+    except Exception:
+        strike_i = 0
+    return underlying, expiry, strike_i, opt_type
+
+
 def init_csv(path: Path, header: list[str]) -> None:
     """Create CSV with header if missing, or migrate to current schema.
 
@@ -2060,18 +2111,37 @@ def run_paper() -> None:
                             if _orphan_cash > 0 and _max_loss / _orphan_cash > _orphan_max_loss_pct:
                                 logger.debug(f"[ORPHAN] {_orph_sym} qty={_orph_qty} avg={_orph_avg} too large to close now")
                                 continue
+                            # FIX 2026-09-07 22:15: pull strike/option_type/expiry/underlying
+                            # from the position so paper_client._force_fill_market_like can
+                            # look up the real price from option_chains.json. If the position
+                            # doesn't have them (legacy positions, broker quirks), parse from
+                            # the symbol. This avoids the Rs.1.00 last-resort fallback that
+                            # produced 3 fake fills today (12:04 BNF PE orphan-close + 12:42
+                            # NIFTY PE orphan-close, all closing for Rs.1.00).
+                            _orph_strike = float(getattr(_orph, 'strike', 0) or 0)
+                            _orph_opt = getattr(_orph, 'option_type', None) or None
+                            _orph_exp = getattr(_orph, 'expiry', None) or None
+                            _orph_und = getattr(_orph, 'underlying', None) or None
+                            if not _orph_strike or not _orph_opt or not _orph_und:
+                                _p_und, _p_exp, _p_strike, _p_opt = _parse_option_symbol(_orph_sym)
+                                if not _orph_strike: _orph_strike = _p_strike
+                                if not _orph_opt: _orph_opt = _p_opt
+                                if not _orph_exp: _orph_exp = _p_exp
+                                if not _orph_und: _orph_und = _p_und
                             # Send force-close
                             _close_side = OrderSide.SELL if int(getattr(_orph, 'qty', 0)) > 0 else OrderSide.BUY
                             _close_ord = Order(
                                 symbol=_orph_sym, side=_close_side, qty=_orph_qty,
                                 order_type=OrderType.MARKET, product=ProductType.MIS,
                                 price=0.0, tag='ORPHAN-AUTO-CLOSE',
-                                exchange='NFO',
+                                exchange=getattr(_orph, 'exchange', 'NFO'),
+                                strike=_orph_strike, option_type=_orph_opt,
+                                expiry=_orph_exp, underlying=_orph_und,
                             )
                             _fr = broker.place_order(_close_ord)
                             if _fr.status in (OrderStatus.COMPLETE, OrderStatus.OPEN):
-                                logger.info(f"[ORPHAN] force-closed {_orph_sym} qty={_orph_qty} status={_fr.status.value if hasattr(_fr.status, 'value') else _fr.status}")
-                                alerter.send(f"♻️ [ORPHAN-AUTO-CLOSE] closed {_orph_sym} qty={_orph_qty} (brain-driven OPEN, not registered with order_mgr)")
+                                logger.info(f"[ORPHAN] force-closed {_orph_sym} qty={_orph_qty} status={_fr.status.value if hasattr(_fr.status, 'value') else _fr.status} fill_px={_fr.avg_fill_price}")
+                                alerter.send(f"♻️ [ORPHAN-AUTO-CLOSE] closed {_orph_sym} qty={_orph_qty} @ Rs.{_fr.avg_fill_price:.2f} (brain-driven OPEN, not registered with order_mgr)")
                         except Exception as _oc_err:
                             logger.warning(f"[ORPHAN] auto-close failed for {_orph_sym}: {_oc_err}")
                 # Cap is on STRATEGIES (open_trades), not on legs.

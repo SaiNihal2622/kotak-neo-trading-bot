@@ -124,13 +124,40 @@ class PaperClient(BrokerClient):
 
         Fallback chain (in order):
           0. FIX 2026-09-04 13:42: option_chains.json (live LTP from KotakProdFeed)
+             FIX 2026-09-07 22:15: parse strike/option_type/underlying from the order
+             symbol if the Order object didn't set them. Without this defensive parse,
+             brain-driven orphan-auto-close Orders fell through to Rs.1.00.
           1. Cached tick for the option symbol
           2. Order's limit price (if set)
           3. Order's expected_fill_price (if set)
           4. Underlying's last-known LTP (NIFTY/BANKNIFTY spot) — ATM option ≈ 0.5% of underlying
           5. Synthetic minimal price (Rs.1.00) — last resort, never skip a fill in paper mode
         """
+        import re as _re
         ref_price = 0.0
+
+        # FIX 2026-09-07 22:15: defensively recover strike/option_type/underlying
+        # from the symbol if the Order didn't carry them. This protects against
+        # any code path (orphan-auto-close, manual close) that constructs an Order
+        # with just `symbol=...` and forgets to set the option-metadata fields.
+        # NSE option symbol format: <UNDERLYING><DD><MON><YY><STRIKE><CE|PE>
+        # e.g. BANKNIFTY10SEP2657200PE  →  underlying=BANKNIFTY, expiry=10-SEP-26, strike=57200, opt=PE
+        _eff_strike = order.strike
+        _eff_opt = order.option_type
+        _eff_und = order.underlying
+        if (not _eff_strike or not _eff_opt) and order.symbol:
+            _m = _re.match(
+                r'^(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)'
+                r'(\d{2})([A-Z]{3})(\d{2})(\d+)(CE|PE)$',
+                order.symbol.upper()
+            )
+            if _m:
+                if not _eff_und:
+                    _eff_und = _m.group(1)
+                if not _eff_strike:
+                    _eff_strike = int(_m.group(5))
+                if not _eff_opt:
+                    _eff_opt = _m.group(6)
 
         # FIX 2026-09-04 13:42: step 0 — look up live option LTP from option_chains.json
         # This is the most accurate source for paper fills (matches what live trading would do).
@@ -142,7 +169,7 @@ class PaperClient(BrokerClient):
                     import json as _j
                     cd = _j.loads(cf.read_text(encoding="utf-8"))
                     strikes = cd.get("strikes", {})
-                    key = f"{int(order.strike)}_{order.option_type}" if order.strike and order.option_type else None
+                    key = f"{int(_eff_strike)}_{_eff_opt}" if _eff_strike and _eff_opt else None
                     if key and key in strikes:
                         lp = strikes[key].get("price", 0)
                         if lp and lp > 0:
@@ -169,7 +196,11 @@ class PaperClient(BrokerClient):
             # Fallback 4: derive from underlying's spot LTP. Most NIFTY/BANKNIFTY
             # weekly options trade in a Rs.5-200 band; ATM ≈ 0.5% of spot is a
             # reasonable mid-market estimate. This is a paper fill, not a quote.
-            underlying = (order.underlying or "").upper()
+            # FIX 2026-09-07 22:15: use _eff_und / _eff_strike / _eff_opt, which may
+            # have been parsed from the symbol by the defensive block above. Otherwise
+            # orphan-auto-close orders with no underlying would skip this branch and
+            # fall to the Rs.1.00 last-resort.
+            underlying = (_eff_und or "").upper()
             underlying_ltp = 0.0
             if underlying:
                 # Convention: NIFTY = NIFTY*, BANKNIFTY = BANKNIFTY*
@@ -178,16 +209,16 @@ class PaperClient(BrokerClient):
                         if t.ltp and t.ltp > 0:
                             underlying_ltp = t.ltp
                             break
-            if underlying_ltp > 0 and order.strike and order.option_type:
+            if underlying_ltp > 0 and _eff_strike and _eff_opt:
                 # BUG FIX 2026-08-26: previous version used `0.5% of spot` for ALL options
                 # of an underlying, ignoring strike. This made deep-OTM options fill at
                 # ATM prices (e.g. NIFTY 24150 PE filled at Rs.121 instead of ~Rs.0),
                 # distorting the condor close P&L. Now we compute intrinsic + time-value
                 # decay that is strike-aware.
-                if order.option_type.upper() == "CE":
-                    intrinsic = max(0.0, underlying_ltp - order.strike)
+                if _eff_opt.upper() == "CE":
+                    intrinsic = max(0.0, underlying_ltp - _eff_strike)
                 else:  # PE
-                    intrinsic = max(0.0, order.strike - underlying_ltp)
+                    intrinsic = max(0.0, _eff_strike - underlying_ltp)
                 # 0DTE vs normal expiry: 0DTE has much lower ATM time value, especially
                 # in the last 1-2 hours. Detect via order.expiry vs today.
                 from datetime import date as _date
@@ -209,13 +240,13 @@ class PaperClient(BrokerClient):
                 # For BNF strikes are wider, so scale the decay rate
                 if underlying == "BANKNIFTY":
                     decay_pts = decay_pts * 4  # 200 for 0DTE, 600 for weekly
-                distance = abs(underlying_ltp - order.strike)
+                distance = abs(underlying_ltp - _eff_strike)
                 time_value = atm_time_value * (0.5 ** (distance / decay_pts))
                 ref_price = round(intrinsic + time_value, 2)
                 logger.debug(
                     f"[PAPER] FORCE_FILL strike-aware ref for {order.order_id} "
-                    f"{order.symbol}: spot={underlying_ltp} strike={order.strike} "
-                    f"type={order.option_type} 0dte={_is_0dte} "
+                    f"{order.symbol}: spot={underlying_ltp} strike={_eff_strike} "
+                    f"type={_eff_opt} 0dte={_is_0dte} "
                     f"intrinsic={intrinsic:.2f} tv={time_value:.2f} -> ref={ref_price}"
                 )
             elif underlying_ltp > 0:
@@ -242,6 +273,17 @@ class PaperClient(BrokerClient):
         order.avg_fill_price = fill_price
         order.filled_qty = order.qty
         order.status = OrderStatus.COMPLETE
+        # FIX 2026-09-07 22:15: backfill the Order's option metadata so that
+        # downstream Position() creation carries strike/option_type/underlying/expiry.
+        # Without this, the Position object created from this Order would also lack
+        # those fields, and any subsequent close on that position would re-trigger
+        # the same fallback chain (and could re-fall to Rs.1.00).
+        if not order.strike and _eff_strike:
+            order.strike = _eff_strike
+        if not order.option_type and _eff_opt:
+            order.option_type = _eff_opt
+        if not order.underlying and _eff_und:
+            order.underlying = _eff_und
         order.filled_at = datetime.now(timezone.utc)
         self._apply_fill(order)
         logger.info(
