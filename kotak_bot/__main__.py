@@ -335,6 +335,52 @@ def run_paper() -> None:
     # ------- data source -------
     broker = build_broker(cfg)
     broker.connect()
+
+    # FIX 2026-09-07 22:45: inline trade_journal.jsonl writer. Before this,
+    # the only writer to trade_journal.jsonl was the EOD P&L evaluator at
+    # 15:30 IST, which only writes entries for positions still OPEN at EOD.
+    # The bot force-squares everything at 14:30, so the journal stayed empty
+    # even after 8 fills today. Now every fill fires this callback and we
+    # append a journal entry inline. The EOD reconstruction is a backstop
+    # in case any fills are missed (e.g. bot crash, or PaperClient reloaded
+    # from disk without the callback registered).
+    _JOURNAL_PATH = Path("data_cache/trade_journal.jsonl")
+
+    def _append_trade_journal(order, realized_delta):
+        """Inline trade_journal.jsonl writer. Fires on every paper fill.
+        Writes one entry per fill with the realized P&L delta. Idempotent
+        by order_id (we use order_id as trade_id prefix).
+        """
+        try:
+            entry = {
+                "trade_id": f"FILL-{order.order_id}",
+                "order_id": order.order_id,
+                "symbol": order.symbol,
+                "underlying": order.underlying or "",
+                "strike": order.strike or 0,
+                "option_type": order.option_type or "",
+                "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
+                "qty": order.filled_qty,
+                "avg_fill_price": round(order.avg_fill_price, 2),
+                "expected_fill_price": round(order.expected_fill_price, 2) if order.expected_fill_price else 0,
+                "tag": order.tag or "",
+                "realized_delta": round(realized_delta, 2),
+                "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+                "placed_at": order.placed_at.isoformat() if order.placed_at else "",
+                "filled_at": order.filled_at.isoformat() if order.filled_at else "",
+                "event": "FILL",
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            }
+            _JOURNAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with _JOURNAL_PATH.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, default=str) + "\n")
+        except Exception as _je:
+            logger.debug(f"inline trade_journal write failed (non-fatal): {_je}")
+
+    # Register the callback if the broker supports it (paper does, live may not)
+    if hasattr(broker, 'on_fill'):
+        broker.on_fill(_append_trade_journal)
+        logger.info("inline trade_journal callback registered on broker")
     feed_mode = cfg.get("data", {}).get("live_feed", "synthetic")
     neo_client_for_feed = None
     if feed_mode in ("kotak_ws", "live_uat"):

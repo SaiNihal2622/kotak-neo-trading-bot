@@ -65,6 +65,13 @@ class PaperClient(BrokerClient):
         self._positions: dict[str, Position] = {}
         self._ticks: dict[str, Tick] = {}
         self._tick_callbacks: list[Callable[[Tick], None]] = []
+        # FIX 2026-09-07 22:45: fill callbacks fire after every fill (open or close)
+        # with (order, realized_delta). Used by the bot to write trade_journal.jsonl
+        # inline instead of waiting for the 15:30 IST EOD P&L evaluator. Without
+        # this, today's fills never made it into the journal because the EOD
+        # evaluator only handles positions still OPEN at 15:30 — and the bot
+        # force-squares everything at 14:30.
+        self._fill_callbacks: list[Callable[[Order, float], None]] = []
         self._cash = starting_capital
         self._realized_pnl = 0.0
         self._connected = False
@@ -357,6 +364,15 @@ class PaperClient(BrokerClient):
     def on_tick(self, callback: Callable[[Tick], None]) -> None:
         self._tick_callbacks.append(callback)
 
+    def on_fill(self, callback: Callable[["Order", float], None]) -> None:
+        """Register a callback fired after every fill. The callback receives
+        (order, realized_delta) where realized_delta is the realized P&L
+        contribution from this fill (0 for opens, +/-value for closes).
+        Callbacks should be fast and not block; exceptions are caught and
+        logged. Used to write trade_journal.jsonl inline.
+        """
+        self._fill_callbacks.append(callback)
+
     # ------- market data injection (used by data/live_feed) -------
     def inject_tick(self, tick: Tick) -> None:
         """Feed a real tick into the paper book. Public for the live feed."""
@@ -441,6 +457,10 @@ class PaperClient(BrokerClient):
     def _apply_fill(self, order: Order) -> None:
         pos = self._positions.get(order.symbol)
         fill_value = order.filled_qty * order.avg_fill_price
+        # FIX 2026-09-07 22:45: capture realized_pnl before so we can compute
+        # the realized_delta from this fill. We fire the fill callbacks (used
+        # for inline trade_journal.jsonl writes) after the position update.
+        _realized_before = self._realized_pnl
         if order.side == OrderSide.BUY:
             self._cash -= fill_value
             if pos:
@@ -516,6 +536,15 @@ class PaperClient(BrokerClient):
                     underlying=order.underlying,
                     entry_time=datetime.now(timezone.utc),
                 )
+        # FIX 2026-09-07 22:45: fire fill callbacks so the bot can write
+        # trade_journal.jsonl inline. The delta is positive for gains, negative
+        # for losses, 0 for pure opens. Callbacks must not raise.
+        _realized_delta = self._realized_pnl - _realized_before
+        for cb in list(self._fill_callbacks):
+            try:
+                cb(order, _realized_delta)
+            except Exception as e:
+                logger.exception(f"fill callback error: {e}")
 
     # ------- persistence -------
     def _save_state(self) -> None:
