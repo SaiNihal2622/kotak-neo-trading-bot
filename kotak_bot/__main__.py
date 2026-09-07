@@ -1334,7 +1334,16 @@ def run_paper() -> None:
                                     # was rejecting most NIFTY verticals because a 1-lot debit + stop > Rs.1,000.
                                     # New: 2% per trade (Rs.2,000), 8% per position (allows scaling into confluence).
                                     _max_positions = 8
-                                    _max_per_trade_pct = 0.02  # 2% of cash per trade (FIX 2026-09-04: was 1%)
+                                    # FIX 2026-09-07 12:10: bumped per-trade cap from 2% to 5%.
+                                    # The brain sends positions sized for 5% per-trade
+                                    # (matching the position cap). At 2%, the brain's
+                                    # normal-sized trades were getting rejected with
+                                    # "per-trade cap 2.0% of cash" — losing the trade
+                                    # while the brain was correctly identifying the setup.
+                                    # Position cap (5%) is still the hard limit; this
+                                    # just makes the per-trade limit match the position
+                                    # limit so a single position can use the full cap.
+                                    _max_per_trade_pct = 0.05  # 5% of cash per trade (was 2%)
                                     _max_position_pct = 0.08  # 8% of cash per position (FIX 2026-09-04: was 5%)
                                     # Confluence scaling: when 3+ confirming signals align, allow up to 8% per position.
                                     _confluence_threshold = 3
