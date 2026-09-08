@@ -1344,6 +1344,123 @@ def run_paper() -> None:
                             import time as _t
                             _t.sleep(0.5)
                             sys.exit(0)
+                        # FIX 2026-09-08 12:58: RESET_PAPER_STATE action — atomic
+                        # "write clean state + restart" combo. Solves the race
+                        # where the user-context writes a clean state but the
+                        # running bot's tick-driven _save_state overwrites it
+                        # with the in-memory state on the next tick. By
+                        # having the bot itself write + restart in one atomic
+                        # step, the new NSSM-spawned bot reads the clean file
+                        # after the old bot has already exited.
+                        # Required fields in force-action:
+                        #   action: "RESET_PAPER_STATE"
+                        #   starting_capital: 100000.0 (default if absent)
+                        #   close_open_positions: true (close all in-broker
+                        #     positions at 0, mark as closed in journal)
+                        elif _fa_action == "RESET_PAPER_STATE":
+                            try:
+                                import uuid as _uuid_reset
+                                _project_root = Path(__file__).resolve().parent.parent
+                                _starting_capital = float(_fa.get("starting_capital", 100000.0))
+                                _close_open = bool(_fa.get("close_open_positions", True))
+                                # Build clean paper state
+                                _clean_orders = {}
+                                _clean_positions = {}
+                                # If close_open_positions, also add close orders for
+                                # any currently open positions (at LTP=0 since we
+                                # don't have a live quote at this point; the broker
+                                # will already have these positions closed before
+                                # the next session starts in 99% of cases)
+                                if _close_open:
+                                    try:
+                                        _current = broker.get_positions() if hasattr(broker, 'get_positions') else []
+                                        for _pos in _current:
+                                            _psym = getattr(_pos, 'symbol', None)
+                                            _pqty = int(getattr(_pos, 'qty', 0) or 0)
+                                            if not _psym or _pqty == 0:
+                                                continue
+                                            _close_side = "SELL" if _pqty > 0 else "BUY"
+                                            _close_id = f"PAPER-RESET-{_uuid_reset.uuid4().hex[:8].upper()}"
+                                            _clean_orders[_close_id] = {
+                                                "order_id": _close_id,
+                                                "symbol": _psym,
+                                                "side": _close_side,
+                                                "qty": abs(_pqty),
+                                                "filled_qty": abs(_pqty),
+                                                "avg_fill_price": 0.0,
+                                                "order_type": "MARKET",
+                                                "product": "MIS",
+                                                "price": 0.0,
+                                                "trigger_price": 0.0,
+                                                "tag": "RESET-CLOSE-AT-INTRINSIC",
+                                                "exchange": getattr(_pos, 'exchange', 'NFO'),
+                                                "strike": getattr(_pos, 'strike', 0),
+                                                "option_type": getattr(_pos, 'option_type', None),
+                                                "expiry": getattr(_pos, 'expiry', None),
+                                                "underlying": getattr(_pos, 'underlying', None),
+                                                "status": "complete",
+                                                "placed_at": datetime.now(timezone.utc).isoformat(),
+                                                "filled_at": datetime.now(timezone.utc).isoformat(),
+                                                "rejection_reason": "",
+                                                "expected_fill_price": 0.0,
+                                            }
+                                    except Exception as _pos_err:
+                                        logger.warning(f"reset: could not enumerate positions: {_pos_err}")
+
+                                _clean_state = {
+                                    "cash": _starting_capital,
+                                    "realized_pnl": 0.0,
+                                    "orders": _clean_orders,
+                                    "positions": _clean_positions,
+                                    "_reset_marker": {
+                                        "reset_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                        "reason": _fa_reason[:200],
+                                        "starting_capital": _starting_capital,
+                                        "closed_positions_count": len(_clean_orders),
+                                    }
+                                }
+                                # Backup current state
+                                _ps_path = Path("data_cache") / "paper_state.json"
+                                if _ps_path.exists():
+                                    _backup = Path("data_cache") / f"paper_state_pre_reset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                                    _backup.write_bytes(_ps_path.read_bytes())
+                                    logger.info(f"[RESET] backed up to {_backup.name}")
+                                # Write clean state — try 3 times in case of file lock
+                                _written = False
+                                for _attempt in range(3):
+                                    try:
+                                        _ps_path.write_text(
+                                            json.dumps(_clean_state, indent=2, default=str, ensure_ascii=False),
+                                            encoding="utf-8"
+                                        )
+                                        _written = True
+                                        break
+                                    except Exception as _werr:
+                                        logger.warning(f"[RESET] write attempt {_attempt+1} failed: {_werr}")
+                                        import time as _t_w
+                                        _t_w.sleep(0.5)
+                                if not _written:
+                                    logger.error("[RESET] FAILED to write clean paper_state.json after 3 attempts")
+                                else:
+                                    logger.info(f"[RESET] wrote clean paper_state.json: cash={_starting_capital:.0f}, realized=0, orders={len(_clean_orders)}, positions=0")
+                                # Send alert
+                                try:
+                                    alerter.send(
+                                        f"♻️ [RESET] paper state reset by bot: cash=Rs.{_starting_capital:,.0f}, "
+                                        f"realized=Rs.0, closed {len(_clean_orders)} positions. "
+                                        f"reason={_fa_reason[:120]}"
+                                    )
+                                except Exception:
+                                    pass
+                                # Now restart ourselves so NSSM spawns a fresh bot
+                                # that reads the clean state. Sleep briefly so the
+                                # alert sends + file flush completes.
+                                import time as _t
+                                _t.sleep(1.0)
+                                logger.warning(f"[SELF-RESTART] after RESET_PAPER_STATE cycle={cycle_counter}")
+                                sys.exit(0)
+                            except Exception as _reset_err:
+                                logger.warning(f"RESET_PAPER_STATE action failed: {_reset_err}")
             except Exception as _fa_err:
                 # WARNING (not debug) so this class of bug surfaces. The previous
                 # silent-debug version masked a NameError on _read_json for the
