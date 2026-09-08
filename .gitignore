@@ -110,3 +110,23 @@ start_executor.ps1
 start_orchestrator.ps1
 rotate_logs.ps1
 notify_monday_ready.py
+
+# FIX 2026-09-09 01:30: 24/7 quant firm runtime state files
+# (LLM brain writes these as part of normal operation;
+# they should not be committed to git)
+data_cache/_skip_day.json
+data_cache/_ai_skip_force_square.json
+data_cache/_skip_save.json
+data_cache/_reset_marker.json
+data_cache/news_feed.txt
+data_cache/news_feed_meta.json
+data_cache/fii_dii.json
+data_cache/fii_dii_manual.json
+data_cache/predictive_signals.json
+data_cache/grok_desk_state.json
+data_cache/grok_desk_history.jsonl
+data_cache/quant_service_restart.json
+data_cache/_tmp_update_*.py
+data_cache/*.bak
+data_cache/*.broken_backup
+data_cache/_archive_*.py
