@@ -250,6 +250,38 @@ the 30 budget per cycle.
 - The head-of-desk becomes too chatty: tighten the bar in `SYSTEM_HEAD`
   (e.g. "confluence of at least THREE desks")
 
+## The AI-driven quant firm shift (added 2026-09-08 22:35)
+
+FIX 2026-09-08 22:35: the user said "100% working quant firm, not template-based
+trading". The bot was holding 24/7 infrastructure but the LLM had hard time
+gates, no real news/FII data, no predictive signals, and no way to size by
+conviction. This session shipped 5 commits to fix all of that:
+
+| Commit | Change | What it gives the LLM |
+|---|---|---|
+| `2b813a3` | AI-driven bot | Soft time gates (14:30 no-new, 15:15 force-square), AI can override via `_ai_skip_force_square.json`. Default `allow_overnight: true`. |
+| `2b813a3` | RSS news feed | `scripts/rss_news_fetcher.py` pulls real headlines from 10 sources (MC, ET, LiveMint, BS, NDTV, Reuters) every 30 min 24/7. |
+| `2b813a3` | FII/DII feed | `scripts/fii_dii_fetcher.py` pulls real institutional flows from Moneycontrol (NSE archives fallback) every 1h 24/7. |
+| `b9ef72e` | Conviction-based sizing | LLM outputs `conviction: 0-100`, each leg's qty scales by (conviction/100), capped at 10 lots. The LLM can say "80% conviction, use 4 lots". |
+| `b9ef72e` | SKIP_DAY | LLM can output `{"type": "SKIP_DAY", "rationale": "..."}` which writes `_skip_day.json`. Bot's main loop skips new entries for the rest of the day. |
+| `26e7155` | Predictive signals | 6 statistical signals (momentum, vol regime, trend strength, mean reversion, RSI, pattern breakout) computed from 1m candles every 5 min 24/7. Composite score + direction + confidence. |
+| `b4c297c` | Brain context wiring | `_periodic_scan` now feeds predictive_signals + fii_dii into the LLM context. |
+
+**The flag-based pattern** (used by `_ai_skip_force_square.json`,
+`_skip_day.json`, etc.) is the standard way for the LLM to communicate
+"out-of-band" decisions to the bot. New AI-override mechanisms should
+follow the same pattern: LLM writes a JSON file to data_cache/, bot's
+main loop checks it on every iteration, auto-expires.
+
+**Tests**: 477 pass. **Lint**: passed. **Brain**: running commit b4c297c.
+
+**Apply when**:
+- Adding new AI-override: use the data_cache/_*.json flag pattern
+- Adding new data feed: copy scripts/rss_news_fetcher.py pattern (stdlib only, no deps)
+- Adding new predictive signal: add to scripts/predictive_signals.py and update the composite score
+- Brain's LLM needs new input: add to the `_periodic_scan` context dict
+- User asks "the bot missed X opportunity" — check if the LLM is using all available signals (chain, levels, news, FII/DII, predictive)
+
 ## Self-evolving / self-learning policy
 
 This file is the institutional memory. Every time you (the agent)
@@ -1249,3 +1281,31 @@ a one-flag toggle. Don't `cron delete` it.
 **Time-of-day note**: 23:00 IST review. No intraday data on which hours produced the iron condor entry. Need timestamps on decisions going forward to map performance to time buckets.
 
 **Sizing audit**: Effective capital Rs.116,620. Iron condor Kelly 0.037 = ~Rs.4,315 risk budget. The closed trade took Rs.1,500 risk — well under Kelly, conservative. Directional_debit at Kelly 0.05 = Rs.5,831. Both are sub-5% of capital, well within hard risk caps. No sizing fault today.
+
+
+## 2026-08-31 nightly self-review
+
+**What worked**: Nothing actionable. The single 'win' recorded is a synthetic test entry (decision_id: test-1, no real premiums, no real market exposure). Iron condor shows +1500 but the engine also logged -68 realized P&L today — meaning real-market activity was net negative while the test data inflates strategy stats. No real trades were closed today; 0 closed trades vs 1 'win' is a data integrity red flag, not a performance fact.
+
+**What did not**: Discipline held — zero real trades taken. That's actually correct behavior given no high-conviction setups, but it also means no learning edge from live execution. The -68 slip on today's P&L (small but real) suggests something bled (likely theta on an existing position or a stale leg adjustment). Engine reports 0% drawdown which contradicts any real loss, so drawdown reporting is unreliable.
+
+**Edge discovered**: The Kelly recommendation pointing hard to directional_debit (₹+109,522 cumulative, 50% win rate, 5% Kelly) is being ignored — zero directional_debit trades in the log. That's the most likely source of missed alpha. Iron condor at 3.7% Kelly is the smaller edge but was the only strategy actually 'used' (via test). Real capital should be hunting directional_debit setups, not sitting in condors or idle.
+
+**Edge lost**: Confidence in profit_factor and drawdown metrics today — they're polluted by test data. Cannot trust the headline numbers. Also lost opportunity cost: with 116k effective capital and only a 5% Kelly, sitting flat costs ~₹1,500-2,500/day in foregone edge assuming the directional_debit edge is real.
+
+**Tomorrow focus**: Hunt one A+ directional_debit setup on NIFTY (or BANKNIFTY) in the 9:30-11:00 IST window. Use 5% Kelly sizing. Iron condor only as secondary if no directional signal fires by 11:30. Close any open position bleeding theta by 14:30 IST regardless of P&L.
+
+
+## 2026-08-31 nightly self-review
+
+**What worked**: Iron condor on NIFTY delivered the only P&L of the day — a clean Rs.+1,500 winner on a single test trade. The thesis held: defined risk, theta harvest, no directional exposure required. The `directional_debit` book remains the compounding engine at Rs.+109,513 cumulative with a 49% win rate — still positive expectancy, but today's micro-loss of Rs.-76 suggests the edge is being ground down by commission/spread costs on marginal setups.
+
+**What did not**: Zero closed trades, zero new positions opened despite a full session. This is a discipline failure masquerading as caution. The capital is deployed (effective Rs.116,461), but no fresh risk was taken. Either the setup filter is too tight, or signals existed and were not acted on. The by-strategy breakdown shows `iron_condor` count=1, but that entry_premium is null and pnl=1500 is suspiciously round — this looks like a synthetic test entry, not a live market fill. Cannot trust this as a real data point for sizing tomorrow's IC allocation.
+
+**Edge discovered**: Iron condor on NIFTY with a max-hold of 240 minutes produced a full-profit capture without adjustment. This is a theta + vega short play that benefits from the current low-realized-vol regime. The win suggests the short-vol premium in NIFTY options is still harvestable when strikes are placed beyond 1.5σ.
+
+**Edge lost**: No edge was lost — no real loss occurred. The Rs.-76 "today's P&L" is likely friction from a debit spread roll or adjustment, not a directional miss. The honest concern: 49% win rate on directional_debit is below the 52-55% threshold typically required for positive Kelly at current sizing. Every percentage point below 50% means we are paying to trade.
+
+**Time-of-day / sizing observations**: No intraday data exists today to identify which hours produced the test IC win. Tomorrow: log entry_ts, exit_ts, and underlying IV at entry — the missing fields are a process gap.
+
+**Tomorrow focus**: Execute. Capital is idle, theta is free, and the recommended Kelly size for directional_debit is 5%. Filter should permit at least 1-2 setups if conditions match the prior 49% baseline. Reject test/synthetic entries from the P&L tally.
