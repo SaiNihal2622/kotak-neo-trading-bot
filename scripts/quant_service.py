@@ -1572,6 +1572,8 @@ last_dashboard_refresh_ts = 0       # 5 min during market hours: regenerates dat
 last_periodic_scan_ts = 0           # 90 min during market hours: forced LLM scan + 3-line justification (transparency rule)
 last_overnight_research_ts = 0      # 2h when NSE closed (24/7): brain logs hypothetical signals + pre-market plans
 last_global_check_ts = 0            # 5 min 24/7: pull US/Asia/Europe/gold/oil/crypto for LLM global context awareness
+last_grok_desk_ts = 0               # 15 min during market hours: 6-role Grok Bot Desk (parallel 2nd-opinion, runs grok_desk.py)
+last_grok_desk_date = None          # one-shot guard so we don't fire on the boundary
 
 # --- LLM call thread tracking (for non-blocking async LLM calls) ---
 _LLM_THREAD = None           # type: ignore  # the in-flight Thread object, or None
@@ -2108,6 +2110,7 @@ def watch_loop():
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
     global last_candle_refresh_ts, last_alpha_refresh_ts, last_chain_refresh_ts, last_dashboard_refresh_ts
     global last_periodic_scan_ts, last_global_check_ts
+    global last_grok_desk_ts, last_grok_desk_date
     # FIX 2026-09-04 23:48: missing global declaration for last_overnight_research_ts
     # caused UnboundLocalError on the use at line 2363 (NSE closed check). 6th
     # shadow-import-style bug — different variable each time, same root cause:
@@ -2253,6 +2256,23 @@ def watch_loop():
                         })
                     except Exception as e:
                         log(f"periodic-scan-err: {e}")
+                # FIX 2026-09-08 16:35: GROK BOT DESK — 6-role LLM desk (parallel 2nd opinion).
+                # Runs every 15 min during market hours (Mon-Fri 09:00-15:30 IST).
+                # Inspired by @MSBIntel's GROK BOT Desk PDF. Uses our existing
+                # minimax M2.7-highspeed (the same model llm_judge.py uses). Writes
+                # data_cache/grok_desk_state.json + history, alerts Telegram ONLY when
+                # the head-of-desk speaks (default output is QUIET DAY). This is
+                # fully autonomous — no manual invocation required.
+                # Cadence: every 15 min matches the original Grok Bot guide.
+                # 6 LLM calls × ~30s ≈ 30s total per cycle. Cost: ~$0.50/day.
+                if is_market_hours() and datetime.now().timestamp() - last_grok_desk_ts > 900:
+                    last_grok_desk_ts = datetime.now().timestamp()
+                    _scheduled_subprocess(
+                        "scripts/run_grok_desk.py",
+                        "grok-desk",
+                        timeout=180,
+                        args=[],  # default: save state, send alert if speaks
+                    )
             # Reconcile outcomes every 5 min (matches open decisions against
             # current positions; marks closed ones with breakeven P&L).
             if datetime.now().timestamp() - last_reconcile_ts > 300:
