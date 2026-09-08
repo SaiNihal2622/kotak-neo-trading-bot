@@ -285,6 +285,52 @@ def _position_summary() -> str:
     return "\n".join(lines)
 
 
+def _predictive_signals_summary() -> str:
+    """Get the 6 statistical predictive signals for the brain's context.
+    These are computed from 1m candles: momentum, vol regime, trend
+    strength, mean reversion, RSI, pattern breakout. The composite
+    score is direction + confidence."""
+    d = _load_json(DCACHE / "predictive_signals.json")
+    if not d:
+        return "Predictive signals not available yet (run scripts/predictive_signals.py)"
+    syms = d.get("symbols", {})
+    if not syms:
+        return "Predictive signals empty"
+    lines = ["PREDICTIVE SIGNALS (1m candle-based, 24/7):"]
+    for sym, s in syms.items():
+        if "error" in s:
+            lines.append(f"  {sym}: {s['error']}")
+            continue
+        d_ = s.get("DIRECTION", "?")
+        c_ = s.get("CONFIDENCE", 0)
+        comp = s.get("COMPOSITE_SCORE", 0)
+        rsi = s.get("RSI_14", 50)
+        vol = s.get("VOLATILITY_REGIME", 1.0)
+        trend = s.get("TREND_STRENGTH", 0)
+        pb = s.get("PATTERN_BREAKOUT_position", 0.5)
+        lines.append(
+            f"  {sym}: {d_} (conf={c_:.2f}, composite={comp:+.2f}) | "
+            f"RSI={rsi:.0f} vol_regime={vol:.2f} trend={trend:.2f} "
+            f"breakout_pos={pb:.2f}"
+        )
+    return "\n".join(lines)
+    d = _load_json(DCACHE / "paper_state.json")
+    if not d:
+        return "no paper state"
+    cash = d.get("cash", 0)
+    realized = d.get("realized_pnl", 0)
+    positions = d.get("positions", {})
+    open_count = len([p for p in positions.values() if p.get("qty", 0) != 0])
+    lines = [f"CASH: Rs.{cash:,.2f}  REALIZED_PNL: Rs.{realized:+,.2f}  OPEN_POS: {open_count}"]
+    for sym, p in list(positions.items())[:5]:
+        if p.get("qty", 0) != 0:
+            lines.append(
+                f"  {sym}: qty={p.get('qty', 0)}  avg={p.get('avg_price', 0):.2f}  "
+                f"ltp={p.get('ltp', 0):.2f}  pnl={p.get('qty', 0) * (p.get('ltp', 0) - p.get('avg_price', 0)):+,.2f}"
+            )
+    return "\n".join(lines)
+
+
 # ----- LLM call -----
 def _call_minimax(system: str, user: str, max_tokens: int = 400, timeout: int = 30) -> str:
     """Call minimax M2.7-highspeed via Anthropic-compatible Messages API.
@@ -348,11 +394,14 @@ def run_scanner() -> str:
 
 def run_hunter() -> str:
     user = (
-        "Spot and key levels for NIFTY/BANKNIFTY:\n\n"
+        "Spot, key levels, and predictive signals for NIFTY/BANKNIFTY:\n\n"
         + _levels_summary() + "\n\n"
+        + _predictive_signals_summary() + "\n\n"
         + _opt_chain_summary("NIFTY")[:600] + "\n\n"
         + "For each underlying: is there a defined setup? State the level that "
-        + "makes it valid and the level that kills it. If no setup, say NO SETUP."
+        + "makes it valid and the level that kills it. If no setup, say NO SETUP. "
+        + "Factor in the predictive signals — a BULLISH signal with 0.7+ confidence "
+        + "is a stronger setup than a NEUTRAL signal."
     )
     return _call_minimax(SYSTEM_HUNTER, user, max_tokens=400)
 
@@ -381,14 +430,17 @@ def run_whales() -> str:
 
 def run_risk(scanner: str, hunter: str, news: str, whales: str) -> str:
     user = (
-        "Current positions and the proposed ideas from the other desks:\n\n"
+        "Current positions, predictive signals, and the proposed ideas from the other desks:\n\n"
         f"POSITIONS:\n{_position_summary()}\n\n"
+        f"PREDICTIVE SIGNALS:\n{_predictive_signals_summary()}\n\n"
         f"SCANNER: {scanner}\n\n"
         f"HUNTER: {hunter}\n\n"
         f"NEWS: {news}\n\n"
         f"WHALES: {whales}\n\n"
         "Output: APPROVED or REJECTED with the rule that decided it. "
-        "If multiple ideas, list each as APPROVED/REJECTED. No compromise."
+        "If multiple ideas, list each as APPROVED/REJECTED. No compromise. "
+        "Factor in the predictive signals — a high-confidence BULLISH signal "
+        "reduces risk; a high-vol regime increases risk."
     )
     return _call_minimax(SYSTEM_RISK, user, max_tokens=300)
 

@@ -1640,6 +1640,7 @@ last_grok_desk_date = None          # one-shot guard so we don't fire on the bou
 last_rss_news_ts = 0                # 30 min 24/7: real news from Moneycontrol/ET/LiveMint/BS RSS feeds
 last_rss_news_date = None           # one-shot guard
 last_fii_dii_ts = 0                 # 1h 24/7: real FII/DII flows from Moneycontrol (NSE archives fallback)
+last_predictive_signals_ts = 0      # 5 min 24/7: 6 statistical predictive signals (momentum, vol regime, trend, RSI, etc)
 
 # --- LLM call thread tracking (for non-blocking async LLM calls) ---
 _LLM_THREAD = None           # type: ignore  # the in-flight Thread object, or None
@@ -2179,6 +2180,7 @@ def watch_loop():
     global last_grok_desk_ts, last_grok_desk_date
     global last_rss_news_ts, last_rss_news_date
     global last_fii_dii_ts
+    global last_predictive_signals_ts
     # FIX 2026-09-04 23:48: missing global declaration for last_overnight_research_ts
     # caused UnboundLocalError on the use at line 2363 (NSE closed check). 6th
     # shadow-import-style bug — different variable each time, same root cause:
@@ -2337,6 +2339,14 @@ def watch_loop():
                 if datetime.now().timestamp() - last_fii_dii_ts > 3600:
                     last_fii_dii_ts = datetime.now().timestamp()
                     _scheduled_subprocess("scripts/fii_dii_fetcher.py", "fii-dii", timeout=60)
+                # FIX 2026-09-08 22:55: predictive signals every 5 min (24/7). 6
+                # statistical signals from the existing 1m candles: momentum,
+                # vol regime, trend strength, mean reversion, RSI, pattern
+                # breakout. Composite score is direction + confidence. The
+                # brain's decision context now includes these.
+                if datetime.now().timestamp() - last_predictive_signals_ts > 300:
+                    last_predictive_signals_ts = datetime.now().timestamp()
+                    _scheduled_subprocess("scripts/predictive_signals.py", "predictive", timeout=60)
                 # FIX 2026-09-08 16:35: GROK BOT DESK — 6-role LLM desk (parallel 2nd opinion).
                 # FIX 2026-09-08 22:35: now runs 24/7, not just market hours.
                 # During NSE hours (09:15-15:30 Mon-Fri): the desk provides a
