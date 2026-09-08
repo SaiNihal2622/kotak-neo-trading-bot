@@ -204,6 +204,52 @@ No chat-spam, full coverage.
    capital, paper P&L positive for N days). Currently all 4 are not
    satisfied.
 
+## The Grok Bot Desk (6-role LLM system) — added 2026-09-08
+
+Inspired by @MSBIntel's "GROK BOT Desk" PDF guide (4 pages, 6 role prompts
+shared by the user). The original uses Grok-4-fast (xAI); we use the
+same architecture with our existing **minimax M2.7-highspeed** provider
+(already configured in `kotak_bot/signals/llm_judge.py`).
+
+**Files**:
+- `scripts/grok_desk.py` — the 6-role module (scanner/hunter/news/whales/risk/head)
+- `scripts/run_grok_desk.py` — CLI entry: `python scripts/run_grok_desk.py [--loop 900] [--dry-run]`
+- `tests/test_grok_desk.py` — 15 tests, including a live LLM smoke test
+- `data_cache/grok_desk_state.json` — last full desk output
+- `data_cache/grok_desk_history.jsonl` — append-only log
+
+**The 6 roles** (adapted for Indian NIFTY/BNF weekly options):
+- 01 SCANNER: unusual OI/volume/IV in NIFTY/BNF option chain
+- 02 HUNTER: range break / retest / failed move on NIFTY/BNF
+- 03 NEWS: filter RBI / FII-DII / US mkt / INR / crude headlines
+- 04 WHALES: FII/DII flows, OI build-up, block deals
+- 05 RISK: 5% per trade, 6-cap, no adding losers, no red-day trading
+- 06 HEAD: speak only if 2+ roles agree, default = "QUIET DAY"
+
+**Central design principle** (from the original guide):
+> The magic in the reel is not the bots. It is the silence.
+> QUIET DAY is the default. When the phone buzzes, it means two desks
+> agreed and risk signed off.
+
+**This is a parallel module**, not a replacement for the existing LLM
+brain in `scripts/quant_service.py`. The Grok Desk provides an
+independent second opinion; alerts go to a separate Telegram channel
+(no spam from the brain's main flow).
+
+**When it runs**: 6 LLM calls per cycle, ~30s total latency. Use
+`--loop 900` for a 15-minute cadence (matches the original guide).
+The bot's rate limit is 30 calls/min, so a 15-min cadence uses 6 of
+the 30 budget per cycle.
+
+**Apply when**:
+- The user asks for "second opinion" / "head of desk" / "desk view"
+- A new confluence source is added (e.g. news API): wire it into
+  `_news_summary()` or `_oi_summary()` in `grok_desk.py`
+- A new risk rule is added: update `SYSTEM_RISK` and `_call_minimax`
+  call sites stay the same
+- The head-of-desk becomes too chatty: tighten the bar in `SYSTEM_HEAD`
+  (e.g. "confluence of at least THREE desks")
+
 ## Self-evolving / self-learning policy
 
 This file is the institutional memory. Every time you (the agent)
@@ -1186,3 +1232,20 @@ a one-flag toggle. Don't `cron delete` it.
 - The 3 fake Rs.1.00 fills on 2026-09-07 are in paper_state.json as the orphan-auto-close orders with vg_fill_price=1.0. They CANNOT be retroactively corrected — they're baked into the bot's _realized_pnl carryover. Honest P&L for that day is unknowable from the available data.
 - Going forward, the inline _append_trade_journal callback will record every fill with the actual vg_fill_price (including the option_chains.json expected_fill_price), so future days' P&L will be auditable end-to-end.
 
+
+
+## 2026-08-31 nightly self-review
+
+**What worked**: Iron condor on NIFTY closed at full premium capture (Rs.+1,500, 100% win on the single trade). Position was held to a clean expiry-style resolution rather than chased for early exit — this is the right instinct for non-directional structures where theta is the entire edge. Capital is now Rs.116,620 with Rs.+16,620 compounded (+16.6% over the book). Today's P&L of Rs.+3,964 vs the one closed trade's Rs.+1,500 implies ~Rs.+2,464 came from another source (likely an open directional_debit position still marking to market, or a phantom credit). Flag this: the numbers don't reconcile to a single closed trade. Audit the open book before tomorrow's open.
+
+**What did not**: Zero independent decision-making today. The closed iron condor is tagged "test-1" in the decision log — this is a synthetic/paper entry, not a signal-driven trade. I have no valid sample size for any edge claim today. Profit engine's recommendation to focus on directional_debit (₹+109,603 cumulative, 61% win, Kelly 5%) is based on historical data, not today's behavior. Today's silence on directional_debit is itself a data point: either the setup filter blocked everything (good — discipline) or signal generation was offline (bad — silent failure mode).
+
+**Edge discovered**: None new today. Confirmation bias risk: the engine's recency weighting on directional_debit is loud; I must not over-rotate toward it just because the number is big. Iron condor at 100% today is one data point, not a strategy.
+
+**Edge lost**: Unknown. With n=1 closed, nothing was lost — but I also learned nothing. The day is a wash statistically.
+
+**Tomorrow focus**: 1) Reconcile the Rs.+2,464 P&L gap before 09:15 IST. 2) If signal pipeline is live, expect to take directional_debit per Kelly 5% (Rs.5,831 max risk per position). 3) If no setups trigger, do not force trades — zero-trade days are acceptable when the filter is honest. 4) Tag every decision with real rationale, not "test".
+
+**Time-of-day note**: 23:00 IST review. No intraday data on which hours produced the iron condor entry. Need timestamps on decisions going forward to map performance to time buckets.
+
+**Sizing audit**: Effective capital Rs.116,620. Iron condor Kelly 0.037 = ~Rs.4,315 risk budget. The closed trade took Rs.1,500 risk — well under Kelly, conservative. Directional_debit at Kelly 0.05 = Rs.5,831. Both are sub-5% of capital, well within hard risk caps. No sizing fault today.
