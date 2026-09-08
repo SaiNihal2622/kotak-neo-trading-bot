@@ -1975,6 +1975,28 @@ def run_paper() -> None:
                 if open_trades:
                     closed = order_mgr.square_off_all(reason="eod_square_off")
                     logger.info(f"Squared off {closed} trades at EOD")
+            # 2a) FIX 2026-09-09 00:56: CATASTROPHIC DRAWDOWN SAFETY NET.
+            # UNLEASHED mode (no caps). The ONLY remaining hard limit:
+            # if cumulative drawdown exceeds 50% of starting capital,
+            # auto-pause the bot. The user can resume via Telegram.
+            try:
+                _ps = broker.get_paper_state() if hasattr(broker, 'get_paper_state') else None
+                if _ps:
+                    _cash = _ps.get("cash", 0)
+                    _start = 100_000.0
+                    _dd_pct = max(0.0, (_start - _cash) / _start * 100.0)
+                    if _dd_pct >= 50.0:
+                        logger.error(f"[MAX-DRAWDOWN] drawdown={_dd_pct:.1f}% >= 50% — AUTO-PAUSED. Resume via Telegram /resume.")
+                        alerter.send(f"🚨 [MAX-DRAWDOWN] bot auto-paused at drawdown={_dd_pct:.1f}%. Resume via Telegram.")
+                        # set a flag so the rest of the main loop doesn't run
+                        # by raising an exception that the catch-all below
+                        # converts into a continue-with-sleep
+                        raise SystemExit("max-drawdown auto-pause")
+            except SystemExit:
+                time.sleep(60)
+                continue
+            except Exception as _dd_err:
+                logger.debug(f"max-drawdown check error: {_dd_err}")
             # 2b) INTRADAY SAFETY: force square-off by force_square_off_time
             # (default 14:30 — 60 min before EOD, so all risk is closed well before close)
             # FIX 2026-09-08 22:35: AI-overridable. The LLM brain can write

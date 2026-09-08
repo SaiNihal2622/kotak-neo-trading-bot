@@ -129,8 +129,10 @@ def test_conviction_scales_qty_with_min_1_lot():
             quant_service.datetime = original_datetime
 
 
-def test_conviction_max_10_lot_cap_still_applies():
-    """The 10-lot hard cap from 2026-09-02 still applies even with high conviction."""
+def test_conviction_no_upper_cap_in_unleashed_mode():
+    """FIX 2026-09-09 00:56: 10-lot cap REMOVED. conviction=100 + qty=20 → 20.
+    The LLM is the sole risk manager. The only safety net is the
+    max-drawdown auto-pause (50% threshold) in settings.yaml."""
     from scripts import quant_service
     from datetime import datetime, timezone, timedelta
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -151,7 +153,7 @@ def test_conviction_max_10_lot_cap_still_applies():
         quant_service.datetime = FakeDatetime
         quant_service.log = lambda x: None
         try:
-            # Decision: conviction=100, qty=20 → scaled to 10 (cap)
+            # Decision: conviction=100, qty=20 → 20 (no cap)
             decision = {
                 "type": "OPEN",
                 "underlying": "NIFTY",
@@ -162,8 +164,8 @@ def test_conviction_max_10_lot_cap_still_applies():
             }
             quant_service.write_decision(decision)
             ad = json.loads(actions_path.read_text(encoding="utf-8"))
-            assert ad["actions"][0]["legs"][0]["qty"] == 10, (
-                f"10-lot hard cap not enforced: {ad['actions'][0]['legs'][0]['qty']}"
+            assert ad["actions"][0]["legs"][0]["qty"] == 20, (
+                f"UNLEASHED mode: no cap, qty should be 20, got {ad['actions'][0]['legs'][0]['qty']}"
             )
         finally:
             quant_service.ACTIONS = original_actions

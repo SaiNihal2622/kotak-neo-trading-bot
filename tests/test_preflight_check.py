@@ -76,9 +76,11 @@ def test_check_inline_journal_no_file(tmp_dcache):
 
 def test_check_inline_journal_with_entries(tmp_dcache):
     """trade_journal.jsonl with FILL entries -> passed."""
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
     journal = tmp_dcache / "trade_journal.jsonl"
     journal.write_text(
-        '{"trade_id":"FILL-X","ts":"2026-09-08T12:00:00"}\n', encoding="utf-8"
+        f'{{"trade_id":"FILL-X","ts":"{today}T12:00:00"}}\n', encoding="utf-8"
     )
     c = pf._check_inline_journal_callback()
     assert c.passed
@@ -98,10 +100,12 @@ def test_check_inline_journal_after_hours_warning(tmp_dcache):
 
 def test_check_daily_json_today(tmp_dcache):
     """daily.json with today's date -> passed."""
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
     perf = tmp_dcache / "performance" / "daily.json"
     perf.parent.mkdir(parents=True, exist_ok=True)
     perf.write_text(
-        json.dumps({"date": "2026-09-08", "last_updated": "2026-09-08T15:30:00"}),
+        json.dumps({"date": today, "last_updated": f"{today}T15:30:00"}),
         encoding="utf-8",
     )
     c = pf._check_daily_json()
@@ -189,10 +193,12 @@ def test_check_kotak_session_expiring(tmp_dcache):
 
 def test_check_inline_journal_filters_by_today(tmp_dcache):
     """Only today's FILL entries are counted."""
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
     journal = tmp_dcache / "trade_journal.jsonl"
     journal.write_text(
         '{"trade_id":"FILL-OLD","ts":"2026-09-01T10:00:00"}\n'
-        '{"trade_id":"FILL-NEW","ts":"2026-09-08T10:00:00"}\n',
+        f'{{"trade_id":"FILL-NEW","ts":"{today}T10:00:00"}}\n',
         encoding="utf-8",
     )
     c = pf._check_inline_journal_callback()

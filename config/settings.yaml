@@ -30,92 +30,102 @@ market_hours:
   square_off:     "15:15"
 
 # =============================================================
-# VARIABLE RISK ENGINE — adapts to regime, confidence, and recent performance
+# VARIABLE RISK ENGINE — UNLEASHED for the 100% quant firm mode
+# FIX 2026-09-09 00:56: user said "no caps, I want to see profits".
+# The LLM brain is now the SOLE risk manager. All hardcoded caps
+# removed. The LLM decides position size via `conviction: 0-100`,
+# `qty`, `target`, `stop`. ONE safety net: max-drawdown auto-pause
+# (set very wide so it only catches catastrophic blow-ups, not
+# normal strategy variance). The user can also /pause via Telegram
+# at any time.
 # =============================================================
 risk:
-  # base caps (low-confidence / range regime)
+  # base caps REMOVED — the LLM is now the risk manager
   base:
-    max_loss_per_trade_pct: 1.0     # 1% of capital
-    max_loss_per_trade_abs: 1500    # Rs 1,500 hard cap
-    max_daily_loss_pct: 3.0
-    max_daily_loss_abs: 3000
-    max_trades_per_day: 6
-    max_weekly_loss_pct: 6.0
-    max_monthly_loss_pct: 12.0
-    max_consecutive_losses: 4
+    max_loss_per_trade_pct: 100.0   # effectively unlimited (LLM manages)
+    max_loss_per_trade_abs: 9999999 # no hard Rs cap
+    max_daily_loss_pct: 100.0      # no daily cap (LLM manages)
+    max_daily_loss_abs: 9999999
+    max_trades_per_day: 999        # no daily trade cap
+    max_weekly_loss_pct: 100.0     # no weekly cap
+    max_monthly_loss_pct: 100.0    # no monthly cap
+    max_consecutive_losses: 999    # no streak cap
     default_lots: 1
-    max_lots: 3
-    per_underlying_cap: 0.30
-  # aggressive caps (high-confidence / trending regime, recent wins)
+    max_lots: 50                  # raised from 3 — LLM can size up
+    per_underlying_cap: 1.0       # 100% of capital can go in one underlying
+  # aggressive caps (kept as a reference for LLM's risk awareness)
   aggressive:
-    max_loss_per_trade_pct: 2.0
-    max_loss_per_trade_abs: 2000
-    max_daily_loss_pct: 5.0
-    max_daily_loss_abs: 5000
-    max_trades_per_day: 10
+    max_loss_per_trade_pct: 100.0
+    max_loss_per_trade_abs: 9999999
+    max_daily_loss_pct: 100.0
+    max_daily_loss_abs: 9999999
+    max_trades_per_day: 999
     default_lots: 1
-    max_lots: 4
-  # defensive caps (low-confidence / volatile regime, recent losses)
+    max_lots: 50
+  # defensive caps (kept as a reference for LLM's risk awareness)
   defensive:
-    max_loss_per_trade_pct: 0.5
-    max_loss_per_trade_abs: 500
-    max_daily_loss_pct: 1.5
-    max_daily_loss_abs: 1500
-    max_trades_per_day: 3
+    max_loss_per_trade_pct: 100.0
+    max_loss_per_trade_abs: 9999999
+    max_daily_loss_pct: 100.0
+    max_daily_loss_abs: 9999999
+    max_trades_per_day: 999
     default_lots: 1
-    max_lots: 1
+    max_lots: 50
   # timing
   square_off_time: "15:15"
-  no_new_trades_after: "14:30"
+  no_new_trades_after: "15:00"   # last 30 min = pure exit-only mode
   # =============================================================
-  # INTRADAY-ONLY MODE — now AI-overridable
-  # FIX 2026-09-08 22:35: the LLM brain can now override these gates.
-  # allow_overnight defaults to true so the AI is free to hold winners
-  # into the close, or even overnight if conditions warrant. The
-  # no_new_trades_after and force_square_off_time become SOFT gates:
-  # the LLM is asked first, and only if it doesn't speak does the
-  # bot fall back to the hard close. See the "skip_day" and
-  # "ai_override" decision types in the brain's output schema.
+  # INTRADAY-ONLY MODE — UNLEASHED for 100% quant firm mode
+  # FIX 2026-09-09 00:56: user said "no caps, I want to see profits".
+  # All gating reduced/removed. The LLM is the SOLE risk manager.
+  # ai_override is the default — the LLM can ignore ALL of these.
   # =============================================================
   intraday:
-    allow_overnight: true            # AI can hold overnight if conditions warrant
-    no_new_trades_after: "13:30"     # SOFT gate: bot asks LLM first, falls back if HOLD
-    force_square_off_time: "14:30"   # SOFT gate: bot asks LLM first, falls back if HOLD
-    avoid_first_5_min_after_open: true  # don't trade 9:15-9:30 (let price settle)
-    event_blackout_min_before: 60    # HARD gate: no trades within 60 min BEFORE macro event
-    event_blackout_min_after: 15     # HARD gate: no trades within 15 min AFTER macro event
-    # AI override: if the LLM brain emits {"action": "AI_OVERRIDE", "hold_overnight": true, ...}
-    # the bot skips the force-square and lets the LLM run the book. The
-    # LLM is then responsible for the next decision before 09:30 next day.
+    allow_overnight: true            # default: AI can hold overnight freely
+    no_new_trades_after: "15:00"     # last 30 min of NSE is exit-only (LLM can override)
+    force_square_off_time: "15:25"   # last 5 min is true close (LLM can override)
+    avoid_first_5_min_after_open: false  # removed: AI can trade from 9:15
+    event_blackout_min_before: 0     # removed: no blackout before events
+    event_blackout_min_after: 0      # removed: no blackout after events
+    # AI override: if the LLM brain emits anything with ai_override_intraday=true,
+    # the bot skips ALL of these gates. The LLM is the sole risk manager.
     ai_override_enabled: true
   # =============================================================
-  # VIX-AWARE POSITION SIZING — scales lot count down as volatility rises
+  # VIX-AWARE POSITION SIZING — UNLEASHED
+  # FIX 2026-09-09 00:56: removed all skip gates. The LLM brain now
+  # reasons about VIX in its own context. No hard-coded skip threshold.
   # =============================================================
   vix:
     fetch_symbol: "^INDIAVIX"
     refresh_minutes: 15
     thresholds:
-      calm_max: 15.0                 # VIX <= 15 → 1.0x lots
-      elevated_max: 18.0             # VIX 15-18 → 0.75x
-      high_max: 22.0                 # VIX 18-22 → 0.5x
-      # VIX > 22 → no trades
-    skip_above: 22.0                 # hard skip threshold
+      calm_max: 100.0                # effectively no VIX scaling
+      elevated_max: 100.0
+      high_max: 100.0
+    skip_above: 100.0               # no VIX skip (was 22.0)
     refresh_on_startup: true
-  # kill switches
-  kill_on_data_stale_min: 5
-  kill_on_news_shock: true
+  # kill switches — only the catastrophic ones
+  kill_on_data_stale_min: 60        # was 5: now very wide
+  kill_on_news_shock: false         # was true: now LLM decides
   # adaptation
-  adapt_to_regime: true              # regime → preset
-  adapt_to_performance: true         # win/loss streak → preset
-  high_confidence_threshold: 0.7     # ≥ this → aggressive
-  low_confidence_threshold: 0.45     # < this → defensive
-  # position cap (STRATEGY count, NOT leg count — e.g. 1 iron condor = 1
-  # strategy even though it has 4 legs). Bug fixed 2026-08-20; legacy
-  # code used `max(len(open_trades), len(open_pos))` which counted legs
-  # and blocked the bot after 1 multi-leg strategy.
-  position_cap: 2                    # 1 NIFTY + 1 BANKNIFTY max (strategy count)
-  cooldown_per_symbol_sec: 600       # 10 min between trades on same symbol
-  min_hold_before_smart_exit_sec: 300  # 5 min minimum hold before smart exit can fire
+  adapt_to_regime: true
+  adapt_to_performance: true
+  high_confidence_threshold: 0.7
+  low_confidence_threshold: 0.45
+  # position cap (STRATEGY count) — UNLEASHED
+  # FIX 2026-09-09 00:56: was 2 strategies. Now 50 (LLM can take many
+  # concurrent positions across underlyings). The LLM manages concentration.
+  position_cap: 50                  # was 2
+  cooldown_per_symbol_sec: 0        # was 600: no cooldown, LLM can re-enter immediately
+  min_hold_before_smart_exit_sec: 0 # was 300: LLM can exit immediately if it wants
+  # =============================================================
+  # CATASCTROPHIC SAFETY NET — auto-pause at -50% drawdown
+  # FIX 2026-09-09 00:56: this is the ONLY remaining hard limit. If the
+  # bot ever loses >50% of capital, it auto-pauses. The user can resume
+  # via Telegram. This catches catastrophic blow-ups, not normal variance.
+  # =============================================================
+  max_drawdown_pct: 50.0
+  auto_pause_on_max_drawdown: true
   # Phantom 0DTE auto-purge (FIX 2026-08-20). When the bot restarts, the
   # broker may still report positions in 0DTE contracts that expired at
   # 15:30 of the previous session. These phantoms block new signals
@@ -247,18 +257,17 @@ instruments:
 # =============================================================
 quant_mode:
   enabled: true
-  # Push no-new-entries cutoff to 14:30 (was 13:30) so the brain can
-  # react to late-day setups that form after the templated cutoff.
-  no_new_trades_after: "14:30"
-  # More positions allowed (was 2). Confirmed setups can stack.
-  position_cap: 6
-  # Per-trade risk: 1% of capital (was 1.0% — same)
-  max_loss_per_trade_pct: 1.0
-  # Daily max loss: 3% (was 3.0% — same)
-  max_daily_loss_pct: 3.0
-  # Hard risk limits (these are NOT looser — they protect the book)
-  block_naked_unlimited_risk: true
-  block_trades_during_macro_blackout: true
+  # FIX 2026-09-09 00:56: UNLEASHED. The LLM is the sole risk manager.
+  # Push no-new-entries cutoff to 15:25 (last 5 min exit-only).
+  no_new_trades_after: "15:25"
+  # No position cap — LLM can run as many strategies as it finds.
+  position_cap: 999
+  # No per-trade or daily risk cap — LLM manages via conviction.
+  max_loss_per_trade_pct: 100.0
+  max_daily_loss_pct: 100.0
+  # No naked-risk block — LLM can decide if naked risk is the right call.
+  block_naked_unlimited_risk: false
+  block_trades_during_macro_blackout: false
   # Event-driven invocation
   event_driven:
     price_move_1m_pct: 0.3

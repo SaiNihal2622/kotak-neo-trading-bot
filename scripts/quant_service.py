@@ -407,29 +407,37 @@ The right stop is a function of the trade's context, not a fixed % rule. Conside
   - Reversal risk: if the move could be a fakeout, give it slightly wider room. If confirmed
     by multiple signals, can use tighter stops (less chance of invalidation).
 
-POSITION SIZING — DISTANCE × QTY × CONVICTION:
-The risk equation is simple: risk = (entry - stop) × qty ≤ 1% of capital. Adjust TWO
-variables (stop distance and qty) to fit the conviction:
-  - High conviction + wants wide stop: 33-lot with 30% stop = ~Rs.1,000 loss on Rs.150 option
-  - Medium conviction: 30-lot with 20% stop = Rs.900 loss
-  - Low conviction: 15-lot with 20% stop = Rs.450 loss (more conservative)
-  - Speculative scalp: 30-lot with 10% stop = Rs.450 loss
-There's no single right answer — pick what matches the setup's risk/reward and your confidence.
+POSITION SIZING — UNLEASHED 2026-09-09 00:56 (no caps, you decide):
+YOU are the SOLE risk manager. No hardcoded 1%/5% caps. The only safety net
+is a -50% max-drawdown auto-pause (catastrophic blow-up protection).
+  - HIGH CONVICTION (80-100): size up. 5-10 lots is fine for NIFTY. 30+ lots
+    for a clean setup with multiple confirmations.
+  - MEDIUM (50-80): 1-3 lots, standard sizing.
+  - LOW (20-50): minimum 1 lot, paper-trade if you want to log the idea
+    without committing capital.
+  - VERY LOW (<20): HOLD. Don't trade just to trade.
+
+The risk equation: risk = (entry - stop) × qty × lot_size. The 1% of capital
+guideline is a soft suggestion, not a rule. If your edge is real and your
+conviction is high, you can size larger. If you're wrong, the LLM journal
+will surface it for the nightly review.
 
 SPREADS / CONDORS:
-  - Max loss is structural = (wing width - credit) × qty. Must also fit ≤ 1% of capital.
-  - If structural loss is too big, use TIGHTER wings (e.g., 50pt instead of 200pt on NIFTY) or
-    trade fewer lots. Do NOT skip a setup just because wings are too wide — adjust.
+  - Max loss is structural = (wing width - credit) × qty × lot_size. No
+    fixed cap. Pick wings and qty to fit YOUR conviction.
+  - If structural loss seems too big, use TIGHTER wings or fewer lots.
+    Don't skip a setup just because wings are wide — adjust.
 
 LOTTERY TICKETS (deep OTM < Rs.20):
-  - Full lot is fine — these are designed for low max loss. E.g., BANKNIFTY 30-lot at
-    Rs.15 with stop=Rs.7.5 = (15-7.5) × 30 = Rs.225 (0.22%). Cheap optionality.
-  - Up to 2 concurrent tickets on different underlyings (diversified bets).
+  - Full lot is fine. E.g., BANKNIFTY 30-lot at Rs.15 with stop=Rs.7.5 =
+    (15-7.5) × 30 × 30 = Rs.6,750 max loss (2.25% of 3L capital). Cheap
+    optionality.
+  - Multiple concurrent tickets on different underlyings is fine.
 
 OTHER:
-- No naked unlimited risk
-- No entries in macro blackout windows
-- Min premium: Rs.5, max premium per leg: Rs.500
+- No naked-risk restriction (you can decide if naked is the right call)
+- No macro blackout (you decide if you want to trade through events)
+- Min premium: Rs.5, max premium per leg: Rs.500 (soft, you can override)
 - Strike spacing: NIFTY 50pt, BANKNIFTY 100pt, FINNIFTY/SENSEX 100pt, MIDCPNIFTY 25pt
 - Lots: NIFTY=75 qty, BANKNIFTY=30 qty, FINNIFTY=65 qty, MIDCPNIFTY=120 qty, SENSEX=20 qty
 - Expiry: weekly (current Thu) for intraday, monthly for swings
@@ -440,7 +448,9 @@ OTHER:
   4-hour swing. Read the setup, decide the stop, then size to fit. The principles above
   are the rails, not the track.
 
-You may pick any of 29 instruments (5 indices + 24 NIFTY-50 stocks). NO templated gates. Be a professional quant. Take the trade if edge is real. Pass if not.
+You may pick any of 29 instruments (5 indices + 24 NIFTY-50 stocks). NO templated gates.
+You decide everything: size, stop, target, hold, when to skip. Be a professional quant.
+The user wants to see PROFITS — take the trade if edge is real. Pass if not.
 
 MACRO CALENDAR + POSITION MANAGEMENT:
 - `macro` block shows upcoming events (US NFP, FOMC, RBI policy, US CPI). HIGH-impact
@@ -967,16 +977,14 @@ def _normalize_decision(d: dict) -> dict:
             "order_type": str(d.get("order_type") or "MARKET").upper(),
             "price": d.get("price") or d.get("limit_price"),
         }]
-    # FIX 2026-09-02 12:25: hard cap qty in legs to 10 lots per leg. This prevents
-    # any future brain mis-sizing from creating 5625-share positions.
-    # FIX 2026-09-08 22:50: conviction-based scaling. The LLM brain can now
-    # output `conviction: 0-100` (or `confidence` as a fallback 0-1). The
-    # final qty = base_qty * (conviction/100). This is the "AI-driven
-    # sizing" path — the LLM says "this setup is 80% conviction, use 4 lots
-    # instead of 5" and the bot honors it (capped at 10 lots per leg).
+    # FIX 2026-09-09 00:56: UNLEASHED. The 10-lot hard cap is GONE.
+    # The LLM brain is the SOLE risk manager. It can size as large
+    # as the conviction score and risk budget warrant. The only
+    # remaining safety net is the 50% max-drawdown auto-pause in
+    # settings.yaml (catastrophic loss protection).
+    # The min-1-lot floor is kept (qty=0 makes no sense).
     out["conviction"] = float(d.get("conviction", 0) or 0)
     if not out["conviction"] and d.get("confidence"):
-        # fallback: 0-1 confidence scaled to 0-100 conviction
         try:
             out["conviction"] = float(d.get("confidence", 0) or 0) * 100
         except (ValueError, TypeError):
@@ -988,8 +996,7 @@ def _normalize_decision(d: dict) -> dict:
                     _q = int(_leg.get("qty", 0) or 0)
                     if _q < 1:
                         _leg["qty"] = 1
-                    elif _q > 10:
-                        _leg["qty"] = 10
+                    # No upper cap — LLM decides
                 except (ValueError, TypeError):
                     _leg["qty"] = 1
     out["legs"] = legs or []
@@ -1545,9 +1552,21 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
         # fall through to log the decision
 
     # FIX 2026-09-08 22:50: conviction-based scaling. If the LLM set
-    # conviction (0-100), scale each leg's qty by (conviction / 100). The
-    # 10-lot hard cap from 2026-09-02 still applies.
+    # conviction (0-100), scale each leg's qty by (conviction / 100).
+    # FIX 2026-09-09 00:56: NO upper cap. The LLM is the sole risk manager.
     _conv = float(decision.get("conviction", 0) or 0)
+    # FIX 2026-09-09 01:10: enforce min 1 lot in write_decision (was only in
+    # _normalize_decision; the test calls write_decision directly so we
+    # need the floor here too).
+    if decision.get("legs"):
+        for _leg in decision["legs"]:
+            if isinstance(_leg, dict):
+                try:
+                    _q = int(_leg.get("qty", 0) or 0)
+                    if _q < 1:
+                        _leg["qty"] = 1
+                except (ValueError, TypeError):
+                    _leg["qty"] = 1
     if _conv > 0 and decision.get("legs"):
         for _leg in decision["legs"]:
             if isinstance(_leg, dict):
@@ -1555,9 +1574,9 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
                     _orig_q = int(_leg.get("qty", 0) or 0)
                     if _orig_q > 0:
                         _scaled = max(1, round(_orig_q * (_conv / 100.0)))
-                        _leg["qty"] = min(_scaled, 10)  # 10-lot hard cap
+                        _leg["qty"] = _scaled  # NO UPPER CAP
                         if _scaled != _orig_q:
-                            log(f"CONVICTION-SIZED: {_leg.get('side', '?')} qty { _orig_q} -> {_leg['qty']} (conviction={_conv:.0f}%)")
+                            log(f"CONVICTION-SIZED: {_leg.get('side', '?')} qty {_orig_q} -> {_leg['qty']} (conviction={_conv:.0f}%)")
                 except (ValueError, TypeError):
                     pass
 
