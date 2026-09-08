@@ -2321,6 +2321,8 @@ def watch_loop():
                             "candles": read_candles(),
                             "global_markets": _safe_read_json(DATA / "global_state.json", default={}),
                             "alpha": _safe_read_json(DATA / "quant_alpha.json", default={}),
+                            "predictive_signals": _safe_read_json(DATA / "predictive_signals.json", default={}),
+                            "fii_dii": _safe_read_json(DATA / "fii_dii.json", default={}),
                             "trigger": "periodic_15min" if is_market_hours() else "global_research_15min",
                             "nse_status": "OPEN" if is_market_hours() else "CLOSED",
                         })
