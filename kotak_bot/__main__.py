@@ -2221,6 +2221,88 @@ def run_paper() -> None:
             cycle_counter += 1
             _cycle_counter = cycle_counter
             _last_cycle_ts = datetime.now(timezone.utc)
+            # 4a) ORPHAN CHECK runs on its own 30s cadence, OUTSIDE the scan block.
+            # FIX 2026-09-08 14:15: the orphan check used to be inside the scan block,
+            # which means when the scan was skipped (e.g. after no_new_trades time at
+            # 13:30, or VIX blackout, or opening buffer), the orphan check also got
+            # skipped — so orphan broker positions from brain-driven OPENs sat
+            # uncatalogued for hours, only to be force-squared at 14:30. This block
+            # makes the orphan check independent: it runs every 30s whenever the
+            # market is open, but still respects the no-new-trades time gate for
+            # the *close action* (we don't want to close brain-driven positions
+            # mid-session — that destroyed 2 trades yesterday at 12:04 / 12:42).
+            if is_market_open(now) and (now - last_scan).total_seconds() >= 30:
+                try:
+                    last_scan = now
+                    _today_str_o = date.today().strftime('%Y-%m-%d')
+                    _open_trades_o = order_mgr.open_trades()
+                    _ot_syms_o = set()
+                    for _trd in _open_trades_o:
+                        for _o in _trd.orders:
+                            if getattr(_o, 'avg_fill_price', 0) > 0 and getattr(_o, 'symbol', None):
+                                _ot_syms_o.add(_o.symbol)
+                    _open_pos_o = [
+                        p for p in broker.get_positions()
+                        if p.qty != 0
+                        and (not p.expiry or str(p.expiry)[:10] >= _today_str_o)
+                    ]
+                    _orphan_pos_o = [p for p in _open_pos_o if p.symbol not in _ot_syms_o]
+                    if _orphan_pos_o:
+                        _orphan_allowed = is_past_no_new_trades_time(now)
+                        if _orphan_allowed:
+                            logger.warning(
+                                f"[ORPHAN] {len(_orphan_pos_o)} orphan broker position(s) with no open trade "
+                                f"(symbols: {[p.symbol for p in _orphan_pos_o]}). Auto-closing (past no-new-trades)."
+                            )
+                            for _orph in _orphan_pos_o:
+                                try:
+                                    _orph_sym = getattr(_orph, 'symbol', None)
+                                    _orph_qty = abs(int(getattr(_orph, 'qty', 0) or 0))
+                                    _orph_avg = float(getattr(_orph, 'avg_price', 0) or 0)
+                                    if not _orph_sym or _orph_qty == 0 or _orph_avg == 0:
+                                        continue
+                                    # Conservative: skip if >5% of cash (let force-square handle)
+                                    _orphan_cash_o = _cash or 0
+                                    _max_loss = _orph_qty * _orph_avg * 0.20
+                                    if _orphan_cash_o > 0 and _max_loss / _orphan_cash_o > 0.05:
+                                        logger.debug(f"[ORPHAN] {_orph_sym} qty={_orph_qty} avg={_orph_avg} too large to close now")
+                                        continue
+                                    # Pull strike/option_type/expiry/underlying from the position
+                                    # so paper_client._force_fill_market_like can look up the real
+                                    # price from option_chains.json (avoids the Rs.1.00 last-resort
+                                    # fallback that produced 3 fake fills yesterday).
+                                    _orph_strike = float(getattr(_orph, 'strike', 0) or 0)
+                                    _orph_opt = getattr(_orph, 'option_type', None) or None
+                                    _orph_exp = getattr(_orph, 'expiry', None) or None
+                                    _orph_und = getattr(_orph, 'underlying', None) or None
+                                    if not _orph_strike or not _orph_opt or not _orph_und:
+                                        _p_und, _p_exp, _p_strike, _p_opt = _parse_option_symbol(_orph_sym)
+                                        if not _orph_strike: _orph_strike = _p_strike
+                                        if not _orph_opt: _orph_opt = _p_opt
+                                        if not _orph_exp: _orph_exp = _p_exp
+                                        if not _orph_und: _orph_und = _p_und
+                                    _close_side = OrderSide.SELL if int(getattr(_orph, 'qty', 0)) > 0 else OrderSide.BUY
+                                    _close_ord = Order(
+                                        symbol=_orph_sym, side=_close_side, qty=_orph_qty,
+                                        order_type=OrderType.MARKET, product=ProductType.MIS,
+                                        price=0.0, tag='ORPHAN-AUTO-CLOSE',
+                                        exchange=getattr(_orph, 'exchange', 'NFO'),
+                                        strike=_orph_strike, option_type=_orph_opt,
+                                        expiry=_orph_exp, underlying=_orph_und,
+                                    )
+                                    _fr = broker.place_order(_close_ord)
+                                    if _fr.status in (OrderStatus.COMPLETE, OrderStatus.OPEN):
+                                        logger.info(f"[ORPHAN] force-closed {_orph_sym} qty={_orph_qty} status={_fr.status.value if hasattr(_fr.status, 'value') else _fr.status} fill_px={_fr.avg_fill_price}")
+                                        alerter.send(f"♻️ [ORPHAN-AUTO-CLOSE] closed {_orph_sym} qty={_orph_qty} @ Rs.{_fr.avg_fill_price:.2f} (brain-driven OPEN, not registered with order_mgr)")
+                                except Exception as _oc_err:
+                                    logger.warning(f"[ORPHAN] auto-close failed for {_orph_sym}: {_oc_err}")
+                        else:
+                            logger.debug(
+                                f"[ORPHAN] {len(_orphan_pos_o)} orphan(s) detected (symbols: {[p.symbol for p in _orphan_pos_o]}) — "
+                                f"auto-close deferred until no-new-trades time (13:30)"
+                            )
+                except Exception as _orph_block_err:
+                    logger.debug(f"orphan check failed: {_orph_block_err}")
             if (now - last_scan).total_seconds() >= 30 and is_market_open(now):
                 # ----------------------------------------------------------------
                 # INTRADAY + VIX GATES (block new entries before 14:30 if overnight blocked)
@@ -2260,100 +2342,13 @@ def run_paper() -> None:
                 # which counted leg positions from broker and blocked the bot after
                 # 1 multi-leg strategy. A 1 NIFTY + 1 BANKNIFTY cap of 2 strategies
                 # maps cleanly to `len(open_trades)`.
-                # We still cross-check broker positions for orphan phantom legs (no
-                # matching open trade) and warn if any are found.
+                # FIX 2026-09-08 14:15: orphan auto-close moved OUTSIDE the scan block
+                # (see step 4a above) so it fires even when the scan is skipped (e.g.
+                # past 13:30 no-new-trades time, VIX blackout, opening buffer). Previously
+                # the `continue` in those skip paths also skipped the orphan check,
+                # leaving brain-driven positions uncatalogued until 14:30 force-square.
                 # ----------------------------------------------------------------
-                _today_str = date.today().strftime('%Y-%m-%d')
                 open_trades = order_mgr.open_trades()
-                open_pos = [
-                    p for p in broker.get_positions()
-                    if p.qty != 0
-                    and (not p.expiry or str(p.expiry)[:10] >= _today_str)
-                ]
-                # Phantoms = broker position with qty but no matching open trade
-                _ot_syms = set()
-                for _trd in open_trades:
-                    for _o in _trd.orders:
-                        if getattr(_o, 'avg_fill_price', 0) > 0 and getattr(_o, 'symbol', None):
-                            _ot_syms.add(_o.symbol)
-                orphan_pos = [p for p in open_pos if p.symbol not in _ot_syms]
-                if orphan_pos:
-                    # FIX 2026-09-07 23:15: gate orphan-auto-close on no-new-trades time.
-                    # Before 13:30, the brain-driven positions are still in their planned
-                    # hold window (theta capture through Thursday expiry). Closing them
-                    # early in the morning destroyed 2 trades today (12:04 BNF + 12:42 NIFTY,
-                    # both at fake Rs.1.00 prices — separate bug, already fixed). Now we
-                    # only auto-close orphans AFTER no-new-trades time (13:30) so the brain
-                    # gets a fair hold window. Before 13:30, we just log the warning and
-                    # let force-square at 14:30 handle it.
-                    _orphan_close_allowed = is_past_no_new_trades_time(now)
-                    logger.warning(
-                        f"[SCAN] {len(orphan_pos)} orphan broker position(s) with no open trade "
-                        f"(symbols: {[p.symbol for p in orphan_pos]}). "
-                        f"{'Will auto-close (past no-new-trades time).' if _orphan_close_allowed else 'Auto-close deferred until 13:30 (brain hold window).'}"
-                    )
-                    if not _orphan_close_allowed:
-                        # Skip the close loop entirely — just log and let force-square handle it
-                        last_scan = now
-                        time.sleep(5)
-                        continue
-                    # FIX 2026-09-07 12:02: actually force-close the orphans instead
-                    # of just logging. Brain-driven OPENs don't register with order_mgr
-                    # (commit a8dec0a), so they show up as orphans. The orphan-fallback
-                    # at 14:30 only fires once at force-square time, but we want to
-                    # close them on the next scan if the position is now OTM and
-                    # small enough. We send a force-close via the broker.place_order
-                    # with the opposite side of each orphan's qty.
-                    # We do this conservatively: only when the orphan is OUT-OF-THE-MONEY
-                    # and the position is small (< 5% of cash). Otherwise we let
-                    # force-square at 14:30 handle it.
-                    _orphan_cash = _cash or 0
-                    _orphan_max_loss_pct = 0.05
-                    for _orph in orphan_pos:
-                        try:
-                            _orph_sym = getattr(_orph, 'symbol', None)
-                            _orph_qty = abs(int(getattr(_orph, 'qty', 0) or 0))
-                            _orph_avg = float(getattr(_orph, 'avg_price', 0) or 0)
-                            if not _orph_sym or _orph_qty == 0 or _orph_avg == 0:
-                                continue
-                            # Conservative: skip if >5% of cash (let force-square handle)
-                            _max_loss = _orph_qty * _orph_avg * 0.20  # assume 20% drawdown
-                            if _orphan_cash > 0 and _max_loss / _orphan_cash > _orphan_max_loss_pct:
-                                logger.debug(f"[ORPHAN] {_orph_sym} qty={_orph_qty} avg={_orph_avg} too large to close now")
-                                continue
-                            # FIX 2026-09-07 22:15: pull strike/option_type/expiry/underlying
-                            # from the position so paper_client._force_fill_market_like can
-                            # look up the real price from option_chains.json. If the position
-                            # doesn't have them (legacy positions, broker quirks), parse from
-                            # the symbol. This avoids the Rs.1.00 last-resort fallback that
-                            # produced 3 fake fills today (12:04 BNF PE orphan-close + 12:42
-                            # NIFTY PE orphan-close, all closing for Rs.1.00).
-                            _orph_strike = float(getattr(_orph, 'strike', 0) or 0)
-                            _orph_opt = getattr(_orph, 'option_type', None) or None
-                            _orph_exp = getattr(_orph, 'expiry', None) or None
-                            _orph_und = getattr(_orph, 'underlying', None) or None
-                            if not _orph_strike or not _orph_opt or not _orph_und:
-                                _p_und, _p_exp, _p_strike, _p_opt = _parse_option_symbol(_orph_sym)
-                                if not _orph_strike: _orph_strike = _p_strike
-                                if not _orph_opt: _orph_opt = _p_opt
-                                if not _orph_exp: _orph_exp = _p_exp
-                                if not _orph_und: _orph_und = _p_und
-                            # Send force-close
-                            _close_side = OrderSide.SELL if int(getattr(_orph, 'qty', 0)) > 0 else OrderSide.BUY
-                            _close_ord = Order(
-                                symbol=_orph_sym, side=_close_side, qty=_orph_qty,
-                                order_type=OrderType.MARKET, product=ProductType.MIS,
-                                price=0.0, tag='ORPHAN-AUTO-CLOSE',
-                                exchange=getattr(_orph, 'exchange', 'NFO'),
-                                strike=_orph_strike, option_type=_orph_opt,
-                                expiry=_orph_exp, underlying=_orph_und,
-                            )
-                            _fr = broker.place_order(_close_ord)
-                            if _fr.status in (OrderStatus.COMPLETE, OrderStatus.OPEN):
-                                logger.info(f"[ORPHAN] force-closed {_orph_sym} qty={_orph_qty} status={_fr.status.value if hasattr(_fr.status, 'value') else _fr.status} fill_px={_fr.avg_fill_price}")
-                                alerter.send(f"♻️ [ORPHAN-AUTO-CLOSE] closed {_orph_sym} qty={_orph_qty} @ Rs.{_fr.avg_fill_price:.2f} (brain-driven OPEN, not registered with order_mgr)")
-                        except Exception as _oc_err:
-                            logger.warning(f"[ORPHAN] auto-close failed for {_orph_sym}: {_oc_err}")
                 # Cap is on STRATEGIES (open_trades), not on legs.
                 # Use `len(open_trades)` as the authoritative count. If we have orphan
                 # legs from a bot restart, don't count them against the cap.

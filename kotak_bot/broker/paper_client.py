@@ -78,6 +78,19 @@ class PaperClient(BrokerClient):
 
         # load state if exists
         self._load_state()
+        # FIX 2026-09-08 14:20: clean up any skip-save flag left by the pre-market
+        # reset script. The flag's purpose is to suppress the OLD bot's _save_state
+        # during a reset. Once the new PaperClient loads the clean state, the flag
+        # is no longer needed and should be removed so the new bot saves normally.
+        # If the flag is stale (e.g. the reset never happened), _save_state's own
+        # 60s safety check will expire it.
+        _skip_flag = self.persist_path.parent / "_skip_save.json"
+        try:
+            if _skip_flag.exists():
+                _skip_flag.unlink()
+                logger.info(f"[PAPER] removed stale _skip_save.json (post-load cleanup)")
+        except Exception as _e:
+            logger.debug(f"[PAPER] could not remove _skip_save.json: {_e}")
 
     # ------- connection (no-op) -------
     def connect(self) -> None:
@@ -548,6 +561,31 @@ class PaperClient(BrokerClient):
 
     # ------- persistence -------
     def _save_state(self) -> None:
+        # FIX 2026-09-08 14:20: skip-save flag for clean resets. The pre-market
+        # reset script (scripts/pre_market_reset_paper_state.py) creates this
+        # flag, writes a clean paper_state.json, then removes it. While the
+        # flag is present, _save_state returns early — so the bot's in-memory
+        # state doesn't overwrite the freshly-written clean state on the next
+        # tick. The bot eventually restarts (via nssm or force-action) to load
+        # the clean state. This breaks the reset race where the bot's
+        # tick-driven _save_state (~every 2-5s) was overwriting the user-
+        # written clean state within seconds.
+        skip_flag = self.persist_path.parent / "_skip_save.json"
+        if skip_flag.exists():
+            try:
+                import time as _t_skip
+                _mtime = skip_flag.stat().st_mtime
+                if _t_skip.time() - _mtime < 60:  # safety: don't honor flag older than 60s
+                    logger.debug(f"[PAPER] _save_state skipped (skip-save flag present, age={_t_skip.time() - _mtime:.1f}s)")
+                    return
+                else:
+                    logger.warning(f"[PAPER] _skip_save.json is stale ({_t_skip.time() - _mtime:.1f}s old), removing and proceeding")
+                    try:
+                        skip_flag.unlink()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         try:
             # BUG FIX 2026-08-11: shallow-copy each object's __dict__ before mutating
             # for serialization. `o.__dict__` returns a REFERENCE to the instance
