@@ -1341,9 +1341,12 @@ def run_paper() -> None:
                             except Exception:
                                 pass
                             # Give the alert a moment to send, then exit
+                            # FIX 2026-09-08 13:22: use os._exit(0) instead of sys.exit(0)
+                            # to bypass Python's cleanup (broker.disconnect() saves state
+                            # on shutdown, which can overwrite any file we've written).
                             import time as _t
                             _t.sleep(0.5)
-                            sys.exit(0)
+                            os._exit(0)
                         # FIX 2026-09-08 12:58: RESET_PAPER_STATE action — atomic
                         # "write clean state + restart" combo. Solves the race
                         # where the user-context writes a clean state but the
@@ -1455,10 +1458,15 @@ def run_paper() -> None:
                                 # Now restart ourselves so NSSM spawns a fresh bot
                                 # that reads the clean state. Sleep briefly so the
                                 # alert sends + file flush completes.
+                                # FIX 2026-09-08 13:22: use os._exit(0) instead of sys.exit(0)
+                                # to bypass Python's cleanup (atexit handlers, finally blocks,
+                                # broker.disconnect() which calls _save_state). The atexit
+                                # handler would otherwise overwrite our clean state with
+                                # the bot's in-memory state, undoing the reset.
                                 import time as _t
                                 _t.sleep(1.0)
                                 logger.warning(f"[SELF-RESTART] after RESET_PAPER_STATE cycle={cycle_counter}")
-                                sys.exit(0)
+                                os._exit(0)
                             except Exception as _reset_err:
                                 logger.warning(f"RESET_PAPER_STATE action failed: {_reset_err}")
             except Exception as _fa_err:
