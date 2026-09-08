@@ -417,13 +417,20 @@ data:
       rate_limit_per_min: 30         # stay under TPM cap
 
 # =============================================================
-# ALERTS
+# ALERTS — FIX 2026-09-09 01:42: user wants NO telegram alerts
+# The dashboard is the single source of truth. Telegram is OFF
+# by default. Re-enable by setting alerts.telegram.enabled: true
+# in this file. Per-event opt-in is also supported.
 # =============================================================
 alerts:
   telegram:
-    enabled: true
+    enabled: false                 # OFF by default (FIX 2026-09-09 01:42: user wants dashboard, not telegram)
     bot_token_env: TELEGRAM_BOT_TOKEN
     chat_id_env: TELEGRAM_CHAT_ID
+    # Per-event-type throttling (only used if enabled: true)
+    throttle_sec: 300
+    # The bot will still log to logs/bot.log regardless
+    log_only: true                  # if true, never actually sends to telegram
   email:
     enabled: true
     smtp_host: smtp.gmail.com
