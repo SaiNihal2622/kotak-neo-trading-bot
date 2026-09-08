@@ -969,6 +969,18 @@ def _normalize_decision(d: dict) -> dict:
         }]
     # FIX 2026-09-02 12:25: hard cap qty in legs to 10 lots per leg. This prevents
     # any future brain mis-sizing from creating 5625-share positions.
+    # FIX 2026-09-08 22:50: conviction-based scaling. The LLM brain can now
+    # output `conviction: 0-100` (or `confidence` as a fallback 0-1). The
+    # final qty = base_qty * (conviction/100). This is the "AI-driven
+    # sizing" path — the LLM says "this setup is 80% conviction, use 4 lots
+    # instead of 5" and the bot honors it (capped at 10 lots per leg).
+    out["conviction"] = float(d.get("conviction", 0) or 0)
+    if not out["conviction"] and d.get("confidence"):
+        # fallback: 0-1 confidence scaled to 0-100 conviction
+        try:
+            out["conviction"] = float(d.get("confidence", 0) or 0) * 100
+        except (ValueError, TypeError):
+            out["conviction"] = 0
     if legs:
         for _leg in legs:
             if isinstance(_leg, dict):
@@ -1496,6 +1508,16 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
     gets a HOLD-like response and the decision is logged, but no action file
     is written — the bot will hard-reject it anyway, and the action would
     pollute the file with stale retryable actions.
+
+    FIX 2026-09-08 22:50: conviction-based sizing. The LLM can output
+    `conviction: 0-100` and each leg's qty is scaled by (conviction / 100).
+    This is the "AI decides when to size up" path. The LLM saying "this
+    setup is 80% conviction, use 4 lots" is now honored by the bot.
+
+    FIX 2026-09-08 22:50: SKIP_DAY decision type. The LLM can now say
+    "no trade today, conditions bad" via {"type": "SKIP_DAY", "reason": "..."}
+    which writes data_cache/_skip_day.json. The bot's main loop checks
+    this file and skips new entries. The skip expires at end of day.
     """
     _now = datetime.now()
     _h, _m = _now.hour, _now.minute
@@ -1503,6 +1525,41 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
     _is_eod = (_h == 15 and _m >= 15) or (_h > 15)
     _is_weekday = _now.weekday() < 5
     _in_trading_window = _is_weekday and not _is_pre_open and not _is_eod
+
+    # FIX 2026-09-08 22:50: SKIP_DAY — write to a separate flag file the bot reads
+    if decision.get("type") == "SKIP_DAY":
+        try:
+            skip_doc = {
+                "ts": now_iso(),
+                "reason": decision.get("rationale") or decision.get("reason") or "no reason given",
+                "expires_at": (_now.replace(hour=15, minute=30, second=0, microsecond=0)).isoformat(),
+                "source": "brain",
+            }
+            Path("data_cache/_skip_day.json").write_text(
+                json.dumps(skip_doc, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            log(f"SKIP_DAY: brain said 'no trade today' — {skip_doc['reason'][:120]}")
+            # Don't write to ACTIONS — just log
+        except Exception as _e:
+            log(f"SKIP_DAY: failed to write flag: {_e}")
+        # fall through to log the decision
+
+    # FIX 2026-09-08 22:50: conviction-based scaling. If the LLM set
+    # conviction (0-100), scale each leg's qty by (conviction / 100). The
+    # 10-lot hard cap from 2026-09-02 still applies.
+    _conv = float(decision.get("conviction", 0) or 0)
+    if _conv > 0 and decision.get("legs"):
+        for _leg in decision["legs"]:
+            if isinstance(_leg, dict):
+                try:
+                    _orig_q = int(_leg.get("qty", 0) or 0)
+                    if _orig_q > 0:
+                        _scaled = max(1, round(_orig_q * (_conv / 100.0)))
+                        _leg["qty"] = min(_scaled, 10)  # 10-lot hard cap
+                        if _scaled != _orig_q:
+                            log(f"CONVICTION-SIZED: {_leg.get('side', '?')} qty { _orig_q} -> {_leg['qty']} (conviction={_conv:.0f}%)")
+                except (ValueError, TypeError):
+                    pass
 
     # Build the canonical action doc
     action_doc = {
@@ -1522,9 +1579,15 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
         # Bot's intraday mode rejects new entries after 13:30 — brain should know this too.
         # Use 13:30 as the brain-side cutoff; bot's settings.yaml may have a different value,
         # but for safety the brain enforces 13:30 hard.
+        # FIX 2026-09-08 22:50: but the no_new_trades_after is now SOFT (LLM can override).
+        # The brain's "AI_OVERRIDE" type bypasses this 13:30 cutoff — bot checks
+        # data_cache/_ai_skip_force_square.json (similar pattern).
         elif _h > 13 or (_h == 13 and _m >= 30):
-            log(f"ACTION-SUPPRESSED: OPEN after 13:30 IST (intraday no_new_trades_after); dropping to log only.")
-            action_doc["actions"] = []  # strip the OPEN
+            if decision.get("type") == "OPEN" and decision.get("ai_override_intraday"):
+                log(f"ACTION-ALLOWED: OPEN after 13:30 with ai_override_intraday=true; LLM takes responsibility")
+            else:
+                log(f"ACTION-SUPPRESSED: OPEN after 13:30 IST (intraday no_new_trades_after); dropping to log only.")
+                action_doc["actions"] = []  # strip the OPEN
     if action_doc["actions"]:
         ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
         SERVICE_STATE["actions_taken"] += 1

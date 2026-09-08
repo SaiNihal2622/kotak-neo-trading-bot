@@ -2246,6 +2246,27 @@ def run_paper() -> None:
             cycle_counter += 1
             _cycle_counter = cycle_counter
             _last_cycle_ts = datetime.now(timezone.utc)
+            # FIX 2026-09-08 22:50: SKIP_DAY honor. If the brain wrote
+            # data_cache/_skip_day.json (LLM decided "no trade today"),
+            # the bot's scan block is skipped. The skip auto-expires at
+            # 15:30 IST. This gives the LLM full control to say "conditions
+            # are bad, don't enter today" without bot overrides.
+            _skip_day_active = False
+            _skip_day_path = Path("data_cache/_skip_day.json")
+            if _skip_day_path.exists():
+                try:
+                    _skip_day = json.loads(_skip_day_path.read_text(encoding="utf-8"))
+                    if _skip_day.get("expires_at", "") > now.isoformat():
+                        _skip_day_active = True
+                        # Log once per hour to avoid spam
+                        if cycle_counter % 120 == 0:
+                            logger.info(f"[SKIP_DAY] bot honoring brain's skip: {_skip_day.get('reason', '?')[:120]}")
+                    else:
+                        # expired — auto-remove
+                        _skip_day_path.unlink(missing_ok=True)
+                        logger.info(f"[SKIP_DAY] expired skip flag removed (was until {_skip_day.get('expires_at', '?')})")
+                except Exception as _skip_err:
+                    logger.warning(f"[SKIP_DAY] flag read failed: {_skip_err}")
             # 4a) ORPHAN CHECK runs on its own 30s cadence, OUTSIDE the scan block.
             # FIX 2026-09-08 14:15: the orphan check used to be inside the scan block,
             # which means when the scan was skipped (e.g. after no_new_trades time at
@@ -2332,6 +2353,13 @@ def run_paper() -> None:
                 # ----------------------------------------------------------------
                 # INTRADAY + VIX GATES (block new entries before 14:30 if overnight blocked)
                 # ----------------------------------------------------------------
+                if _skip_day_active:
+                    # FIX 2026-09-08 22:50: brain said "no trade today". Don't scan
+                    # for new entries. The brain's skip is for the rest of the day.
+                    logger.debug(f"[SCAN] cycle={cycle_counter} | skip: brain's SKIP_DAY active")
+                    last_scan = now
+                    time.sleep(30)
+                    continue
                 if not is_allow_overnight() and is_past_no_new_trades_time(now):
                     logger.info(f"[SCAN] cycle={cycle_counter} | skip: intraday mode — no_new_trades_after "
                                 f"({intraday_cfg['no_new_trades_after'].strftime('%H:%M')}) hit")
