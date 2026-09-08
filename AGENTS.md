@@ -282,6 +282,49 @@ main loop checks it on every iteration, auto-expires.
 - Brain's LLM needs new input: add to the `_periodic_scan` context dict
 - User asks "the bot missed X opportunity" — check if the LLM is using all available signals (chain, levels, news, FII/DII, predictive)
 
+## UNLEASHED mode (added 2026-09-09 00:56)
+
+FIX 2026-09-09 00:56: user said "keep no caps at all, I want to see profits".
+The LLM brain is now the SOLE risk manager. ALL hardcoded risk caps are
+REMOVED. The only safety net is `max_drawdown_pct: 50%` (catastrophic
+blow-up protection, not a strategy cap).
+
+**REMOVED (was templated risk management)**:
+  - per-trade loss cap (was 1-2%) → 100% (LLM decides)
+  - daily/weekly/monthly loss cap → 100%
+  - max trades per day (was 6-10) → 999
+  - max consecutive losses (was 4) → 999
+  - max lots (was 3-4) → 50
+  - per-underlying cap (was 30%) → 100%
+  - 10-lot hard cap on conviction-based sizing → GONE
+  - VIX skip threshold (was 22) → 100 (no skip)
+  - opening buffer (9:15-9:30) → removed
+  - macro event blackout → 0
+  - cooldown between trades → 0
+  - min hold before smart exit → 0
+  - position cap (was 2 strategies) → 50
+
+**KEPT (only safety net)**:
+  - max_drawdown_pct: 50% — auto-pause if -50% from starting capital
+  - min 1 lot per leg (qty=0 makes no sense)
+
+**Max-drawdown safety net** (commit 41400cf):
+The bot's main loop checks if cumulative drawdown >= 50% of starting
+capital. If yes, auto-pauses and sends a Telegram alert. User can
+resume via Telegram /resume.
+
+**LLM prompt updated** to "POSITION SIZING — UNLEASHED 2026-09-09 00:56
+(no caps, you decide)" — the LLM is told it has full risk control.
+
+**Apply when**:
+- User asks to re-enable caps: change values in `risk:` block of
+  settings.yaml (e.g. position_cap: 6, max_lots: 4, max_drawdown_pct: 20)
+- User wants more conservative: lower max_drawdown_pct (e.g. 30)
+- User wants more aggressive: raise max_drawdown_pct (e.g. 80)
+- DO NOT add hardcoded caps in the LLM prompt — the LLM is the
+  sole risk manager by user's explicit instruction
+- The min-1-lot floor is in `write_decision` AND `_normalize_decision`
+
 ## Self-evolving / self-learning policy
 
 This file is the institutional memory. Every time you (the agent)
