@@ -14,16 +14,18 @@ def _read() -> str:
 
 
 def test_grok_desk_scheduler_wired():
-    """The brain must have a 15-min scheduler that runs scripts/run_grok_desk.py."""
+    """The brain must have a 15-min scheduler that runs scripts/run_grok_desk.py.
+    FIX 2026-09-08 22:35: now runs 24/7 (was: only during NSE market hours)."""
     text = _read()
     assert "last_grok_desk_ts" in text, "last_grok_desk_ts not declared in quant_service.py"
-    # The periodic check: every 900s (15 min) during market hours
+    # The periodic check: every 900s (15 min), 24/7 (no is_market_hours gate)
     pattern = re.compile(
-        r"is_market_hours\(\)\s*and\s*datetime\.now\(\)\.timestamp\(\)\s*-\s*last_grok_desk_ts\s*>\s*900"
+        r"datetime\.now\(\)\.timestamp\(\)\s*-\s*last_grok_desk_ts\s*>\s*900"
     )
     assert pattern.search(text), (
         "Grok Desk 15-min periodic check not wired into watch_loop. "
-        "Should be: 'is_market_hours() and datetime.now().timestamp() - last_grok_desk_ts > 900'"
+        "Should be: 'datetime.now().timestamp() - last_grok_desk_ts > 900' "
+        "(24/7, no is_market_hours gate — runs overnight research mode too)"
     )
 
 

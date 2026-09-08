@@ -1574,6 +1574,9 @@ last_overnight_research_ts = 0      # 2h when NSE closed (24/7): brain logs hypo
 last_global_check_ts = 0            # 5 min 24/7: pull US/Asia/Europe/gold/oil/crypto for LLM global context awareness
 last_grok_desk_ts = 0               # 15 min during market hours: 6-role Grok Bot Desk (parallel 2nd-opinion, runs grok_desk.py)
 last_grok_desk_date = None          # one-shot guard so we don't fire on the boundary
+last_rss_news_ts = 0                # 30 min 24/7: real news from Moneycontrol/ET/LiveMint/BS RSS feeds
+last_rss_news_date = None           # one-shot guard
+last_fii_dii_ts = 0                 # 1h 24/7: real FII/DII flows from Moneycontrol (NSE archives fallback)
 
 # --- LLM call thread tracking (for non-blocking async LLM calls) ---
 _LLM_THREAD = None           # type: ignore  # the in-flight Thread object, or None
@@ -2111,6 +2114,8 @@ def watch_loop():
     global last_candle_refresh_ts, last_alpha_refresh_ts, last_chain_refresh_ts, last_dashboard_refresh_ts
     global last_periodic_scan_ts, last_global_check_ts
     global last_grok_desk_ts, last_grok_desk_date
+    global last_rss_news_ts, last_rss_news_date
+    global last_fii_dii_ts
     # FIX 2026-09-04 23:48: missing global declaration for last_overnight_research_ts
     # caused UnboundLocalError on the use at line 2363 (NSE closed check). 6th
     # shadow-import-style bug — different variable each time, same root cause:
@@ -2256,16 +2261,37 @@ def watch_loop():
                         })
                     except Exception as e:
                         log(f"periodic-scan-err: {e}")
+                # FIX 2026-09-08 22:35: RSS news fetch every 30 min (24/7). Real
+                # headlines from Moneycontrol, ET, LiveMint, BS, Reuters, NDTV.
+                # This is what the LLM brain reasons on (was: nothing, just bot.log
+                # keyword matches). The fetcher is stdlib-only (no feedparser dep).
+                if datetime.now().timestamp() - last_rss_news_ts > 1800:
+                    last_rss_news_ts = datetime.now().timestamp()
+                    _scheduled_subprocess("scripts/rss_news_fetcher.py", "rss-fetch", timeout=60)
+                # FIX 2026-09-08 22:35: FII/DII flow fetch every 1 hour (24/7). Real
+                # institutional flows from Moneycontrol's table (NSE archives
+                # fallback). This is what the Grok Bot Desk's WHALES role reads.
+                if datetime.now().timestamp() - last_fii_dii_ts > 3600:
+                    last_fii_dii_ts = datetime.now().timestamp()
+                    _scheduled_subprocess("scripts/fii_dii_fetcher.py", "fii-dii", timeout=60)
                 # FIX 2026-09-08 16:35: GROK BOT DESK — 6-role LLM desk (parallel 2nd opinion).
-                # Runs every 15 min during market hours (Mon-Fri 09:00-15:30 IST).
+                # FIX 2026-09-08 22:35: now runs 24/7, not just market hours.
+                # During NSE hours (09:15-15:30 Mon-Fri): the desk provides a
+                # trading-focused brief that the brain can act on.
+                # Outside NSE hours: the desk runs in overnight_research mode —
+                # analyses US/Asia/Europe moves, scans news, prepares for NSE open,
+                # identifies setups for tomorrow. Still 15-min cadence. Cost: same
+                # ~$0.50/day. The head-of-desk won't trade (no positions can be
+                # opened outside market hours) but the brain's overnight reasoning
+                # uses the desk's output as context.
                 # Inspired by @MSBIntel's GROK BOT Desk PDF. Uses our existing
                 # minimax M2.7-highspeed (the same model llm_judge.py uses). Writes
                 # data_cache/grok_desk_state.json + history, alerts Telegram ONLY when
                 # the head-of-desk speaks (default output is QUIET DAY). This is
                 # fully autonomous — no manual invocation required.
                 # Cadence: every 15 min matches the original Grok Bot guide.
-                # 6 LLM calls × ~30s ≈ 30s total per cycle. Cost: ~$0.50/day.
-                if is_market_hours() and datetime.now().timestamp() - last_grok_desk_ts > 900:
+                # 6 LLM calls × ~30s ≈ 30s total per cycle.
+                if datetime.now().timestamp() - last_grok_desk_ts > 900:
                     last_grok_desk_ts = datetime.now().timestamp()
                     _scheduled_subprocess(
                         "scripts/run_grok_desk.py",
@@ -2322,6 +2348,10 @@ def watch_loop():
                 if _now.hour == 9 and _now.minute < 5 and last_news_cache_date != _now.date():
                     last_news_cache_date = _now.date()
                     log("SCHED-NEWS-CACHE: triggering (09:00)")
+                    # FIX 2026-09-08 22:35: fetch REAL news from RSS first, then run the LLM judge
+                    # (which reads from data_cache/news_feed.txt). This gives the brain
+                    # actual headlines to reason on, not just bot.log keyword matches.
+                    _scheduled_subprocess("scripts/rss_news_fetcher.py", "rss-fetch", timeout=60)
                     _scheduled_subprocess("scripts/news_cache.py", "news-cache", timeout=180)
                 # 14:50 closing-auction straddle: LLM evaluates vol setup, deploys 1-lot long straddle/strangle
                 if _now.hour == 14 and 50 <= _now.minute < 55 and last_closing_straddle_date != _now.date():

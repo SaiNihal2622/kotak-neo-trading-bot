@@ -225,6 +225,37 @@ def _oi_summary() -> str:
     return "\n".join(lines)
 
 
+def _fii_dii_summary() -> str:
+    """Get latest FII/DII flow data — the 'whales' feed.
+    Returns a short summary suitable for the WHALES role's LLM context.
+    """
+    d = _load_json(DCACHE / "fii_dii.json")
+    if not d:
+        return "FII/DII data not available yet (run scripts/fii_dii_fetcher.py)"
+    s = d.get("summary", {})
+    rows = d.get("rows", [])
+    if not rows:
+        return "FII/DII rows empty"
+    lines = ["FII/DII FLOW (latest first):"]
+    for r in rows[:3]:
+        lines.append(
+            f"  {r.get('date', '?'):20}  "
+            f"FII net={r.get('fii_net_cr', 0):>+10.1f} cr  "
+            f"DII net={r.get('dii_net_cr', 0):>+10.1f} cr"
+        )
+    lines.append("")
+    lines.append("ROLLING SUMS:")
+    def _fmt(v):
+        return f"{v:>+10.1f}" if isinstance(v, (int, float)) else "   n/a    "
+    def _dir(b):
+        return "BULL" if b is True else ("BEAR" if b is False else "n/a")
+    lines.append(f"  FII net 3d: {_fmt(s.get('fii_net_3d_sum_cr'))} cr ({_dir(s.get('fii_bullish_3d'))})")
+    lines.append(f"  DII net 3d: {_fmt(s.get('dii_net_3d_sum_cr'))} cr ({_dir(s.get('dii_bullish_3d'))})")
+    lines.append(f"  FII net 5d: {_fmt(s.get('fii_net_5d_sum_cr'))} cr")
+    lines.append(f"  DII net 5d: {_fmt(s.get('dii_net_5d_sum_cr'))} cr")
+    return "\n".join(lines)
+
+
 def _news_summary() -> str:
     d = _load_json(DCACHE / "news_aggregate.json")
     if not d:
@@ -338,11 +369,12 @@ def run_news() -> str:
 
 def run_whales() -> str:
     user = (
-        "Flow data — OI build-up / unwind + institutional flows:\n\n"
+        "Flow data — institutional FII/DII + OI build-up / unwind:\n\n"
+        + _fii_dii_summary() + "\n\n"
         + _oi_summary() + "\n\n"
-        + "Net institutional flow direction (FII vs DII). Top OI build-up strikes. "
-        + "Any cluster of 2+ whales in the same direction inside an hour. "
-        + "If no signal, say QUIET ON FLOW."
+        + "Net institutional flow direction (FII vs DII, 3d/5d sums). Top OI "
+        + "build-up strikes. Any cluster of 2+ whales in the same direction "
+        + "inside an hour. If no signal, say QUIET ON FLOW."
     )
     return _call_minimax(SYSTEM_WHALES, user, max_tokens=400)
 

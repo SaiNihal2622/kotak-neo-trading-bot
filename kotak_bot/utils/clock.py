@@ -138,20 +138,40 @@ def is_past_market_close(now: Optional[datetime] = None) -> bool:
 
 # Intraday mode configuration (separate from market_hours to make intent explicit)
 _INTRADAY = {
-    "allow_overnight": False,    # master switch — when False, no positions held past close
-    "no_new_trades_after": time(13, 30),  # block new entries this many minutes before close
-    "force_square_off_time": time(14, 30),  # hard square-off all positions this time
+    "allow_overnight": True,    # FIX 2026-09-08 22:35: default True. The LLM brain
+                                # can now hold overnight if conditions warrant.
+                                # The hard 14:30 force-square and 13:30 no-new-trades
+                                # become SOFT gates: the bot asks the LLM first.
+    "no_new_trades_after": time(14, 30),  # SOFT gate (was 13:30) — LLM can override
+    "force_square_off_time": time(15, 15),  # SOFT gate (was 14:30) — LLM can override
     "opening_buffer_min": 15,    # don't enter in first 15 min (9:15-9:30) — let price settle
     "avoid_first_5_min_after_open": True,
-    "event_blackout_min_before": 60,  # don't trade within 60 min of a macro event
-    "event_blackout_min_after": 15,   # or within 15 min after
+    "event_blackout_min_before": 60,  # HARD gate: don't trade within 60 min of a macro event
+    "event_blackout_min_after": 15,   # HARD gate: or within 15 min after
+    "ai_override_enabled": True,  # FIX 2026-09-08 22:35: brain can write
+                                   # data_cache/_ai_skip_force_square.json to skip
+                                   # the soft gates if it sees a strong setup
+                                   # (theta capture, momentum continuation, US Fed, etc.)
 }
 
 
 def set_intraday(cfg: dict) -> None:
-    """Configure intraday behavior. Pass empty dict to reset to defaults."""
+    """Configure intraday behavior. Pass empty dict to reset to defaults.
+    FIX 2026-09-08 22:35: empty dict now actually resets (was a no-op before).
+    """
     global _INTRADAY
     if not cfg:
+        # Reset to module-level defaults
+        _INTRADAY = {
+            "allow_overnight": True,
+            "no_new_trades_after": time(14, 30),
+            "force_square_off_time": time(15, 15),
+            "opening_buffer_min": 15,
+            "avoid_first_5_min_after_open": True,
+            "event_blackout_min_before": 60,
+            "event_blackout_min_after": 15,
+            "ai_override_enabled": True,
+        }
         return
     new_cfg = dict(_INTRADAY)
     for k, v in cfg.items():

@@ -13,13 +13,16 @@ from kotak_bot.utils.clock import (
 
 
 def test_intraday_defaults():
-    """Default settings block all overnight positions."""
+    """Default settings now allow overnight (LLM can hold overnight if conditions warrant).
+    Soft gates: no_new_trades_after=14:30, force_square_off_time=15:15.
+    """
     set_intraday({})  # reset
     cfg = get_intraday()
-    assert cfg["allow_overnight"] is False
-    assert cfg["no_new_trades_after"] == time(13, 30)
-    assert cfg["force_square_off_time"] == time(14, 30)
-    print("  defaults: allow_overnight=False, no_new_trades_after=13:30, force_square_off=14:30")
+    # FIX 2026-09-08 22:35: defaults flipped — AI can hold overnight.
+    assert cfg["allow_overnight"] is True
+    assert cfg["no_new_trades_after"] == time(14, 30)
+    assert cfg["force_square_off_time"] == time(15, 15)
+    print("  defaults: allow_overnight=True, no_new_trades_after=14:30, force_square_off=15:15")
 
 
 def test_no_new_trades_after():
@@ -98,10 +101,12 @@ def test_allow_overnight_flag():
 
 def test_set_intraday_invalid_input():
     """Bad inputs should keep defaults, not crash."""
+    set_intraday({})  # reset to defaults first
     set_intraday({"no_new_trades_after": "not-a-time"})
     cfg = get_intraday()
-    assert cfg["no_new_trades_after"] == time(13, 30)  # default preserved
-    print("  invalid input: kept default 13:30, no crash")
+    # FIX 2026-09-08 22:35: default is now 14:30 (was 13:30) — soft gate
+    assert cfg["no_new_trades_after"] == time(14, 30)  # default preserved
+    print("  invalid input: kept default 14:30, no crash")
 
 
 if __name__ == "__main__":

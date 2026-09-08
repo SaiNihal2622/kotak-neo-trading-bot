@@ -1977,7 +1977,30 @@ def run_paper() -> None:
                     logger.info(f"Squared off {closed} trades at EOD")
             # 2b) INTRADAY SAFETY: force square-off by force_square_off_time
             # (default 14:30 — 60 min before EOD, so all risk is closed well before close)
-            if not is_allow_overnight() and is_past_force_square_off_time(now):
+            # FIX 2026-09-08 22:35: AI-overridable. The LLM brain can write
+            # data_cache/_ai_skip_force_square.json to skip this hard close.
+            # Use case: AI sees a strong setup that should hold past 14:30
+            # (theta capture, momentum continuation, US Fed catalyst, etc.)
+            # The AI is then responsible for managing the position.
+            _ai_skip_path = Path("data_cache/_ai_skip_force_square.json")
+            _ai_skip_active = False
+            if _ai_skip_path.exists():
+                try:
+                    _ai_skip = json.loads(_ai_skip_path.read_text(encoding="utf-8"))
+                    _expires = _ai_skip.get("expires_at", "")
+                    if _expires and _expires > now.isoformat():
+                        _ai_skip_active = True
+                        logger.info(
+                            f"[AI-OVERRIDE] force-square skipped — AI wrote skip until {_expires} "
+                            f"(reason: {_ai_skip.get('reason', '?')[:120]})"
+                        )
+                    else:
+                        # expired — auto-remove
+                        _ai_skip_path.unlink(missing_ok=True)
+                        logger.info(f"[AI-OVERRIDE] expired skip flag removed (was until {_expires})")
+                except Exception as _ai_skip_err:
+                    logger.warning(f"[AI-OVERRIDE] skip-flag read failed: {_ai_skip_err}")
+            if not _ai_skip_active and not is_allow_overnight() and is_past_force_square_off_time(now):
                 open_trades = order_mgr.open_trades()
                 if open_trades:
                     closed = order_mgr.square_off_all(reason="intraday_force_close")
@@ -2026,8 +2049,10 @@ def run_paper() -> None:
             # If anything slipped through (broker errors, frozen threads, etc), forcibly
             # close any remaining open positions. The bot must NEVER carry overnight risk
             # in intraday mode.
+            # FIX 2026-09-08 22:35: also AI-overridable. If the brain's skip flag
+            # is still active (or was extended), the 15:15 hard-kill also skips.
             _now_hm = now.strftime("%H:%M")
-            if not is_allow_overnight() and _now_hm >= "15:15" and _now_hm < "15:30":
+            if not _ai_skip_active and not is_allow_overnight() and _now_hm >= "15:15" and _now_hm < "15:30":
                 open_trades = order_mgr.open_trades()
                 if open_trades:
                     logger.error(f"[HARD-KILL] {len(open_trades)} open trades still alive at {_now_hm} IST — EMERGENCY close")
