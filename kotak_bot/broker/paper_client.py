@@ -350,6 +350,31 @@ class PaperClient(BrokerClient):
                 if tick:
                     pos.ltp = tick.ltp
                     pos.pnl = (pos.ltp - pos.avg_price) * pos.qty
+                    continue
+                # FIX 2026-09-09 13:45: no live tick for this option contract.
+                # Fall back to option_chains.json which has fresh LTP from the
+                # option chain analyzer (KotakProdFeed). Match by underlying +
+                # strike + opt_type (the option chain keys are like "23500_PE",
+                # not the full broker symbol).
+                try:
+                    import json as _jc
+                    from pathlib import Path as _P
+                    _und = (pos.underlying or "").upper()
+                    _stk = float(pos.strike or 0)
+                    _ot = (pos.option_type or "").upper()
+                    _chain = _P("data_cache") / f"option_chain_{_und}.json"
+                    if _chain.exists():
+                        cd = _jc.loads(_chain.read_text(encoding="utf-8"))
+                        for _key, _info in (cd.get("strikes") or {}).items():
+                            if (float(_info.get("strike") or 0) == _stk
+                                    and (_info.get("opt_type") or _info.get("option_type") or "").upper() == _ot):
+                                _px = float(_info.get("price") or 0)
+                                if _px > 0:
+                                    pos.ltp = _px
+                                    pos.pnl = (pos.ltp - pos.avg_price) * pos.qty
+                                break
+                except Exception:
+                    pass
             return list(self._positions.values())
 
     def get_holdings(self) -> list[Position]:

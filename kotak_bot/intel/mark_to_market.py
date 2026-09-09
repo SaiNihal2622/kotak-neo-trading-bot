@@ -44,10 +44,28 @@ def compute_pnl(positions: list, feed) -> dict:
         cur = feed.get_ltp(sym) if feed else 0
         # FIX 2026-09-04 13:50: if feed doesn't have this option LTP, try option_chains.json
         if cur <= 0 and sym:
+            # FIX 2026-09-09 13:42: option chain uses key like "23500_PE" and the
+            # info dict has empty 'symbol'. Match by underlying + strike + opt_type
+            # instead of symbol. The position's symbol is e.g.
+            # "NIFTY10SEP2623600PE" — parse it to find the underlying + strike + opt_type.
+            _und = p.get("underlying", "")
+            _stk = p.get("strike") or p.get("strike_price") or 0
+            _ot = (p.get("option_type") or p.get("opt_type") or "").upper()
             for cd in _chains_files:
                 strikes = cd.get("strikes", {})
                 for key, info in strikes.items():
-                    if info.get("symbol") == sym or key == sym:
+                    # Direct symbol match (rare but try)
+                    if info.get("symbol") and info.get("symbol") == sym:
+                        cur = info.get("price", 0)
+                        if cur > 0:
+                            break
+                    # Key match (e.g. "23500_PE")
+                    if key == sym:
+                        cur = info.get("price", 0)
+                        if cur > 0:
+                            break
+                    # Underlying + strike + opt_type match
+                    if _stk and _ot and info.get("strike") == _stk and (info.get("opt_type") or info.get("option_type") or "").upper() == _ot:
                         cur = info.get("price", 0)
                         if cur > 0:
                             break
