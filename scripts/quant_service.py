@@ -912,6 +912,86 @@ def get_prompt_addition() -> str:
     return ""
 
 
+def get_min_activity_reminder() -> str:
+    """FIX 2026-09-09 13:30: enforce min activity rule.
+
+    The LLM was in a 4+ hour HOLD loop saying "trend_captured" while the market was
+    actually -0.82% bearish. The brain must be more aggressive: if we've had 0 trades
+    in the last 90 min during NSE market hours AND the market has clear directional
+    bias (any index >0.3% from session open), the LLM MUST consider entering.
+
+    Returns a dynamic prompt addition that pushes the LLM to act.
+    """
+    if not is_market_hours():
+        return ""
+    try:
+        # Get last trade time from trade journal
+        last_trade_ts = 0.0
+        try:
+            journal_path = DATA / "trade_journal.jsonl"
+            if journal_path.exists():
+                lines = journal_path.read_text(encoding="utf-8").strip().split("\n")
+                for line in reversed(lines[-50:]):
+                    try:
+                        rec = json.loads(line)
+                        ts_str = rec.get("ts") or rec.get("entry_ts") or rec.get("timestamp", "")
+                        if ts_str:
+                            from datetime import datetime as _dt
+                            try:
+                                ts = _dt.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+                                last_trade_ts = max(last_trade_ts, ts)
+                            except Exception:
+                                pass
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        # Time since last trade
+        now_ts = time.time()
+        mins_since_trade = (now_ts - last_trade_ts) / 60.0 if last_trade_ts else 9999.0
+        # Get session moves from candle engine
+        try:
+            from candle_engine import get_engine
+            eng = get_engine()
+            session_moves = {}
+            for sym in list(eng.last_ltp.keys())[:5]:
+                so = eng.get_session_open(sym)
+                ltp = eng.last_ltp.get(sym, 0)
+                if so and ltp:
+                    session_moves[sym] = round((ltp - so) / so * 100, 2)
+        except Exception:
+            session_moves = {}
+        # Build reminder
+        strong_bias = [s for s, p in session_moves.items() if abs(p) >= 0.3]
+        reminder = ""
+        if mins_since_trade > 90 and strong_bias:
+            # > 90 min since last trade + strong directional bias = take action
+            bias_dir = "BULLISH" if session_moves.get(strong_bias[0], 0) > 0 else "BEARISH"
+            reminder = (
+                f"\n\n*** MIN-ACTIVITY OVERRIDE (FIX 2026-09-09 13:30) ***\n"
+                f"You have NOT traded in {mins_since_trade:.0f} minutes. The market has "
+                f"clear {bias_dir} bias (session moves: {session_moves}). The user wants "
+                f"ACTION. If you have 0 positions and the market has moved >0.3% from "
+                f"open, TAKE A TRADE. Don't wait. A small loss on a wrong call is cheap. "
+                f"Missing a 5x winner is expensive. Open a {bias_dir.lower()} position "
+                f"now with conviction 60+ and 1-3 lots NIFTY. ***"
+            )
+        elif mins_since_trade > 60 and not strong_bias:
+            # > 60 min, no clear bias — but still remind to consider
+            reminder = (
+                f"\n\n*** MIN-ACTIVITY CHECK (FIX 2026-09-09 13:30) ***\n"
+                f"You have NOT traded in {mins_since_trade:.0f} minutes. The market is "
+                f"FLAT (session moves < 0.3%). Either:\n"
+                f"  (a) Open a small directional position if you see edge, OR\n"
+                f"  (b) Output SKIP_DAY with concrete justification for staying flat.\n"
+                f"Do NOT just HOLD with vague 'trend_captured' reasoning. ***"
+            )
+        return reminder
+    except Exception as e:
+        log(f"min-activity-err: {e}")
+        return ""
+
+
 def compute_portfolio_delta() -> dict:
     """Compute net portfolio delta across all open positions. Returns {delta, gamma, vega, n_positions}.
     Uses BS greeks with the position's actual strike + spot. Used by the LLM to decide hedges."""
@@ -1465,7 +1545,11 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         "    will appear in paper.positions.\n\n"
         "Decide now. Output ONE JSON object only. Pay attention to delta (directional risk) and gamma (convexity). Iron condors should be delta-neutral (delta < 5). Long options should have positive delta for CE, negative for PE."
     )
-    result = call_llm_direct(PROFESSIONAL_QUANT_SYSTEM + get_prompt_addition(), user_content, max_tokens=2000)
+    result = call_llm_direct(
+        PROFESSIONAL_QUANT_SYSTEM + get_prompt_addition() + get_min_activity_reminder(),
+        user_content,
+        max_tokens=2000,
+    )
     SERVICE_STATE["llm_calls"] += 1
     # Track LLM cost (per Anthropic Sonnet pricing)
     if result.get("ok") and result.get("usage"):
