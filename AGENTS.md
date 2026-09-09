@@ -158,6 +158,33 @@ No chat-spam, full coverage.
 6. **Commit often, in small logical units** — `git log --oneline` is
    the easiest way to recover from a bad change.
 
+## The "5 recurring issues" — root causes + systemic fixes (2026-09-09 14:30)
+
+**The pattern**: 5 issues kept coming back every session because I was
+fixing the SYMPTOMS, not the ROOT CAUSES. The systemic fixes below
+address the underlying reasons and add a self-audit so the issues
+are VISIBLE in the dashboard before they cause damage.
+
+| # | Symptom | Root cause | Systemic fix |
+|---|---|---|---|
+| 1 | Brain HOLD loop (LLM serial holder) | Static ACTIVE MANAGEMENT prompt is just TEXT — the LLM can ignore it | `_system_enforcement_check()` in `scripts/quant_service.py` is CODE that takes over when LLM has been silent for 60+ min during market hours AND candle engine shows clear directional bias (>0.3% session move). Writes `data_cache/system_enforced_action.json`; the bot reads it on its next tick and executes the fallback trade. The LLM is welcome to override (CLOSE) on its next call. This is the LAST resort, not the primary path. |
+| 2 | Option LTP stuck at avg_price | `paper_client.get_positions()` only updates LTP from the option chain JSON, which is refreshed every 5 min by the chain analyzer. Between refreshes, positions show avg_price. | Black-Scholes LTP estimator as the FINAL fallback in `paper_client.get_positions()`. Uses live spot (from intraday_levels or candles), IV from chain ATM options, time-to-expiry from position expiry. Estimates LTP on every tick. Also fixed the chain lookup to match by `underlying + strike + opt_type` (the chain has these populated; the symbol field is empty). |
+| 3 | FII/DII date parser accepts 2-year-old data | The Moneycontrol table parser accepts any date it parses. When MC returns yearly data from the page footer (or JS-rendered data that fails to load), the parser happily stores it as "current". | 7-day cutoff filter. Rows with parseable date older than 7 days are dropped. Added `date_parsed` per row + `data_age_days` + `is_stale` in summary. Added `stale_reason` when no fresh data so the brain knows NOT to reason on stale FII/DII. |
+| 4 | News RSS includes old article snippets | Regex parser accepts any title + dedup by title only. No date filter; URLs can be syndicated with different titles. | 48-hour cutoff. Drop entries with parseable date >48h old. URL dedup in addition to title dedup. |
+| 5 | State file counters never flushed to disk | `SERVICE_STATE` dict was updated in memory but only written to disk on self-restart. After every restart, the dashboard showed stale counters. | Periodic flush every 30s in the watch loop + `atexit` handler on clean exit (SIGTERM, normal return, KeyboardInterrupt). Module-level `last_state_flush_ts` tracks the interval. |
+
+**The system audit** (`scripts/_system_audit.py`):
+- Runs every 30 min via the brain's in-process scheduler
+- Reports health of all 5 subsystems to `data_cache/system_audit.json`
+- The dashboard's NEW "System Health" section shows a colored OK/WARN/ERROR badge per subsystem + 1-line detail
+- Overall status pill at the top of the section
+- One-shot: `python scripts\_system_audit.py`
+
+**Apply when**:
+- User says "the X is broken again" — check `data_cache/system_audit.json` FIRST. The audit will tell you which subsystem is in WARN/ERROR.
+- New recurring issue: add an `audit_<issue>()` function to `scripts/_system_audit.py`, then add it to the `main()` dict.
+- Brain's LLM keeps HOLDing in a way that survives all prompt hints: the system enforcement will fire on the next 15-min cycle and force a trade. The LLM can override on its next call.
+
 ## Recovery procedures
 
 - **Bot dead mid-session**: `nssm restart KotakBotPaper`
