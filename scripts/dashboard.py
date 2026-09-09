@@ -697,6 +697,50 @@ def section_risk(ps) -> str:
 '''
 
 
+def section_strategy_performance() -> str:
+    """Per-strategy P&L attribution. Shows which strategies are profitable."""
+    try:
+        from scripts.strategy_library import load_performance, STRATEGIES
+    except Exception:
+        return ""
+    perf = load_performance()
+    if not perf:
+        return ""
+    # Sort by total P&L (best first)
+    sorted_perf = sorted(perf.values(), key=lambda x: x.total_pnl, reverse=True)
+    rows = []
+    for s in sorted_perf:
+        status = "DISABLED" if s.is_disabled else "ACTIVE"
+        status_class = "muted" if s.is_disabled else "pos" if s.total_pnl > 0 else "neg"
+        wr_pct = f"{s.win_rate*100:.0f}%" if s.n_trades else "—"
+        avg = s.avg_pnl
+        avg_class = "pos" if avg > 0 else "neg" if avg < 0 else "muted"
+        strat_def = STRATEGIES.get(s.name)
+        edge = strat_def.expected_edge[:60] if strat_def else ""
+        rows.append(f'''
+<tr>
+  <td class="bold">{_esc(s.name)}</td>
+  <td><span class="pill pill-{status_class}">{status}</span></td>
+  <td class="num">{s.n_trades}</td>
+  <td class="num">{wr_pct}</td>
+  <td class="num {avg_class} bold">{_fmt_money(s.total_pnl, signed=True)}</td>
+  <td class="muted small">{_esc(edge)}</td>
+</tr>
+''')
+    return f'''
+<section class="card">
+  <h2>Strategy Performance &middot; per-strategy P&amp;L attribution</h2>
+  <p class="muted small">Disabled strategies auto-killed when win rate drops below 30% over 10+ trades. Backtested edge shown.</p>
+  <table class="dtable">
+    <thead>
+      <tr><th>Strategy</th><th>Status</th><th>Trades</th><th>Win%</th><th>Total P&amp;L</th><th>Edge</th></tr>
+    </thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+</section>
+'''
+
+
 def section_brain_decisions(qs) -> str:
     """LLM decision log: last 15 decisions with rationale."""
     decisions = []
@@ -868,6 +912,7 @@ def render_dashboard() -> str:
     fills = section_recent_fills()
     risk = section_risk(ps)
     sched = section_schedulers(qs)
+    strategy_perf = section_strategy_performance()
     decisions = section_brain_decisions(qs)
     bot_log = section_bot_activity()
 
@@ -993,6 +1038,7 @@ def render_dashboard() -> str:
 {open_pos}
 {fills}
 {risk}
+{strategy_perf}
 {decisions}
 {sched}
 {bot_log}
