@@ -66,18 +66,25 @@ def test_dashboard_has_5s_auto_refresh():
 
 
 def test_dashboard_has_no_telegram_references():
-    """The dashboard should be the single source of truth — no Telegram noise."""
+    """The dashboard should be the single source of truth — no Telegram noise.
+
+    The bot's stdout log stream naturally contains 'Telegram' references
+    (e.g. 'TelegramCommandHandler started'). We exclude that section.
+    """
+    import re
     from scripts.dashboard import render_dashboard
     html = render_dashboard()
     # Footer should mention dashboard is the only surface
     assert "single source of truth" in html
     assert "Telegram alerts disabled" in html
-    # Should mention telegram only in the "disabled" context
-    # (i.e. it's OK to mention it as a feature, just don't actually send)
-    telegram_count = html.lower().count("telegram")
+    # Strip the bot log stream section (it contains the bot's stdout which
+    # can naturally mention 'Telegram' as the TelegramCommandHandler logs)
+    cleaned = re.sub(r'<div class="log-stream">.*?</div>\s*</div>', '', html, flags=re.DOTALL)
+    # Should mention telegram only in the "disabled" context in the dashboard's own UI
+    telegram_count = cleaned.lower().count("telegram")
     # 0-2 mentions is OK (one in scheduler description noting EOD alerts are off,
     # one in the footer saying telegram alerts are disabled). Both are informational.
-    assert telegram_count <= 2, f"telegram mentioned {telegram_count}x, should be <= 2"
+    assert telegram_count <= 2, f"telegram mentioned {telegram_count}x in dashboard UI, should be <= 2"
 
 
 def test_dashboard_has_professional_typography():
