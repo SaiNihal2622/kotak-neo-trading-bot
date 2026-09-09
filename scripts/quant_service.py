@@ -1817,6 +1817,272 @@ def _spawn_llm_thread(events: list, context: dict, paper: dict) -> None:
     _LLM_THREAD.start()
 
 
+def _anti_template_check(context: dict) -> dict | None:
+    """FIX 2026-09-09 15:50: anti-template enforcement that breaks HOLD loops.
+
+    Why this exists:
+      The _system_enforcement_check() above only fires when the LLM is
+      SILENT (no trades in 60+ min). But the real problem isn't silence —
+      it's that the LLM produces 30+ identical-templated HOLDs in a row
+      with the same "REGIME: ... fully captured" rationale, every minute,
+      forever. The LLM is making decisions — just the SAME decision.
+
+      This function detects the TEMPLATE pattern (3+ consecutive HOLDs
+      with the same first-60-chars fingerprint) and forces a position-
+      refresh action: take profit, scale up, cut loss, or open new. The
+      LLM is free to override on its next call.
+
+    Trigger conditions:
+      - 3+ consecutive HOLDs in the last 5 decisions
+      - All with the same first-60-chars fingerprint
+      - During market hours
+      - (and at least 30 min since the last OPEN/CLOSE)
+
+    Action chosen:
+      - If a position is open AND in profit (+Rs.200+): CLOSE (take profit)
+      - If a position is open AND in loss (<-Rs.500): CLOSE (cut loss)
+      - If a position is open AND small gain/loss: SCALE UP (add 1 lot)
+      - If NO position AND clear bias: open a new position in bias direction
+
+    Returns the enforced decision dict (or None if no enforcement needed).
+    """
+    if not is_market_hours():
+        return None
+    # Read the last 10 decisions
+    decisions_path = DATA / "quant_service_decisions.jsonl"
+    if not decisions_path.exists():
+        return None
+    try:
+        recent = []
+        with open(decisions_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()[-10:]
+        for line in lines:
+            try:
+                d = json.loads(line)
+                recent.append(d)
+            except Exception:
+                continue
+    except Exception as e:
+        log(f"anti-template-read-err: {e}")
+        return None
+    if len(recent) < 3:
+        return None
+    # Check for 3+ consecutive HOLDs with the same first-60-chars fingerprint
+    fingerprints = []
+    for d in recent[-5:]:
+        dec = d.get("decision", {}) or {}
+        t = dec.get("type", "?")
+        rat = (dec.get("rationale") or "").strip()[:60]
+        fingerprints.append((t, rat))
+    # All must be HOLD with same fingerprint
+    if not all(t == "HOLD" for t, _ in fingerprints):
+        return None
+    if len(set(rat for _, rat in fingerprints)) != 1:
+        return None
+    # Check time since last OPEN/CLOSE
+    last_action_ts = 0.0
+    for d in recent:
+        dec = d.get("decision", {}) or {}
+        t = dec.get("type", "")
+        ts_str = d.get("ts", "")
+        if t in ("OPEN", "CLOSE") and ts_str:
+            try:
+                from datetime import datetime as _dt
+                last_action_ts = max(last_action_ts, _dt.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp())
+            except Exception:
+                pass
+    mins_since_action = (time.time() - last_action_ts) / 60.0 if last_action_ts else 9999.0
+    if mins_since_action < 30:
+        return None  # recent action — not a template loop yet
+    # Get current positions
+    paper = context.get("paper") or {}
+    positions = paper.get("positions") or {}
+    open_count = sum(1 for p in positions.values() if isinstance(p, dict) and p.get("qty"))
+    # Get the dominant bias
+    try:
+        from candle_engine import get_engine
+        eng = get_engine()
+        moves = []
+        for sym in list(eng.last_ltp.keys())[:5]:
+            so = eng.get_session_open(sym)
+            ltp = eng.last_ltp.get(sym, 0)
+            if so and ltp:
+                pct = (ltp - so) / so * 100
+                if abs(pct) >= 0.2:
+                    moves.append((sym, pct))
+    except Exception:
+        moves = []
+    moves.sort(key=lambda x: abs(x[1]), reverse=True)
+    # Build the anti-template decision
+    template_fingerprint = fingerprints[0][1]
+    if open_count == 0 and not moves:
+        return None  # no position AND no signal — let LLM keep HOLDing
+    if open_count > 0:
+        # Position refresh: check P&L to decide action
+        total_pnl = 0.0
+        for sym, p in positions.items():
+            if isinstance(p, dict):
+                total_pnl += float(p.get("pnl", 0) or 0)
+        if total_pnl > 200:
+            # Take profit
+            action_type = "CLOSE"
+            action_inst = "ALL"
+            strategy = "system_enforced_take_profit"
+            rationale = (
+                f"SYSTEM-ENFORCED TAKE PROFIT (FIX 2026-09-09 15:50): LLM has produced "
+                f"{len(fingerprints)}+ identical-templated HOLDs with rationale "
+                f"'{template_fingerprint}...'. Position is in profit (Rs.{total_pnl:+,.0f}). "
+                f"Locking in gains. LLM can re-enter on its next call if it disagrees."
+            )
+        elif total_pnl < -500:
+            # Cut loss
+            action_type = "CLOSE"
+            action_inst = "ALL"
+            strategy = "system_enforced_cut_loss"
+            rationale = (
+                f"SYSTEM-ENFORCED CUT LOSS (FIX 2026-09-09 15:50): LLM has produced "
+                f"{len(fingerprints)}+ identical-templated HOLDs with rationale "
+                f"'{template_fingerprint}...'. Position is in loss (Rs.{total_pnl:+,.0f}). "
+                f"Stopping the bleed. LLM can re-enter on its next call if it disagrees."
+            )
+        else:
+            # Scale up: open a NEW position in same direction
+            if not moves:
+                return None
+            sym, pct = moves[0]
+            is_bullish = pct > 0
+            if sym not in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+                return None
+            try:
+                spot = float(eng.last_ltp.get(sym, 0))
+                if not spot:
+                    return None
+                atm = round(spot / 50) * 50 if sym == "NIFTY" else round(spot / 100) * 100
+                wing = 100
+                if is_bullish:
+                    long_strike = atm
+                    short_strike = atm + wing
+                    opt_type = "CE"
+                    strategy = "system_enforced_scale_bull"
+                else:
+                    long_strike = atm
+                    short_strike = atm - wing
+                    opt_type = "PE"
+                    strategy = "system_enforced_scale_bear"
+                return {
+                    "ts": now_iso(),
+                    "source": "anti_template",
+                    "trigger": "template_hold_streak",
+                    "consecutive_holds": len(fingerprints),
+                    "template_fingerprint": template_fingerprint,
+                    "actions": [{
+                        "type": "OPEN",
+                        "underlying": sym,
+                        "expiry": "WEEKLY",
+                        "strategy": strategy,
+                        "conviction": 55,
+                        "legs": [
+                            {"side": "BUY", "qty": 1, "strike": long_strike, "opt_type": opt_type, "order_type": "MARKET", "price": None},
+                            {"side": "SELL", "qty": 1, "strike": short_strike, "opt_type": opt_type, "order_type": "MARKET", "price": None},
+                        ],
+                        "target": 65, "stop": 25, "max_hold_minutes": 120,
+                        "rationale": (
+                            f"SYSTEM-ENFORCED SCALE (FIX 2026-09-09 15:50): LLM produced "
+                            f"{len(fingerprints)}+ identical HOLDs ('{template_fingerprint}...'). "
+                            f"Existing position is small P&L (Rs.{total_pnl:+,.0f}). Adding 1 more lot "
+                            f"in same direction ({sym} {pct:+.2f}%) to test if LLM's regime view is right. "
+                            f"LLM can override (CLOSE) on its next call."
+                        ),
+                        "note": "anti_template_scale",
+                        "confidence": 0.55,
+                        "risk_pct": 3.0,
+                    }],
+                    "note": f"anti_template:scale:{sym}:{pct:+.2f}%",
+                }
+            except Exception as e:
+                log(f"anti-template-scale-err: {e}")
+                return None
+        # Take-profit or cut-loss branch
+        return {
+            "ts": now_iso(),
+            "source": "anti_template",
+            "trigger": "template_hold_streak",
+            "consecutive_holds": len(fingerprints),
+            "template_fingerprint": template_fingerprint,
+            "actions": [{
+                "type": action_type,
+                "underlying": action_inst,
+                "expiry": "",
+                "strategy": strategy,
+                "conviction": 100,
+                "legs": [],
+                "target": None, "stop": None, "max_hold_minutes": 0,
+                "rationale": rationale,
+                "note": f"anti_template:{strategy}",
+                "confidence": 1.0,
+                "risk_pct": 0.0,
+            }],
+            "note": f"anti_template:{strategy}",
+        }
+    # No position but clear bias — open a new one
+    if not moves:
+        return None
+    sym, pct = moves[0]
+    is_bullish = pct > 0
+    if sym not in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+        return None
+    try:
+        spot = float(eng.last_ltp.get(sym, 0))
+        if not spot:
+            return None
+        atm = round(spot / 50) * 50 if sym == "NIFTY" else round(spot / 100) * 100
+        wing = 100
+        if is_bullish:
+            long_strike = atm
+            short_strike = atm + wing
+            opt_type = "CE"
+            strategy = "system_enforced_anti_template_bull"
+            direction = "BULLISH"
+        else:
+            long_strike = atm
+            short_strike = atm - wing
+            opt_type = "PE"
+            strategy = "system_enforced_anti_template_bear"
+            direction = "BEARISH"
+        return {
+            "ts": now_iso(),
+            "source": "anti_template",
+            "trigger": "template_hold_streak",
+            "consecutive_holds": len(fingerprints),
+            "template_fingerprint": template_fingerprint,
+            "actions": [{
+                "type": "OPEN",
+                "underlying": sym,
+                "expiry": "WEEKLY",
+                "strategy": strategy,
+                "conviction": 60,
+                "legs": [
+                    {"side": "BUY", "qty": 1, "strike": long_strike, "opt_type": opt_type, "order_type": "MARKET", "price": None},
+                    {"side": "SELL", "qty": 1, "strike": short_strike, "opt_type": opt_type, "order_type": "MARKET", "price": None},
+                ],
+                "target": 65, "stop": 25, "max_hold_minutes": 120,
+                "rationale": (
+                    f"SYSTEM-ENFORCED (anti-template, FIX 2026-09-09 15:50): LLM produced "
+                    f"{len(fingerprints)}+ identical-templated HOLDs ('{template_fingerprint}...'). "
+                    f"Market has {direction} bias ({sym} {pct:+.2f}%). Opening a fresh "
+                    f"{strategy} to test if the bias is real. LLM can close on its next call."
+                ),
+                "note": "anti_template_open",
+                "confidence": 0.6,
+                "risk_pct": 3.0,
+            }],
+            "note": f"anti_template:open:{sym}:{pct:+.2f}%",
+        }
+    except Exception as e:
+        log(f"anti-template-open-err: {e}")
+        return None
+
+
 def _system_enforcement_check(context: dict) -> dict | None:
     """FIX 2026-09-09 14:10: system-level enforcement that takes over when
     the LLM is silent.
@@ -2622,10 +2888,24 @@ def watch_loop():
                         "nse_status": "OPEN" if is_market_hours() else "CLOSED",
                     }
                     try:
-                        # System enforcement runs FIRST — if it fires, it
-                        # writes system_enforced_action.json. The bot picks
-                        # it up on its next tick. The LLM still gets called
-                        # below so the user sees what the brain thinks.
+                        # Anti-template check runs FIRST — catches the
+                        # "60+ identical HOLDs in a row" pattern that the
+                        # silence-based system_enforcement misses. If it
+                        # fires, it writes system_enforced_action.json and
+                        # the bot executes the action.
+                        _anti_template = _anti_template_check(_scan_ctx)
+                        if _anti_template is not None:
+                            log(f"ANTI-TEMPLATE: streak={_anti_template.get('consecutive_holds')}, "
+                                f"action={_anti_template['actions'][0]['type']} {_anti_template['actions'][0].get('underlying','?')}, "
+                                f"rationale='{_anti_template.get('template_fingerprint','')[:40]}...'")
+                            SERVICE_STATE["anti_template_fires"] = SERVICE_STATE.get("anti_template_fires", 0) + 1
+                    except Exception as e:
+                        log(f"anti-template-err: {e}")
+                    try:
+                        # System enforcement runs after anti-template — if
+                        # it fires, it writes system_enforced_action.json.
+                        # The LLM still gets called below so the user sees
+                        # what the brain thinks.
                         _enforced = _system_enforcement_check(_scan_ctx)
                         if _enforced is not None:
                             log(f"SYSTEM-ENFORCEMENT: fallback trade written (will be picked up by bot)")

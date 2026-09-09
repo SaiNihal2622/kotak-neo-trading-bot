@@ -169,6 +169,7 @@ def audit_brain_activity() -> dict:
     """Issue 1: is the LLM being active, or stuck in HOLD loop?
     Check mins since last trade. If > 60 min during market hours AND
     no system_enforced_action was written, the LLM is silent.
+    Also detects template HOLD streaks (3+ identical fingerprints in a row).
     """
     journal = DCACHE / "trade_journal.jsonl"
     last_trade_ts = 0.0
@@ -196,23 +197,70 @@ def audit_brain_activity() -> dict:
     # Check if system_enforced_action was written
     sea = DCACHE / "system_enforced_action.json"
     sea_age = _age_minutes(sea)
-    details = f"last trade {mins_since:.0f} min ago, {n_trades_today} trades today"
+    # Template-streak detection
+    decisions_path = DCACHE / "quant_service_decisions.jsonl"
+    template_streak = 0
+    template_fingerprint = ""
+    diversity_score = 1.0
+    if decisions_path.exists():
+        try:
+            recent = []
+            with open(decisions_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()[-20:]
+            for line in lines:
+                try:
+                    d = json.loads(line)
+                    dec = d.get("decision", {}) or {}
+                    t = dec.get("type", "?")
+                    rat = (dec.get("rationale") or "").strip()[:60]
+                    recent.append((t, rat))
+                except Exception:
+                    continue
+            # Count consecutive identical HOLD fingerprints
+            if recent:
+                last_t, last_rat = recent[-1]
+                streak = 0
+                for t, rat in reversed(recent):
+                    if t == "HOLD" and rat == last_rat:
+                        streak += 1
+                    else:
+                        break
+                template_streak = streak if last_t == "HOLD" else 0
+                template_fingerprint = last_rat if template_streak > 0 else ""
+            # Diversity score: 1.0 = all unique, 0.0 = all same
+            if recent:
+                unique = len(set(f"{t}:{r}" for t, r in recent))
+                diversity_score = unique / len(recent)
+        except Exception:
+            pass
+    details = f"last trade {mins_since:.0f} min ago, {n_trades_today} trades today, "
+    details += f"template_hold_streak={template_streak}, decision_diversity={diversity_score:.2f}"
     if sea.exists() and sea_age and sea_age < 30:
-        details += f", system enforcement wrote a fallback at {sea_age:.0f} min ago"
+        details += f", anti-template/system enforcement wrote a fallback at {sea_age:.0f} min ago"
     # No trades ever
     if mins_since > 9999:
         return {"status": "warn", "mins_since_trade": None, "trades_today": n_trades_today,
+                "template_streak": template_streak, "diversity_score": round(diversity_score, 2),
                 "details": "no trades recorded ever — LLM has not opened any position"}
+    if template_streak >= 3:
+        return {"status": "error", "mins_since_trade": round(mins_since, 0),
+                "trades_today": n_trades_today, "template_streak": template_streak,
+                "diversity_score": round(diversity_score, 2),
+                "details": f"LLM in template loop: {template_streak} consecutive identical HOLDs ('{template_fingerprint}...'). "
+                            f"Anti-template should fire on next periodic scan."}
     if mins_since > 240:
         return {"status": "warn", "mins_since_trade": round(mins_since, 0),
-                "trades_today": n_trades_today,
+                "trades_today": n_trades_today, "template_streak": template_streak,
+                "diversity_score": round(diversity_score, 2),
                 "details": f"no trades in {mins_since/60:.1f} hours"}
-    if mins_since > 90:
+    if mins_since > 90 or template_streak >= 2:
         return {"status": "warn", "mins_since_trade": round(mins_since, 0),
-                "trades_today": n_trades_today,
-                "details": f"no trades in {mins_since:.0f} min — system enforcement should fire if bias > 0.3%"}
+                "trades_today": n_trades_today, "template_streak": template_streak,
+                "diversity_score": round(diversity_score, 2),
+                "details": f"no trades in {mins_since:.0f} min, {template_streak} template HOLDs in a row"}
     return {"status": "ok", "mins_since_trade": round(mins_since, 0),
-            "trades_today": n_trades_today, "details": details}
+            "trades_today": n_trades_today, "template_streak": template_streak,
+            "diversity_score": round(diversity_score, 2), "details": details}
 
 
 def main() -> int:
