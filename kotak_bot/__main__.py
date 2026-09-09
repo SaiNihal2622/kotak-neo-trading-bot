@@ -1843,6 +1843,101 @@ def run_paper() -> None:
             except Exception as _qa_err:
                 logger.warning(f"quant-action check failed: {_qa_err}")
                 logger.warning(f"brain-action check failed: {_ba_err}")
+            # FIX 2026-09-09 14:15: system-enforced action (LLM-silent safety net).
+            # The brain writes data_cache/system_enforced_action.json when the LLM
+            # has been silent for 60+ min during market hours AND the candle engine
+            # shows clear directional bias. The bot reads it here and executes the
+            # fallback trade (a small directional vertical). The LLM is welcome to
+            # close it on its next call. Schema is the same as quant_actions.json
+            # so we re-use the action-processing logic.
+            try:
+                _sea_path = Path("data_cache/system_enforced_action.json")
+                if _sea_path.exists():
+                    _sea_age_min = 0
+                    try:
+                        _sea_ts = _read_json(_sea_path, default={}).get("ts", "")
+                        if _sea_ts:
+                            _sea_age_min = (now - datetime.fromisoformat(_sea_ts)).total_seconds() / 60.0
+                    except Exception:
+                        _sea_age_min = 0
+                    if _sea_age_min > 30:
+                        # Stale — drop it
+                        try:
+                            _sea_path.unlink()
+                            logger.info(f"[SYS-ENFORCE] dropped stale action ({_sea_age_min:.0f} min old)")
+                        except Exception:
+                            pass
+                    else:
+                        # Process the system-enforced action using the same logic
+                        # as quant_actions.json. The trade gets marked with a
+                        # "system_enforced" tag in the journal.
+                        _sea = _read_json(_sea_path, default={})
+                        if isinstance(_sea, dict) and _sea.get("actions") and not _sea.get("consumed"):
+                            _sea_actions = _sea.get("actions", [])
+                            _sea_placed = 0
+                            for _sea_a in _sea_actions:
+                                try:
+                                    _sea_type = str(_sea_a.get("type", "")).upper()
+                                    _sea_inst = str(_sea_a.get("underlying", "")).upper()
+                                    _sea_legs = _sea_a.get("legs", [])
+                                    if _sea_type != "OPEN" or not _sea_legs:
+                                        continue
+                                    _se_expiry = str(_sea_a.get("expiry", "") or "").strip()
+                                    if not _se_expiry or _se_expiry.upper() in ("WEEKLY", "0", "THIS WEEK", "CURRENT"):
+                                        from datetime import date as _d, timedelta as _td
+                                        _t = _d.today()
+                                        _da = 3 - _t.weekday()
+                                        if _da <= 0:
+                                            _da += 7
+                                        _se_expiry = (_t + _td(days=_da)).isoformat()
+                                    for _leg in _sea_legs:
+                                        _strike = int(_leg.get("strike", 0))
+                                        _ot = str(_leg.get("opt_type", "")).upper()
+                                        _side = str(_leg.get("side", "BUY")).upper()
+                                        _qty = int(_leg.get("qty", 1))
+                                        _qty = max(1, min(_qty, 10))  # clamp
+                                        _otype = _ot
+                                        if not _strike or not _ot or not _sea_inst:
+                                            continue
+                                        from datetime import datetime as _dt
+                                        try:
+                                            _edt = _dt.strptime(_se_expiry, "%Y-%m-%d")
+                                            _exp_str = _edt.strftime("%d%b%y").upper()
+                                        except Exception:
+                                            _exp_str = _se_expiry
+                                        _sym = f"{_sea_inst}{_exp_str}{int(_strike)}{_ot}"
+                                        _lot = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65, "MIDCPNIFTY": 120}.get(_sea_inst, 75)
+                                        _qty_shares = max(1, _qty * _lot)
+                                        _order = Order(
+                                            symbol=_sym,
+                                            side=OrderSide(_side),
+                                            qty=_qty_shares,
+                                            order_type=OrderType.MARKET,
+                                            product=ProductType.MIS,
+                                            price=0.0,
+                                            tag=f"SYS-ENFORCE"[:30],
+                                            exchange="NFO",
+                                            strike=float(_strike),
+                                            option_type=_ot,
+                                            expiry=_se_expiry,
+                                            underlying=_sea_inst,
+                                        )
+                                        _filled = broker.place_order(_order)
+                                        if _filled.status in (OrderStatus.COMPLETE, OrderStatus.OPEN):
+                                            _sea_placed += 1
+                                            logger.info(f"[SYS-ENFORCE] PLACED {_filled.symbol} {_filled.side.value} {_filled.qty} @ {_filled.avg_fill_price or _filled.price} status={_filled.status.value}")
+                                        else:
+                                            logger.warning(f"[SYS-ENFORCE] REJECTED {_filled.symbol}: {_filled.rejection_reason}")
+                                except Exception as _sea_leg_err:
+                                    logger.warning(f"[SYS-ENFORCE] leg failed: {_sea_leg_err}")
+                            _sea["consumed"] = True
+                            _sea["consumed_at"] = now.isoformat()
+                            _sea["placed_legs"] = _sea_placed
+                            with open(_sea_path, "w", encoding="utf-8") as _sw:
+                                json.dump(_sea, _sw, ensure_ascii=False)
+                            logger.info(f"[SYS-ENFORCE] action processed: {_sea_placed} legs placed (fallback for silent LLM)")
+            except Exception as _sea_err:
+                logger.warning(f"system-enforced check failed: {_sea_err}")
             # 1) EOD report
             if (now.hour, now.minute) >= (15, 30) and (last_eod_report is None or last_eod_report.date() != now.date()):
                 positions = broker.get_positions()

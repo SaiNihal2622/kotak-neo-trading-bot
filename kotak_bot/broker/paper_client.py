@@ -375,6 +375,94 @@ class PaperClient(BrokerClient):
                                 break
                 except Exception:
                     pass
+                # FIX 2026-09-09 13:55: final fallback — compute estimated option
+                # LTP from live spot using Black-Scholes. This keeps the position
+                # P&L updating on every tick even when the chain analyzer is stale
+                # and LiveKotak has no tick for this option contract. Uses ATM
+                # IV from the chain (or 0.15 default) and time-to-expiry from
+                # the position's expiry date.
+                if pos.ltp == pos.avg_price or pos.ltp <= 0:
+                    try:
+                        import math as _m
+                        import json as _json
+                        from datetime import date as _d, datetime as _dt
+                        from pathlib import Path as _P2
+                        _und = (pos.underlying or "").upper()
+                        _stk = float(pos.strike or 0)
+                        _ot = (pos.option_type or "").upper()
+                        _exp = pos.expiry
+                        # Get live spot from the feed's tick cache
+                        _spot = 0.0
+                        try:
+                            _spot = float(self._ticks.get(_und, None) and self._ticks[_und].ltp or 0)
+                        except Exception:
+                            pass
+                        # Fallback: read from intraday_levels or candles
+                        if not _spot:
+                            try:
+                                _il = _P2("data_cache") / "intraday_levels.json"
+                                if _il.exists():
+                                    import json as _ji
+                                    _ild = _ji.loads(_il.read_text(encoding="utf-8"))
+                                    _inst = _ild.get("instruments", {}).get(_und, {})
+                                    _spot = float(_inst.get("ltp") or _inst.get("current") or 0)
+                            except Exception:
+                                pass
+                        if not _spot:
+                            try:
+                                _cf = _P2("data_cache") / f"candles_{_und}_1m.jsonl"
+                                if _cf.exists():
+                                    _last = _cf.read_text(encoding="utf-8").strip().splitlines()[-1]
+                                    _spot = float(_json.loads(_last).get("c", 0))
+                            except Exception:
+                                pass
+                        # Time to expiry
+                        _t_years = 0.005  # default ~2 days
+                        try:
+                            if isinstance(_exp, str):
+                                _exp_d = _dt.strptime(_exp[:10], "%Y-%m-%d").date()
+                            elif isinstance(_exp, _d):
+                                _exp_d = _exp
+                            else:
+                                _exp_d = _d.today()
+                            _days = max(1, (_exp_d - _d.today()).days)
+                            _t_years = _days / 365.0
+                        except Exception:
+                            pass
+                        # IV from chain or default
+                        _sigma = 0.15
+                        try:
+                            _chain = _P2("data_cache") / f"option_chain_{_und}.json"
+                            if _chain.exists():
+                                import json as _jc2
+                                cd2 = _jc2.loads(_chain.read_text(encoding="utf-8"))
+                                _iv_sum = []
+                                for _k, _v in (cd2.get("strikes") or {}).items():
+                                    _iv = _v.get("iv")
+                                    if _iv and _iv > 0:
+                                        _iv_sum.append(float(_iv))
+                                if _iv_sum:
+                                    _sigma = sum(_iv_sum) / len(_iv_sum)
+                        except Exception:
+                            pass
+                        # BS price
+                        if _spot > 0 and _stk > 0 and _t_years > 0 and _sigma > 0:
+                            _r = 0.065
+                            _sqrt_t = _sigma * _m.sqrt(_t_years)
+                            _d1 = (_m.log(_spot / _stk) + (_r + 0.5 * _sigma ** 2) * _t_years) / _sqrt_t
+                            _d2 = _d1 - _sqrt_t
+                            # Standard normal CDF
+                            def _cndf(x):
+                                return 0.5 * (1.0 + _m.erf(x / _m.sqrt(2.0)))
+                            if _ot == "CE":
+                                _est = _spot * _cndf(_d1) - _stk * _m.exp(-_r * _t_years) * _cndf(_d2)
+                            else:  # PE
+                                _est = _stk * _m.exp(-_r * _t_years) * _cndf(-_d2) - _spot * _cndf(-_d1)
+                            if _est > 0:
+                                pos.ltp = round(_est, 2)
+                                pos.pnl = (pos.ltp - pos.avg_price) * pos.qty
+                    except Exception:
+                        pass
             return list(self._positions.values())
 
     def get_holdings(self) -> list[Position]:

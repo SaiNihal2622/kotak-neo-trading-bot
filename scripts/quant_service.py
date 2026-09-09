@@ -1766,6 +1766,7 @@ last_rss_news_ts = 0                # 30 min 24/7: real news from Moneycontrol/E
 last_rss_news_date = None           # one-shot guard
 last_fii_dii_ts = 0                 # 1h 24/7: real FII/DII flows from Moneycontrol (NSE archives fallback)
 last_predictive_signals_ts = 0      # 5 min 24/7: 6 statistical predictive signals (momentum, vol regime, trend, RSI, etc)
+last_audit_ts = 0                   # 30 min 24/7: self-audit for 5 recurring issues (FIX 2026-09-09 14:20)
 
 # --- LLM call thread tracking (for non-blocking async LLM calls) ---
 _LLM_THREAD = None           # type: ignore  # the in-flight Thread object, or None
@@ -1814,6 +1815,154 @@ def _spawn_llm_thread(events: list, context: dict, paper: dict) -> None:
     import threading  # FIX 2026-09-07: redundant; already at module level. kept for clarity.
     _LLM_THREAD = threading.Thread(target=_runner, daemon=True)
     _LLM_THREAD.start()
+
+
+def _system_enforcement_check(context: dict) -> dict | None:
+    """FIX 2026-09-09 14:10: system-level enforcement that takes over when
+    the LLM is silent.
+
+    Why this exists:
+      The LLM brain has a strong bias toward HOLD. The static ACTIVE
+      MANAGEMENT prompt section + the dynamic get_min_activity_reminder()
+      hint help, but the LLM still often returns HOLD with templated
+      'trend_captured' reasoning. This function is the LAST resort:
+      if the LLM has not produced a real trade in 60+ minutes during
+      market hours AND the candle engine shows clear directional bias
+      (any index >0.3% from session open), we write a SYSTEM-ENFORCED
+      decision to data_cache/system_enforced_action.json. The bot
+      reads this file on its next tick and executes the trade
+      regardless of the LLM's HOLD.
+
+    This is intentionally a fallback, not the primary path. The LLM
+    still has full control when it's making real decisions. We only
+    step in if it's been silent for an extended period AND the market
+    has a clear signal that the LLM is ignoring.
+
+    Returns the enforced decision dict (or None if no enforcement needed).
+    """
+    if not is_market_hours():
+        return None
+    # If the LLM already has 1+ open positions, don't override — let it manage
+    paper = context.get("paper") or {}
+    open_count = len(paper.get("positions") or {})
+    if open_count > 0:
+        return None
+    # Find the last real trade time (any fill) from trade_journal.jsonl
+    last_trade_ts = 0.0
+    try:
+        journal = DATA / "trade_journal.jsonl"
+        if journal.exists():
+            for line in reversed(journal.read_text(encoding="utf-8").strip().split("\n")[-100:]):
+                try:
+                    rec = json.loads(line)
+                    ts_str = rec.get("ts") or rec.get("entry_ts") or rec.get("timestamp", "")
+                    if ts_str:
+                        from datetime import datetime as _dt
+                        try:
+                            ts = _dt.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+                            last_trade_ts = max(last_trade_ts, ts)
+                        except Exception:
+                            pass
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    mins_since_trade = (time.time() - last_trade_ts) / 60.0 if last_trade_ts else 9999.0
+    # Find the dominant bias from the candle engine
+    try:
+        from candle_engine import get_engine
+        eng = get_engine()
+        moves = []
+        for sym in list(eng.last_ltp.keys())[:5]:
+            so = eng.get_session_open(sym)
+            ltp = eng.last_ltp.get(sym, 0)
+            if so and ltp:
+                pct = (ltp - so) / so * 100
+                if abs(pct) >= 0.3:  # only count clear moves
+                    moves.append((sym, pct))
+    except Exception:
+        moves = []
+    if mins_since_trade < 60:
+        return None  # LLM is being active, don't override
+    if not moves:
+        return None  # no clear signal, don't force a bad trade
+    # Sort by |move| to find the dominant one
+    moves.sort(key=lambda x: abs(x[1]), reverse=True)
+    sym, pct = moves[0]
+    is_bullish = pct > 0
+    # Build a minimal, sensible system-enforced decision.
+    # FIX 2026-09-09 14:12: enforcable via the bot's existing quant_actions.json
+    # reader. Use the same schema the LLM would output. Conviction 50 (just
+    # above the "should I trade" threshold); 1 lot NIFTY to keep risk low.
+    # The strategy name includes "system_enforced" so the journal/audit makes
+    # it clear this was NOT a normal LLM decision.
+    if sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+        # Index — use a directional vertical
+        # For simplicity, use ATM ± 100pt put (bear) or call (bull) vertical
+        try:
+            spot = float(eng.last_ltp.get(sym, 0))
+            if not spot:
+                return None
+            atm = round(spot / 50) * 50 if sym == "NIFTY" else round(spot / 100) * 100
+            wing = 100
+            if is_bullish:
+                long_strike = atm
+                short_strike = atm + wing
+                opt_type = "CE"
+                strategy = "system_enforced_bull_call_vertical"
+                direction = "BULLISH"
+            else:
+                long_strike = atm
+                short_strike = atm - wing
+                opt_type = "PE"
+                strategy = "system_enforced_bear_put_vertical"
+                direction = "BEARISH"
+            decision = {
+                "ts": now_iso(),
+                "source": "system_enforcement",
+                "trigger": "min_activity_overdue",
+                "mins_since_trade": round(mins_since_trade, 0),
+                "bias": {"symbol": sym, "session_pct": round(pct, 2), "direction": direction},
+                "actions": [{
+                    "type": "OPEN",
+                    "underlying": sym,
+                    "expiry": "WEEKLY",
+                    "strategy": strategy,
+                    "conviction": 50,
+                    "legs": [
+                        {"side": "BUY", "qty": 1, "strike": long_strike, "opt_type": opt_type, "order_type": "MARKET", "price": None},
+                        {"side": "SELL", "qty": 1, "strike": short_strike, "opt_type": opt_type, "order_type": "MARKET", "price": None},
+                    ],
+                    "target": 65,
+                    "stop": 25,
+                    "max_hold_minutes": 120,
+                    "rationale": (
+                        f"SYSTEM-ENFORCED (FIX 2026-09-09 14:10): LLM has been silent "
+                        f"for {mins_since_trade:.0f} min during market hours. Market "
+                        f"shows {direction} bias: {sym} {pct:+.2f}% from session open. "
+                        f"Taking a small {strategy} (1 lot, {long_strike}/{short_strike} "
+                        f"{opt_type}, ~Rs.3-5k debit) to maintain the 'quant firm is "
+                        f"active' requirement. The LLM is welcome to override this "
+                        f"on its next call (CLOSE or add). This is the safety net, "
+                        f"not a replacement for the brain."
+                    ),
+                    "note": "system_enforcement_min_activity",
+                    "confidence": 0.5,
+                    "risk_pct": 3.0,
+                }],
+                "note": f"system_enforcement:{direction}:{sym}:{pct:+.2f}%",
+            }
+            # Write the decision to a dedicated file the bot reads
+            out_path = DATA / "system_enforced_action.json"
+            out_path.write_text(json.dumps(decision, indent=2), encoding="utf-8")
+            log(f"SYSTEM-ENFORCEMENT: writing fallback trade ({direction} {sym} {pct:+.2f}%, "
+                f"{mins_since_trade:.0f} min silent). File: {out_path}")
+            SERVICE_STATE["system_enforcements"] = SERVICE_STATE.get("system_enforcements", 0) + 1
+            return decision
+        except Exception as e:
+            log(f"system-enforcement-build-err: {e}")
+            return None
+    return None
 
 
 def _periodic_scan(context: dict) -> dict:
@@ -2306,6 +2455,7 @@ def watch_loop():
     global last_rss_news_ts, last_rss_news_date
     global last_fii_dii_ts
     global last_predictive_signals_ts
+    global last_audit_ts
     # FIX 2026-09-04 23:48: missing global declaration for last_overnight_research_ts
     # caused UnboundLocalError on the use at line 2363 (NSE closed check). 6th
     # shadow-import-style bug — different variable each time, same root cause:
@@ -2322,11 +2472,28 @@ def watch_loop():
     # assignment below doesn't shadow the module-level global. Same class of bug as
     # the Order shadow-import trap (4 occurrences in this codebase).
     global RUNNING
+    # FIX 2026-09-09 13:50: periodic state flush so SERVICE_STATE counters
+    # (tick_count, llm_calls, actions_taken) survive a brain restart. Without
+    # this, the dashboard's status section shows stale counters because the
+    # in-memory state never gets written back to disk. Flush every 30s
+    # (15 ticks at ~2s each) so the file is fresh enough for restart-time
+    # diagnosis without thrashing the disk.
+    _last_state_flush_ts = 0.0
     while RUNNING:
         try:
             tick_count += 1
             SERVICE_STATE["tick_count"] = tick_count
             SERVICE_STATE["last_tick"] = now_iso()
+            # Periodic state flush (every 30s)
+            try:
+                if time.time() - _last_state_flush_ts > 30:
+                    _last_state_flush_ts = time.time()
+                    STATE.write_text(
+                        json.dumps({**SERVICE_STATE, "history_size": len(HISTORY)}, default=str),
+                        encoding="utf-8",
+                    )
+            except Exception as _flush_err:
+                log(f"state-flush-err: {_flush_err}")
             # FIX 2026-09-04 12:40: self-restart marker — if data_cache/quant_service_restart.json
             # exists, exit cleanly. NSSM auto-respawns the brain with the latest code.
             # Replaces the need for UAC restart when only code changes are needed.
@@ -2437,20 +2604,35 @@ def watch_loop():
                 # US/Asia moves, prepares for NSE open, logs hypothetical plans).
                 if datetime.now().timestamp() - last_periodic_scan_ts > 900:  # 15 min
                     last_periodic_scan_ts = datetime.now().timestamp()
+                    # FIX 2026-09-09 14:10: build the full context FIRST so we
+                    # can pass it to both the system-enforcement check and the
+                    # periodic scan. The enforcement may write a fallback
+                    # action file; the bot reads it on its next tick.
+                    _scan_ctx = {
+                        "liveness": liveness,
+                        "paper": {k: paper.get(k) for k in ('cash', 'realized_pnl', 'positions', 'orders')},
+                        "intraday": intraday,
+                        "chains_summary": {sym: {'spot': c.get('spot'), 'atm': c.get('atm_strike')} for sym, c in chains.get('chains', {}).items() if 'error' not in c},
+                        "candles": read_candles(),
+                        "global_markets": _safe_read_json(DATA / "global_state.json", default={}),
+                        "alpha": _safe_read_json(DATA / "quant_alpha.json", default={}),
+                        "predictive_signals": _safe_read_json(DATA / "predictive_signals.json", default={}),
+                        "fii_dii": _safe_read_json(DATA / "fii_dii.json", default={}),
+                        "trigger": "periodic_15min" if is_market_hours() else "global_research_15min",
+                        "nse_status": "OPEN" if is_market_hours() else "CLOSED",
+                    }
                     try:
-                        _periodic_scan(context={
-                            "liveness": liveness,
-                            "paper": {k: paper.get(k) for k in ('cash', 'realized_pnl', 'positions', 'orders')},
-                            "intraday": intraday,
-                            "chains_summary": {sym: {'spot': c.get('spot'), 'atm': c.get('atm_strike')} for sym, c in chains.get('chains', {}).items() if 'error' not in c},
-                            "candles": read_candles(),
-                            "global_markets": _safe_read_json(DATA / "global_state.json", default={}),
-                            "alpha": _safe_read_json(DATA / "quant_alpha.json", default={}),
-                            "predictive_signals": _safe_read_json(DATA / "predictive_signals.json", default={}),
-                            "fii_dii": _safe_read_json(DATA / "fii_dii.json", default={}),
-                            "trigger": "periodic_15min" if is_market_hours() else "global_research_15min",
-                            "nse_status": "OPEN" if is_market_hours() else "CLOSED",
-                        })
+                        # System enforcement runs FIRST — if it fires, it
+                        # writes system_enforced_action.json. The bot picks
+                        # it up on its next tick. The LLM still gets called
+                        # below so the user sees what the brain thinks.
+                        _enforced = _system_enforcement_check(_scan_ctx)
+                        if _enforced is not None:
+                            log(f"SYSTEM-ENFORCEMENT: fallback trade written (will be picked up by bot)")
+                    except Exception as e:
+                        log(f"system-enforcement-err: {e}")
+                    try:
+                        _periodic_scan(context=_scan_ctx)
                     except Exception as e:
                         log(f"periodic-scan-err: {e}")
                 # FIX 2026-09-08 22:35: RSS news fetch every 30 min (24/7). Real
@@ -2474,6 +2656,16 @@ def watch_loop():
                 if datetime.now().timestamp() - last_predictive_signals_ts > 300:
                     last_predictive_signals_ts = datetime.now().timestamp()
                     _scheduled_subprocess("scripts/predictive_signals.py", "predictive", timeout=60)
+                # FIX 2026-09-09 14:20: system self-audit every 30 min. Catches
+                # the 5 recurring issues (stale LTP, stale news, stale FII/DII,
+                # LLM HOLD loop, brain state not persisting). The dashboard
+                # reads data_cache/system_audit.json and shows the result.
+                try:
+                    if datetime.now().timestamp() - last_audit_ts > 1800:
+                        last_audit_ts = datetime.now().timestamp()
+                        _scheduled_subprocess("scripts/_system_audit.py", "sys-audit", timeout=30)
+                except Exception as _audit_err:
+                    log(f"sys-audit-sched-err: {_audit_err}")
                 # FIX 2026-09-08 16:35: GROK BOT DESK — 6-role LLM desk (parallel 2nd opinion).
                 # FIX 2026-09-08 22:35: now runs 24/7, not just market hours.
                 # During NSE hours (09:15-15:30 Mon-Fri): the desk provides a
@@ -2878,6 +3070,21 @@ def main() -> int:
         log("QUANT-SERVICE: stopped")
 
     return 0
+
+
+# FIX 2026-09-09 13:50: atexit handler that flushes the final SERVICE_STATE
+# to disk on clean exit (SIGTERM, normal return, KeyboardInterrupt). Without
+# this the dashboard always shows stale counters after a brain restart.
+import atexit as _atexit
+def _flush_state_on_exit():
+    try:
+        STATE.write_text(
+            json.dumps({**SERVICE_STATE, "history_size": len(HISTORY)}, default=str),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+_atexit.register(_flush_state_on_exit)
 
 
 if __name__ == '__main__':

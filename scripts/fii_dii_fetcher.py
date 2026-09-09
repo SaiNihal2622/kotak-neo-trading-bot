@@ -65,6 +65,22 @@ def _fetch_url(url: str, timeout: int = 12, max_bytes: int = 1_000_000) -> str:
         return ""
 
 
+def _parse_date_safe(s: str):
+    """FIX 2026-09-09 14:05: parse common Indian date formats.
+    Returns a date object or None. Used to filter stale rows from the
+    Moneycontrol / NSE archives table.
+    """
+    if not s:
+        return None
+    s = str(s).strip()
+    for fmt in ("%d %b %Y", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            continue
+    return None
+
+
 def _parse_moneycontrol_table(html: str) -> list[dict]:
     """Parse Moneycontrol's FII/DII table from the HTML response.
     Returns a list of dicts (one per row, most recent first).
@@ -211,10 +227,37 @@ def main() -> int:
         except Exception as e:
             sources.append({"source": "nse_archives", "ok": False, "n": 0, "err": str(e)[:80]})
 
+    # FIX 2026-09-09 14:05: date freshness filter.
+    # The MC/NSE pages sometimes return 2-year-old rows from old table renders
+    # (Moneycontrol in particular has bad anti-bot behavior). Without this
+    # filter, the LLM brain reasons on 2024 data as if it were current.
+    # We parse the date string and drop rows > 7 days old.
+    from datetime import date as _date, timedelta as _td
+    _today = _date.today()
+    _cutoff = _today - _td(days=7)
+    _fresh = []
+    _stale_count = 0
+    for _r in rows:
+        _ds = str(_r.get("date", "")).strip()
+        _parsed = _parse_date_safe(_ds)
+        if _parsed and _parsed < _cutoff:
+            _stale_count += 1
+            continue
+        _r["date_parsed"] = _parsed.isoformat() if _parsed else None
+        _fresh.append(_r)
+    if _stale_count:
+        print(f"[fii_dii] dropped {_stale_count} stale rows (older than {_cutoff.isoformat()})")
+    rows = _fresh
+
     # Compute summary stats
+    from datetime import date as _date2, timedelta as _td2
+    _today2 = _date2.today()
     summary = {
         "n_rows": len(rows),
         "latest_date": rows[0]["date"] if rows else None,
+        "latest_date_parsed": rows[0].get("date_parsed") if rows else None,
+        "data_age_days": None,
+        "is_stale": None,
         "latest_fii_net_cr": rows[0]["fii_net_cr"] if rows else None,
         "latest_dii_net_cr": rows[0]["dii_net_cr"] if rows else None,
         "fii_net_3d_sum_cr": sum(r["fii_net_cr"] for r in rows[:3]) if len(rows) >= 3 else None,
@@ -224,6 +267,14 @@ def main() -> int:
         "fii_bullish_3d": None,
         "dii_bullish_3d": None,
     }
+    # Data age + stale flag (the LLM brain should reason on data < 3 days old)
+    if rows and rows[0].get("date_parsed"):
+        try:
+            _latest_d = _date2.fromisoformat(rows[0]["date_parsed"])
+            summary["data_age_days"] = (_today2 - _latest_d).days
+            summary["is_stale"] = summary["data_age_days"] > 2  # > 2 days = stale for LLM context
+        except Exception:
+            pass
     if summary["fii_net_3d_sum_cr"] is not None:
         summary["fii_bullish_3d"] = summary["fii_net_3d_sum_cr"] > 0
     if summary["dii_net_3d_sum_cr"] is not None:
@@ -235,7 +286,19 @@ def main() -> int:
         "rows": rows[:30],  # keep last 30 days
         "summary": summary,
         "sources": sources,
+        "stale_reason": None,  # populated if data is stale
     }
+    # FIX 2026-09-09 14:25: if no fresh data was fetched, mark the reason
+    # so the LLM brain knows NOT to reason on stale FII/DII data. The summary
+    # `is_stale` flag handles per-row age; this handles the case where we
+    # got zero usable rows at all (e.g., MC page is JS-rendered and returns
+    # ancient data, NSE archives is 404).
+    if not rows:
+        _src_names = [s.get("source") for s in sources if s.get("ok")]
+        if not _src_names:
+            out["stale_reason"] = "no sources returned data; check MC/NSE archive URLs"
+        else:
+            out["stale_reason"] = f"sources [{','.join(_src_names)}] returned only stale rows (>7d old)"
     OUT.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"[fii_dii] {len(rows)} rows in {time.time()-t0:.1f}s | sources: {[s['source'] + ':' + str(s['n']) for s in sources]}")

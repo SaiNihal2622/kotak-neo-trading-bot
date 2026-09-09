@@ -130,14 +130,17 @@ def test_fii_dii_fetcher_output_schema():
 
 def test_fii_dii_manual_override_takes_priority():
     """If data_cache/fii_dii_manual.json exists, the fetcher uses it first."""
+    from datetime import date, timedelta
     from scripts import fii_dii_fetcher
     manual = fii_dii_fetcher.MANUAL
     backup = None
     if manual.exists():
         backup = manual.read_text(encoding="utf-8")
+    # Use a recent date so the date filter (FIX 2026-09-09 14:05) doesn't drop it
+    recent_date = (date.today() - timedelta(days=1)).strftime("%d %b %Y")
     try:
         manual.write_text(json.dumps([
-            {"date": "01 Jan 2026", "fii_buy_cr": 100, "fii_sell_cr": 50,
+            {"date": recent_date, "fii_buy_cr": 100, "fii_sell_cr": 50,
              "fii_net_cr": 50, "dii_buy_cr": 200, "dii_sell_cr": 100,
              "dii_net_cr": 100, "source": "manual_test"},
         ]), encoding="utf-8")

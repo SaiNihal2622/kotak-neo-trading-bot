@@ -192,14 +192,42 @@ def main() -> int:
         # be polite — 200ms between requests
         time.sleep(0.2)
 
-    # Deduplicate by title (some feeds mirror each other)
-    seen = set()
-    deduped = []
+    # FIX 2026-09-09 14:00: date freshness filter + URL dedup.
+    # Old behavior: included everything regardless of date, deduped by title only.
+    # This let April articles from Moneycontrol's old XML mixes leak through.
+    # New: drop entries with parseable date older than 48h; dedup by URL too
+    # (some feeds syndicate the same article with different titles).
+    from datetime import timedelta
+    _now_utc = datetime.now(timezone.utc)
+    _cutoff = _now_utc - timedelta(hours=48)
+    fresh = []
+    stale_count = 0
     for e in all_entries:
-        k = e["title"][:120].lower()
-        if k in seen:
+        _iso = e.get("pubdate_iso", "")
+        if _iso:
+            try:
+                _dt = datetime.fromisoformat(_iso.replace("Z", "+00:00"))
+                if _dt < _cutoff:
+                    stale_count += 1
+                    continue
+            except Exception:
+                pass  # unparseable date — keep but mark
+        fresh.append(e)
+
+    # Deduplicate by title AND URL
+    seen_titles = set()
+    seen_urls = set()
+    deduped = []
+    for e in fresh:
+        _t = e["title"][:120].lower()
+        _u = (e.get("link") or "").split("?")[0].lower()[:120]
+        if _t in seen_titles:
             continue
-        seen.add(k)
+        if _u and _u in seen_urls:
+            continue
+        seen_titles.add(_t)
+        if _u:
+            seen_urls.add(_u)
         deduped.append(e)
 
     # Sort newest first (entries with no pubdate go to the end)
@@ -219,13 +247,16 @@ def main() -> int:
     META.write_text(json.dumps({
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "total": len(deduped),
+        "stale_dropped": stale_count,
+        "raw_total": len(all_entries),
+        "fresh_kept": len(fresh),
         "sources_ok": sum(1 for s in source_stats if s["ok"]),
         "sources_failed": sum(1 for s in source_stats if not s["ok"]),
         "duration_sec": round(time.time() - t0, 2),
         "sources": source_stats,
     }, indent=2), encoding="utf-8")
 
-    print(f"[rss_news] {len(deduped)} headlines from {sum(1 for s in source_stats if s['ok'])}/{len(RSS_SOURCES)} sources, {time.time()-t0:.1f}s")
+    print(f"[rss_news] {len(deduped)} headlines from {sum(1 for s in source_stats if s['ok'])}/{len(RSS_SOURCES)} sources, {time.time()-t0:.1f}s (dropped {stale_count} stale > 48h)")
     if len(deduped) == 0:
         print(f"[rss_news] WARN: no headlines fetched. Source stats:")
         for s in source_stats:
