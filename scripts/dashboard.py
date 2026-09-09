@@ -363,6 +363,59 @@ def section_predictive_signals() -> str:
 '''
 
 
+def section_system_health() -> str:
+    """System audit: 5 recurring-issue health badges. Shows the dashboard
+    user exactly which subsystems are healthy / warning / error.
+
+    The 5 subsystems tracked by scripts/_system_audit.py:
+    - brain_state_persistence: are SERVICE_STATE counters being flushed?
+    - option_ltp_freshness: are positions showing live LTP (not avg)?
+    - fii_dii_freshness: is FII/DII data fresh (not 2-year-old)?
+    - news_freshness: are RSS headlines fresh (not stale)?
+    - brain_activity: is the LLM brain active (not stuck in HOLD)?
+    """
+    d = _read_json(DCACHE / "system_audit.json", {})
+    if not d:
+        return '''
+<section class="card">
+  <h2>System Health &middot; audit</h2>
+  <p class="muted">Audit not yet run (runs every 30 min). <code>python scripts/_system_audit.py</code> for a one-shot.</p>
+</section>
+'''
+    overall = d.get("overall", "ok")
+    overall_class = "ok" if overall == "ok" else "warn" if overall == "warn" else "err"
+    subs = d.get("subsystems", {})
+    labels = {
+        "brain_state_persistence": "State flush",
+        "option_ltp_freshness": "Option LTP",
+        "fii_dii_freshness": "FII/DII",
+        "news_freshness": "News RSS",
+        "brain_activity": "Brain activity",
+    }
+    items = []
+    for k, label in labels.items():
+        s = subs.get(k, {})
+        status = s.get("status", "?")
+        details = s.get("details", "")
+        cls = "ok" if status == "ok" else "warn" if status == "warn" else "err"
+        items.append(f'''
+<div class="health-item">
+  <div class="health-badge {cls}">{status.upper()}</div>
+  <div class="health-label">{label}</div>
+  <div class="health-detail muted small">{_esc(details[:120])}</div>
+</div>
+''')
+    return f'''
+<section class="card">
+  <h2>System Health &middot; self-audit <span class="pill pill-{overall_class}">{overall.upper()}</span></h2>
+  <div class="health-grid">
+    {''.join(items)}
+  </div>
+  <p class="muted small">Last audit: {_esc(d.get("ts", "—")[:19])} &middot; runs every 30 min via the brain's scheduler</p>
+</section>
+'''
+
+
 def section_fii_dii() -> str:
     """FII/DII flows: latest 5 days, 3d/5d sums, bullish/bearish."""
     d = _read_json(DCACHE / "fii_dii.json", {})
@@ -804,6 +857,7 @@ def render_dashboard() -> str:
 
     # build sections
     header = section_header(lv, ps, qs, lv)
+    health = section_system_health()
     market = section_market()
     predictive = section_predictive_signals()
     fii_dii = section_fii_dii()
@@ -891,6 +945,16 @@ def render_dashboard() -> str:
   .dtable tr:last-child td { border-bottom: none; }
   .rollups { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
   .rollup .num { font-size: 16px; font-weight: 700; margin-top: 2px; }
+  .health-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  @media (max-width: 1200px) { .health-grid { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 700px)  { .health-grid { grid-template-columns: repeat(2, 1fr); } }
+  .health-item { padding: 10px 12px; background: var(--bg); border-radius: 6px; border: 1px solid var(--border-soft); }
+  .health-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+  .health-badge.ok { background: rgba(16,185,129,0.18); color: var(--pos); }
+  .health-badge.warn { background: rgba(245,158,11,0.18); color: #f59e0b; }
+  .health-badge.err { background: rgba(220,38,38,0.18); color: var(--neg); }
+  .health-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text); margin-bottom: 4px; }
+  .health-detail { line-height: 1.4; }
   .grok-head { padding: 12px 14px; background: var(--bg); border-radius: 6px; margin-bottom: 12px; font-size: 13px; line-height: 1.5; }
   .grok-head.bold { font-weight: 600; }
   .grok-roles details { margin: 6px 0; }
@@ -920,6 +984,7 @@ def render_dashboard() -> str:
 <body>
 {header}
 {overrides}
+{health}
 {market}
 {predictive}
 {fii_dii}
