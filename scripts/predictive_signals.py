@@ -200,19 +200,46 @@ def _pattern_breakout(closes: list[float], window: int = 20) -> dict:
 
 
 def _read_parquet_or_json(symbol: str, interval: str = "1m") -> list[dict]:
-    """Try parquet first (the candle engine writes parquet), fall back to JSON."""
+    """Try parquet first (the candle engine writes parquet), fall back to JSON,
+    then to JSONL (the actual format used by the candle engine)."""
     p = DCACHE / "candles" / f"{symbol}_{interval}.parquet"
     if p.exists():
         try:
             import pandas as pd
             df = pd.read_parquet(p)
-            # normalize to list of dicts with close/high/low/open/volume
             return [
                 {"ts": str(r.get("ts", "")), "open": float(r.get("open", 0)),
                  "high": float(r.get("high", 0)), "low": float(r.get("low", 0)),
                  "close": float(r.get("close", 0)), "volume": float(r.get("volume", 0))}
                 for _, r in df.iterrows()
             ]
+        except Exception:
+            pass
+    # FIX 2026-09-09 12:40: candle engine writes JSONL (not JSON). Each line is
+    # {"epoch": ..., "ts": ..., "o": ..., "h": ..., "l": ..., "c": ..., "v": ...}
+    jsonl = DCACHE / "candles" / f"{symbol}_{interval}.jsonl"
+    if jsonl.exists():
+        try:
+            candles = []
+            for line in jsonl.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    # Map JSONL fields to expected schema
+                    candles.append({
+                        "ts": d.get("ts", ""),
+                        "open": float(d.get("o", 0) or 0),
+                        "high": float(d.get("h", 0) or 0),
+                        "low": float(d.get("l", 0) or 0),
+                        "close": float(d.get("c", 0) or 0),
+                        "volume": float(d.get("v", 0) or 0),
+                    })
+                except Exception:
+                    continue
+            if candles:
+                return candles
         except Exception:
             pass
     return _load_candles(symbol, interval)

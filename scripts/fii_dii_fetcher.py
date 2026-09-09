@@ -38,13 +38,29 @@ MANUAL = DCACHE / "fii_dii_manual.json"
 
 
 def _fetch_url(url: str, timeout: int = 12, max_bytes: int = 1_000_000) -> str:
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (kotak-neo-bot/2.0; +https://github.com/kotak-neo-bot)",
-        "Accept": "text/html,application/xhtml+xml,*/*",
-    })
+    # FIX 2026-09-09 12:40: Moneycontrol returns 403 for bot-like UAs. Use a
+    # real desktop browser UA + Accept-Language + Accept-Encoding to
+    # bypass their anti-bot. Also try NSE archives as a fallback.
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
     try:
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read(max_bytes).decode("utf-8", errors="ignore")
+            data = r.read(max_bytes)
+            # handle gzip if needed
+            try:
+                import gzip
+                if r.headers.get("Content-Encoding") == "gzip":
+                    data = gzip.decompress(data)
+            except Exception:
+                pass
+            return data.decode("utf-8", errors="ignore")
     except Exception:
         return ""
 
