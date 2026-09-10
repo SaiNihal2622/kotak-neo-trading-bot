@@ -1914,43 +1914,79 @@ def _strategy_library_enforcement(context: dict) -> dict | None:
     """
     if not is_market_hours():
         return None
+    if not isinstance(context, dict):
+        return None
     paper = context.get("paper") or {}
+    if not isinstance(paper, dict):
+        paper = {}
     positions = paper.get("positions") or {}
+    if not isinstance(positions, dict):
+        positions = {}
     open_count = sum(1 for p in positions.values() if isinstance(p, dict) and p.get("qty"))
     if open_count > 0:
         return None  # Already have a position
     # Get market conditions
+    max_move = 0
     try:
         from candle_engine import get_engine
         eng = get_engine()
-        # Find the dominant move
-        max_move = 0
-        for sym in list(eng.last_ltp.keys())[:5]:
-            so = eng.get_session_open(sym)
-            ltp = eng.last_ltp.get(sym, 0)
-            if so and ltp:
-                pct = (ltp - so) / so * 100
-                if abs(pct) > abs(max_move):
-                    max_move = pct
+        if eng and hasattr(eng, "last_ltp"):
+            for sym in list(eng.last_ltp.keys())[:5]:
+                try:
+                    so = eng.get_session_open(sym)
+                    ltp = eng.last_ltp.get(sym, 0)
+                    if so and ltp:
+                        pct = (ltp - so) / so * 100
+                        if abs(pct) > abs(max_move):
+                            max_move = pct
+                except Exception:
+                    continue
         # Iron condor wants range-bound: |session_move| < 0.7%
         if abs(max_move) > 0.7:
             return None
     except Exception:
         return None
     # Get VIX
-    liveness = context.get("liveness", {}) or {}
-    vix = float((liveness.get("snapshot") or {}).get("vix") or 14)
+    liveness = context.get("liveness") or {}
+    if not isinstance(liveness, dict):
+        liveness = {}
+    snap = liveness.get("snapshot") or {}
+    if not isinstance(snap, dict):
+        snap = {}
+    try:
+        vix = float(snap.get("vix") or 14)
+    except Exception:
+        vix = 14
     if vix > 16:
         return None  # Iron condor needs low-vol environment
     # Get spot
-    intraday = context.get("intraday", {}) or {}
-    instruments = intraday.get("instruments", {}) or {}
-    nifty = instruments.get("NIFTY", {}) or {}
-    spot = float(nifty.get("ltp") or nifty.get("current") or 0)
+    intraday = context.get("intraday") or {}
+    if not isinstance(intraday, dict):
+        intraday = {}
+    instruments = intraday.get("instruments") or {}
+    if not isinstance(instruments, dict):
+        instruments = {}
+    nifty = instruments.get("NIFTY") or {}
+    if not isinstance(nifty, dict):
+        nifty = {}
+    try:
+        spot = float(nifty.get("ltp") or nifty.get("current") or 0)
+    except Exception:
+        spot = 0
     if not spot:
         candles_agg = _safe_read_json(DATA / "candles_aggregate.json", default={})
-        nifty_agg = (candles_agg.get("symbols") or {}).get("NIFTY", {}) or {}
-        spot = float(nifty_agg.get("ltp") or 0)
+        if not isinstance(candles_agg, dict):
+            candles_agg = {}
+        syms = candles_agg.get("symbols") or {}
+        if not isinstance(syms, dict):
+            syms = {}
+        nifty_agg = syms.get("NIFTY") or {}
+        if not isinstance(nifty_agg, dict):
+            nifty_agg = {}
+        try:
+            spot = float(nifty_agg.get("ltp") or 0)
+        except Exception:
+            spot = 0
     if not spot:
         return None
     # Build the iron condor

@@ -13,6 +13,15 @@ decisions and the actual order placement. Three responsibilities:
 3. CIRCUIT BREAKERS: real-time monitoring of drawdown, daily loss,
    consecutive losses. Auto-pause new entries if limits breached.
 
+FIX 2026-09-10 13:58: the circuit breakers had hardcoded thresholds
+(3% daily loss, 10% drawdown, 3 consecutive losses) that pre-dated
+the UNLEASHED mode deployment (settings.yaml has daily_loss_pct: 100,
+max_drawdown_pct: 50, no consecutive loss cap). The bot was getting
+spuriously paused with "daily loss 18.4% > 3% cap" while in UNLEASHED
+mode. Now the thresholds are read from settings.yaml with sane
+fallback defaults that match UNLEASHED mode (effectively no caps,
+only the catastrophic 50% max_drawdown_pct remains).
+
 Outputs: per-call report that goes into the LLM context, so it sees:
   - current_capital (with compounding)
   - recommended_size_pct (Kelly-derived)
@@ -62,7 +71,11 @@ def get_profit_state() -> dict:
     for tid, t in trades.items():
         if t.get("status") != "closed":
             continue
-        strat = (t.get("plan", {}) or {}).get("strategy", "unknown")
+        _plan2 = t.get("plan", {}) or {}
+        # FIX 2026-09-10 14:00: skip self-test trades (see above)
+        if str(_plan2.get("reason", "")).startswith("self-test"):
+            continue
+        strat = _plan2.get("strategy", "unknown")
         pnl = t.get("realized_pnl", 0) or 0
         strategy_pnl[strat] = strategy_pnl.get(strat, 0) + pnl
         strategy_count[strat] = strategy_count.get(strat, 0) + 1
@@ -93,12 +106,20 @@ def get_profit_state() -> dict:
     for tid, t in trades.items():
         if t.get("status") != "closed":
             continue
+        # FIX 2026-09-10 14:00: skip self-test trades. The daily
+        # _self_test_orders.py runs at 08:25 and creates 5 phantom
+        # trades that pollute the profit engine with ~Rs.18k/day fake
+        # losses. Test trades have plan.reason starting with "self-test".
+        _plan = t.get("plan", {}) or {}
+        if str(_plan.get("reason", "")).startswith("self-test"):
+            continue
         if t.get("closed_at", "").startswith(today):
             today_pnl += t.get("realized_pnl", 0) or 0
             today_trades += 1
     # Consecutive losses (for circuit breaker)
     closed_trades = sorted(
-        [t for t in trades.values() if t.get("status") == "closed"],
+        [t for t in trades.values() if t.get("status") == "closed"
+         and not str((t.get("plan", {}) or {}).get("reason", "")).startswith("self-test")],
         key=lambda t: t.get("closed_at", ""),
         reverse=True,
     )
@@ -113,16 +134,33 @@ def get_profit_state() -> dict:
     peak = max(starting_capital, effective_capital)
     current_dd = (peak - effective_capital) / peak * 100 if peak > 0 else 0
     # Circuit breakers
+    # FIX 2026-09-10 13:58: read thresholds from settings.yaml. In UNLEASHED
+    # mode, daily_loss_pct=100, max_drawdown_pct=50, no consecutive loss cap.
+    # The hardcoded 3%/10%/3 values were pre-UNLEASHED and caused spurious
+    # pauses during the day.
+    _risk_cfg = {}
+    try:
+        import yaml  # type: ignore
+        _cfg_path = ROOT / "config" / "settings.yaml"
+        if _cfg_path.exists():
+            with open(_cfg_path, "r", encoding="utf-8") as _f:
+                _all_cfg = yaml.safe_load(_f) or {}
+            _risk_cfg = (_all_cfg.get("risk") or {})
+    except Exception:
+        _risk_cfg = {}
+    daily_loss_cap_pct = float(_risk_cfg.get("daily_loss_pct", 100.0))  # UNLEASHED default: no cap
+    max_dd_cap_pct = float(_risk_cfg.get("max_drawdown_pct", 50.0))     # UNLEASHED default: 50%
+    max_consec_losses = int(_risk_cfg.get("max_consecutive_losses", 999))  # UNLEASHED default: no cap
     daily_loss_pct = -today_pnl / starting_capital * 100 if today_pnl < 0 else 0
     is_paused = False
     pause_reason = ""
-    if daily_loss_pct > 3.0:
+    if daily_loss_cap_pct < 100 and daily_loss_pct > daily_loss_cap_pct:
         is_paused = True
-        pause_reason = f"daily loss {daily_loss_pct:.1f}% > 3% cap"
-    elif current_dd > 10.0:
+        pause_reason = f"daily loss {daily_loss_pct:.1f}% > {daily_loss_cap_pct}% cap"
+    elif current_dd > max_dd_cap_pct:
         is_paused = True
-        pause_reason = f"drawdown {current_dd:.1f}% > 10% cap"
-    elif consecutive_losses >= 3:
+        pause_reason = f"drawdown {current_dd:.1f}% > {max_dd_cap_pct}% cap"
+    elif max_consec_losses < 999 and consecutive_losses >= max_consec_losses:
         is_paused = True
         pause_reason = f"{consecutive_losses} consecutive losses — review setup"
     # Recommended position size: Kelly for the strategy, capped at 1% of effective capital
