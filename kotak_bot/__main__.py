@@ -1608,6 +1608,24 @@ def run_paper() -> None:
                                         logger.warning(f"[QUANT-ACTION] REJECT: max positions reached ({_open_count}/{_max_positions})")
                                         alerter.send(f"[Quant REJECT] max positions reached ({_open_count}/{_max_positions}). Action: {_qa_a.get('rationale','')[:100]}")
                                         continue
+                                    # FIX 2026-09-16 00:25: refuse new entries when the
+                                    # option chain for the underlying is broken. This
+                                    # prevents phantom fills (the +Rs.88k on Sep 15 /
+                                    # +Rs.3k on Sep 11 were both from broken-chain
+                                    # force-fills at wrong-strike prices).
+                                    _ch_unhealthy_file = Path("data_cache/_chains_unhealthy.json")
+                                    if _qa_inst and _ch_unhealthy_file.exists():
+                                        try:
+                                            _ch_state = _read_json(_ch_unhealthy_file, default={})
+                                            _unhealthy = _ch_state.get("unhealthy_underlyings", []) or []
+                                            if _qa_inst.upper() in [u.upper() for u in _unhealthy]:
+                                                logger.warning(
+                                                    f"[QUANT-ACTION] REJECT: chain unhealthy for {_qa_inst} "
+                                                    f"(broken yfinance data). Phantom fill risk."
+                                                )
+                                                continue
+                                        except Exception:
+                                            pass
                                     if now.hour >= 15 and now.minute >= 15:
                                         logger.warning(f"[QUANT-ACTION] REJECT: too close to EOD ({now.strftime('%H:%M')})")
                                         _has_retryable_reject = True
@@ -1938,6 +1956,84 @@ def run_paper() -> None:
                             logger.info(f"[SYS-ENFORCE] action processed: {_sea_placed} legs placed (fallback for silent LLM)")
             except Exception as _sea_err:
                 logger.warning(f"system-enforced check failed: {_sea_err}")
+            # FIX 2026-09-10 02:35: aggressive automatic take-profit / stop-loss.
+            # 4-day backtest showed iron condor wins 100% of trades when we
+            # take profit at 50% of max credit. The LLM was setting weak
+            # target/stop values. This code-level mechanism closes at:
+            #   - TP: position P&L >= 50% of max profit (close for profit)
+            #   - SL: position P&L <= -50% of max loss (cut loss)
+            #   - Min hold: 15 min (avoid noise from initial mark-to-market)
+            try:
+                from kotak_bot.execution.smart_exit import aggregate_portfolio_greeks
+                open_trades_for_tp = order_mgr.open_trades()
+                for _tp_trade in open_trades_for_tp:
+                    if not _tp_trade.opened_at:
+                        continue
+                    _op_at = _tp_trade.opened_at
+                    if _op_at.tzinfo is None:
+                        _op_at = _op_at.replace(tzinfo=timezone.utc).astimezone(now.tzinfo)
+                    try:
+                        _tp_hold_min = int((now - _op_at).total_seconds() / 60)
+                    except Exception:
+                        _tp_hold_min = 0
+                    if _tp_hold_min < 15:
+                        continue  # Min hold: 15 min
+                    # Calculate current P&L
+                    _tp_pnl = 0
+                    for _tp_o in _tp_trade.orders:
+                        if _tp_o.avg_fill_price <= 0:
+                            continue
+                        _tp_cur = feed.get_ltp(_tp_o.symbol)
+                        if _tp_cur <= 0:
+                            # Try from option chain as fallback
+                            try:
+                                from pathlib import Path as _TP
+                                _tp_chain_path = _TP("data_cache") / f"option_chain_{_tp_trade.plan.underlying}.json"
+                                if _tp_chain_path.exists():
+                                    import json as _TPJ
+                                    _tp_cd = _TPJ.loads(_tp_chain_path.read_text(encoding="utf-8"))
+                                    for _tp_k, _tp_v in (_tp_cd.get("strikes") or {}).items():
+                                        if (float(_tp_v.get("strike") or 0) == float(_tp_o.strike or 0)
+                                                and (_tp_v.get("opt_type") or _tp_v.get("option_type") or "").upper() == (_tp_o.option_type or "").upper()):
+                                            _tp_cur = float(_tp_v.get("price") or 0)
+                                            break
+                            except Exception:
+                                pass
+                        if _tp_cur > 0:
+                            _tp_side = _tp_o.side.value if hasattr(_tp_o.side, 'value') else str(_tp_o.side)
+                            _tp_sign = 1 if _tp_side == "SELL" else -1
+                            _tp_pnl += (_tp_cur - _tp_o.avg_fill_price) * _tp_o.filled_qty * _tp_sign
+                    # Calculate max profit / max loss
+                    _tp_max_profit = max(1, abs(_tp_trade.plan.target)) if hasattr(_tp_trade.plan, 'target') else 1
+                    _tp_max_loss = max(1, abs(_tp_trade.plan.stop)) if hasattr(_tp_trade.plan, 'stop') else 1
+                    # If trade plan has no target/stop, fall back to position-notional based
+                    if _tp_max_profit <= 1 and _tp_max_loss <= 1:
+                        # Estimate from order value
+                        for _tp_o in _tp_trade.orders:
+                            _tp_max_profit = max(_tp_max_profit, _tp_o.avg_fill_price * _tp_o.filled_qty * 0.5)
+                            _tp_max_loss = max(_tp_max_loss, _tp_o.avg_fill_price * _tp_o.filled_qty * 0.5)
+                    # TAKE PROFIT: P&L >= 50% of max profit
+                    if _tp_pnl >= 0.5 * _tp_max_profit:
+                        try:
+                            order_mgr.close_trade(
+                                trade_id=_tp_trade.trade_id,
+                                reason=f"auto_tp:pnl=Rs.{_tp_pnl:+.0f} >= 50% of max profit Rs.{_tp_max_profit:.0f}"
+                            )
+                            logger.info(f"[AUTO-TP] CLOSED {_tp_trade.plan.underlying} for +Rs.{_tp_pnl:.0f} (50%+ of max)")
+                        except Exception as _tp_err:
+                            logger.debug(f"auto_tp close failed: {_tp_err}")
+                    # STOP LOSS: P&L <= -50% of max loss
+                    elif _tp_pnl <= -0.5 * _tp_max_loss:
+                        try:
+                            order_mgr.close_trade(
+                                trade_id=_tp_trade.trade_id,
+                                reason=f"auto_sl:pnl=Rs.{_tp_pnl:+.0f} <= -50% of max loss Rs.{_tp_max_loss:.0f}"
+                            )
+                            logger.info(f"[AUTO-SL] CLOSED {_tp_trade.plan.underlying} for -Rs.{abs(_tp_pnl):.0f} (50%+ of max loss)")
+                        except Exception as _sl_err:
+                            logger.debug(f"auto_sl close failed: {_sl_err}")
+            except Exception as _auto_tp_err:
+                logger.debug(f"auto-tp/sl check failed: {_auto_tp_err}")
             # 1) EOD report
             if (now.hour, now.minute) >= (15, 30) and (last_eod_report is None or last_eod_report.date() != now.date()):
                 positions = broker.get_positions()
@@ -2346,6 +2442,39 @@ def run_paper() -> None:
                                 logger.warning(f"[CANDLE-WATCHDOG] backfill failed: {_cw_err}")
                 except Exception as _wd_err:
                     logger.debug(f"candle-watchdog failed: {_wd_err}")
+            # FIX 2026-09-16 00:25: chain health watchdog. Every 5 min, check option
+            # chains. If any underlying has a broken chain (inverted PE prices, bad
+            # spot, missing strikes), write data_cache/_chains_unhealthy.json. The
+            # bot's main loop reads this file and REJECTS new entries with the reason
+            # 'chains_unhealthy'. Phantom fills (the +Rs.88k Sep 15 / +Rs.3k Sep 11
+            # bugs) stop at the source instead of being detected after the fact.
+            if cycle_counter % 10 == 0:
+                try:
+                    from scripts.chain_health import check_chain_health as _ch_chain
+                    _ch_unhealthy = []
+                    for _ch_sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+                        _ch = _ch_chain(_ch_sym, use_cache=False)
+                        if not _ch["healthy"]:
+                            _ch_unhealthy.append(_ch_sym)
+                    from scripts.chain_health import reset_cache as _ch_reset
+                    _ch_reset()
+                    _ch_state_path = Path("data_cache/_chains_unhealthy.json")
+                    _ch_state = {
+                        "ts": now.isoformat(),
+                        "unhealthy_underlyings": _ch_unhealthy,
+                        "n_unhealthy": len(_ch_unhealthy),
+                    }
+                    _ch_state_path.write_text(
+                        json.dumps(_ch_state, indent=2, ensure_ascii=False), encoding="utf-8"
+                    )
+                    if _ch_unhealthy:
+                        logger.warning(
+                            f"[CHAIN-WATCHDOG] {len(_ch_unhealthy)} broken chain(s): "
+                            f"{', '.join(_ch_unhealthy)} - new entries will be REJECTED "
+                            f"with reason=chains_unhealthy"
+                        )
+                except Exception as _ch_err:
+                    logger.debug(f"chain-watchdog failed: {_ch_err}")
             # 3e) 24/7 self-heal check every 5 min (cycle_counter % 10 = ~5 min at 30s/cycle).
             # Detects liveness staleness, brain port down, shadow imports, missing
             # daily tasks, etc. Applies the fix (writes a force-action JSON, restarts
