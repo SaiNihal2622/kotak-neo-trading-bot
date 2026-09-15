@@ -205,7 +205,7 @@ class PaperClient(BrokerClient):
                         if lp and lp > 0:
                             # FIX 2026-09-11 21:00: validate before accepting
                             try:
-                                from scripts._chain_health import validate_fill_price
+                                from scripts.chain_health import validate_fill_price
                                 _v = validate_fill_price(
                                     order.symbol, lp,
                                     expected_price=getattr(order, 'expected_fill_price', None) or 0
@@ -235,7 +235,7 @@ class PaperClient(BrokerClient):
             if tick is not None and tick.ltp > 0:
                 # FIX 2026-09-11 21:00: validate cached tick too
                 try:
-                    from scripts._chain_health import validate_fill_price
+                    from scripts.chain_health import validate_fill_price
                     _v = validate_fill_price(order.symbol, tick.ltp,
                                               expected_price=getattr(order, 'expected_fill_price', None) or 0)
                     if _v["ok"]:
@@ -249,7 +249,7 @@ class PaperClient(BrokerClient):
         if ref_price <= 0 and order.price and order.price > 0:
             # Validate limit price too
             try:
-                from scripts._chain_health import validate_fill_price
+                from scripts.chain_health import validate_fill_price
                 _v = validate_fill_price(order.symbol, order.price,
                                           expected_price=getattr(order, 'expected_fill_price', None) or 0)
                 if _v["ok"]:
@@ -261,7 +261,7 @@ class PaperClient(BrokerClient):
         if ref_price <= 0 and order.expected_fill_price and order.expected_fill_price > 0:
             # Validate expected price too
             try:
-                from scripts._chain_health import validate_fill_price
+                from scripts.chain_health import validate_fill_price
                 _v = validate_fill_price(order.symbol, order.expected_fill_price,
                                           expected_price=order.expected_fill_price)
                 if _v["ok"]:
@@ -276,7 +276,7 @@ class PaperClient(BrokerClient):
         # Black-Scholes price — NOT a Rs.1.0 default. Phantom fills stop here.
         if ref_price <= 0:
             try:
-                from scripts._chain_health import bs_estimate as _bs_est
+                from scripts.chain_health import bs_estimate as _bs_est
                 # Find underlying spot
                 _spot = 0.0
                 for sym_t, t_t in self._ticks.items():
@@ -309,7 +309,7 @@ class PaperClient(BrokerClient):
                     _bs_px = _bs_est(_spot, _eff_strike, _eff_opt, _dte, iv=_iv)
                     if _bs_px and _bs_px > 0:
                         # Final sanity check — BS should give a sane price
-                        from scripts._chain_health import MIN_OPTION_PRICE, MAX_OPTION_PRICE
+                        from scripts.chain_health import MIN_OPTION_PRICE, MAX_OPTION_PRICE
                         _lo = MIN_OPTION_PRICE.get((_eff_und or "").upper(), 1.0)
                         _hi = MAX_OPTION_PRICE.get((_eff_und or "").upper(), 10000.0)
                         if _bs_px >= _lo and _bs_px <= _hi:

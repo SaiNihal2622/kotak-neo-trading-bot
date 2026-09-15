@@ -115,6 +115,24 @@ def main():
     payload = write_force_action(direction, count, evidence)
     print(f"CONFIRMED: direction={direction} count={count} evidence={evidence}")
     print(f"  wrote: {payload}")
+    # FIX 2026-09-04 12:30: also send a Telegram alert so the user knows immediately.
+    try:
+        from scripts._telegram_alert import send_telegram
+        msg = (
+            f"<b>CONFLUENCE DETECTED</b>\n\n"
+            f"Direction: <b>{direction.upper()}</b>\n"
+            f"Confirming signals: {count}\n"
+            f"Evidence: {evidence}\n\n"
+            f"Action: {payload['action']}\n"
+            f"mavis_force_action.json updated — bot will apply on next cycle (5-30s).\n"
+            f"<i>If bot is on old code, restart KotakBotPaper to load the BIAS_OVERRIDE handler.</i>"
+        )
+        if send_telegram(msg):
+            print("  Telegram alert sent")
+        else:
+            print("  Telegram alert failed (creds?)")
+    except Exception as _te:
+        print(f"  Telegram alert error: {_te}")
     return 0
 
 

@@ -12,9 +12,11 @@
 #   15:30 IST = 10:00 UTC
 #   23:00 IST = 17:30 UTC
 #
-# Note: Windows Task Scheduler uses the LOCAL clock, not UTC. If your machine is
-# set to IST (which is +5:30 from UTC), use 08:25 / 15:30 / 23:00 directly.
-# If your machine is in UTC, use 02:55 / 10:00 / 17:30.
+# FIX 2026-09-04 15:25: was failing to register tasks because of:
+#   1. Quoting bug in -Argument (concatenated $Arg and $t.Args without space)
+#   2. Using pythonw.exe (no console) instead of python.exe for better logging
+#   3. -Force flag missing (so re-runs would fail)
+#   4. No Read-Host at end, so window closed before user could see result
 
 param(
     [switch]$Install,
@@ -22,6 +24,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Use python.exe (not pythonw.exe) so any stdout shows in scheduled task logs
+$Script = "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\.venv\Scripts\python.exe"
+$ScriptDir = "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot"
 
 $Tasks = @(
     @{
@@ -44,43 +50,91 @@ $Tasks = @(
     }
 )
 
-$Script = "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\.venv\Scripts\pythonw.exe"
-$Arg = "C:\Users\saini\.minimax-agent\projects\kotak-neo-bot\scripts\daily_autonomy.py"
-
 if ($Uninstall) {
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "Uninstalling kotak-neo-bot daily tasks"
+    Write-Host "========================================" -ForegroundColor Cyan
     foreach ($t in $Tasks) {
-        Write-Host "uninstalling $($t.Name)..."
-        Unregister-ScheduledTask -TaskName $t.Name -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "  uninstalling $($t.Name)..." -ForegroundColor Yellow
+        $exists = Get-ScheduledTask -TaskName $t.Name -ErrorAction SilentlyContinue
+        if ($exists) {
+            Unregister-ScheduledTask -TaskName $t.Name -Confirm:$false
+            Write-Host "    removed" -ForegroundColor Green
+        } else {
+            Write-Host "    not installed" -ForegroundColor Gray
+        }
     }
-    Write-Host "all tasks uninstalled"
+    Write-Host ""
+    Write-Host "All tasks removed." -ForegroundColor Green
+    Write-Host "Press Enter to close"
+    Read-Host
     exit 0
 }
 
 if ($Install) {
-    foreach ($t in $Tasks) {
-        Write-Host "installing $($t.Name) at $($t.Time)..."
-        $action = New-ScheduledTaskAction -Execute $Script -Argument "`"$Arg`" $($t.Args)""
-        $trigger = New-ScheduledTaskTrigger -Daily -At $t.Time
-        $settings = New-ScheduledTaskSettingsSet `
-            -AllowStartIfOnBatteries `
-            -DontStopIfGoingOnBatteries `
-            -StartWhenAvailable `
-            -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
-        Register-ScheduledTask `
-            -TaskName $t.Name `
-            -Action $action `
-            -Trigger $trigger `
-            -Settings $settings `
-            -Description $t.Description `
-            -RunLevel Highest `
-            -Force
-        Write-Host "  installed: $($t.Name) at $($t.Time)"
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "Installing kotak-neo-bot daily tasks (FIX 2026-09-04)"
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    # Verify admin
+    $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        Write-Host "ERROR: This script must be run as Administrator." -ForegroundColor Red
+        Write-Host "Right-click INSTALL.bat -> Run as administrator" -ForegroundColor Yellow
+        Read-Host
+        exit 1
     }
+    Write-Host "  Running as Administrator: OK" -ForegroundColor Green
+
+    # Check daily_autonomy.py exists
+    $autonomyPath = Join-Path $ScriptDir "scripts\daily_autonomy.py"
+    if (-not (Test-Path $autonomyPath)) {
+        Write-Host "ERROR: $autonomyPath not found" -ForegroundColor Red
+        Read-Host
+        exit 1
+    }
+    Write-Host "  daily_autonomy.py: OK" -ForegroundColor Green
+
+    foreach ($t in $Tasks) {
+        Write-Host "  installing $($t.Name) at $($t.Time)..." -ForegroundColor Yellow
+        try {
+            # FIX 2026-09-04 15:25: pass arguments as SEPARATE items in array, not concatenated string
+            $action = New-ScheduledTaskAction `
+                -Execute $Script `
+                -Argument @($autonomyPath, $t.Args) `
+                -WorkingDirectory $ScriptDir
+            $trigger = New-ScheduledTaskTrigger -Daily -At $t.Time
+            $settings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries `
+                -DontStopIfGoingOnBatteries `
+                -StartWhenAvailable `
+                -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+            Register-ScheduledTask `
+                -TaskName $t.Name `
+                -Action $action `
+                -Trigger $trigger `
+                -Settings $settings `
+                -Description $t.Description `
+                -RunLevel Highest `
+                -Force `
+                -ErrorAction Stop
+            Write-Host "    installed at $($t.Time) IST" -ForegroundColor Green
+        } catch {
+            Write-Host "    FAILED: $_" -ForegroundColor Red
+        }
+    }
+
     Write-Host ""
-    Write-Host "3 daily tasks installed."
-    Write-Host "Verify with: Get-ScheduledTask | Where-Object { `$_.TaskName -like 'kotak-*' }"
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "Verification:" -ForegroundColor Cyan
+    Get-ScheduledTask | Where-Object { $_.TaskName -like "kotak-*" } | Select-Object TaskName, State, @{N='Time';E={if ($_.Triggers) { $_.Triggers[0].CimInstanceProperties | Where-Object { $_.Name -eq 'StartBoundary' } | Select-Object -ExpandProperty Value } else { 'n/a' }} } | Format-Table -AutoSize
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "Done. 3 daily tasks should be installed." -ForegroundColor Green
+    Write-Host "Press Enter to close"
+    Read-Host
     exit 0
 }
 
 Write-Host "Usage: -Install or -Uninstall"
+Read-Host
 exit 1

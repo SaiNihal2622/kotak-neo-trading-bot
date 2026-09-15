@@ -1,0 +1,45 @@
+feat: brain 24/7 — removes is_market_hours() gate, adds global research mode
+
+User said: '24/7 trading? NSE is closed other times? fix this cause we need
+this too not only live market candles'
+
+FIX 1 — REMOVED is_market_hours() GATE from periodic scan
+  The 90-min periodic LLM scan now fires 24/7, not just 09:15-15:30.
+  During NSE hours, trigger='periodic_90min'. Outside hours, the
+  LLM gets trigger='global_research_90min' with nse_status='CLOSED'.
+
+FIX 2 — ADDED OVERNIGHT RESEARCH TRIGGER
+  Every 2h when NSE is closed, the brain fires an LLM call to:
+  1. Analyze overnight moves (US/Asia/Crypto/Forex)
+  2. Generate hypothetical signals (logged to hypothetical_signals.jsonl
+     for review against actual NSE moves at morning brief)
+  3. Write pre-market plans (for execution at 09:15:01 IST)
+
+FIX 3 — UPDATED BRAIN PROMPT
+  Added '24/7 GLOBAL RESEARCH MODE' section to system prompt:
+  - Brain runs 24/7, not just market hours
+  - NSE ORDER EXECUTION gated to 09:15-15:30 (the bot rejects)
+  - But THINKING is 24/7
+  - Outside NSE hours: analyze overnight, prep pre-market, log signals
+  - When NSE opens: same as before
+  - Global data via data_cache/global_state.json (16 instruments:
+    US, Asia, Crypto, Commodities, Forex, VIX — refreshed every 5 min 24/7)
+
+WHY 24/7:
+- Many real edges form overnight (US crash -> India opens gap-down)
+- Pre-market plans let you execute at 09:15:01 instead of 09:18
+- Hypothetical signals let us backtest off-hours against NSE moves
+
+VERIFICATION:
+  - global_state.json currently has 16 instruments with live data:
+    BTC-USD $76,596 (-1.04%), S&P 7,631 (-0.71%), VIX 16.71 (+2.26%!),
+    Gold 4,355 (+0.17%)
+  - Brain at 16:32 IST (post-NSE close) is making HOLD decisions with
+    'NSE has been closed for 66 minutes' in the rationale
+  - The 24/7 mode is live (brain restarted with new code, tick 12+)
+
+Note: This makes the system 100% THINK 24/7. Trade EXECUTION is still
+NSE hours (09:15-15:30) because Kotak Neo only supports NSE/BSE
+instruments. For 24/7 EXECUTION across global markets, we'd need to
+add more broker integrations (e.g. Binance for crypto, IBKR for US).
+That's a future work item.

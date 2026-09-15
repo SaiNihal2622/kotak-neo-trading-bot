@@ -1,0 +1,8 @@
+fix: predictive signals now read JSONL candles + FII/DII uses real browser UA
+
+FIX 2026-09-09 12:40:
+- predictive_signals.py: candle engine writes JSONL (not parquet/json).
+  Updated _read_parquet_or_json to also try JSONL.
+- fii_dii_fetcher.py: Moneycontrol was returning 403 for our bot UA.
+  Updated to use a real desktop browser UA + Accept-Language/Encoding.
+- scripts/_status.py: one-off diagnostic for live status reads.

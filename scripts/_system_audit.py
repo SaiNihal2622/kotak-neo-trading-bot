@@ -276,7 +276,7 @@ def main() -> int:
     # inverted PE prices which produced phantom +Rs.3,060 P&L. Detect this
     # and report it as part of the audit.
     try:
-        from scripts._chain_health import check_chain_health, reset_cache
+        from scripts.chain_health import check_chain_health, reset_cache
         reset_cache()  # always re-read on each audit
         chain_issues = []
         for sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
