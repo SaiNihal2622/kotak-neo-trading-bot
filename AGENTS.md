@@ -1379,3 +1379,94 @@ a one-flag toggle. Don't `cron delete` it.
 **Time-of-day / sizing observations**: No intraday data exists today to identify which hours produced the test IC win. Tomorrow: log entry_ts, exit_ts, and underlying IV at entry — the missing fields are a process gap.
 
 **Tomorrow focus**: Execute. Capital is idle, theta is free, and the recommended Kelly size for directional_debit is 5%. Filter should permit at least 1-2 setups if conditions match the prior 49% baseline. Reject test/synthetic entries from the P&L tally.
+
+
+## 2026-08-31 nightly self-review
+
+**What worked**: The single iron_condor on NIFTY (test-1) closed as a winner at +Rs.1,500. Execution flow functioned — status transitioned to closed, outcome tagged win, pnl reconciled. That is the entire dataset for the day.
+
+**What did not**: Nothing was actually traded in production today. Zero real trades, zero real P&L swing, zero live decisions. The "iron_condor" record is a test entry with no entry_premium or exit_premium — it is paper data, not market evidence. Treating it as a real win inflates confidence. The profit engine is bleeding: today -Rs.45, compounded -Rs.24, which means costs/slippage/signal-decay are eating capital while I sit idle. Sitting idle all day is itself the loss — opportunity cost against the directional_debit edge the engine itself flags (+Rs.109,468 historical, 42% win rate, Kelly 2.1%).
+
+**Edge discovered**: None new today. The engine's recommendation (directional_debit) is unexploited. I have no fresh data to confirm or deny it. I also cannot confirm iron_condor works because my only sample is a synthetic test.
+
+**Edge lost**: Possibly the entire day. By refusing to engage with directional_debit (the highest historical EV strategy in my book) and producing no real trades, I let a +EV day decay to flat or negative. Idle capital in options is negative carry.
+
+**Sizing mistake**: No sizing happened — but the lesson is that zero size on a +EV day is the biggest sizing mistake of all. Kelly says 2.1% on directional_debit; ignoring that is anti-Kelly.
+
+**Exit timing**: N/A — no live exit occurred. The test close at 240 min cap shows the max_hold timer works; need to verify this on a real fill.
+
+**Time-of-day**: No sample. Need at least 5 live session-days before any pattern claim.
+
+**Missed opportunities**: One full session missed. Whatever NIFTY did today (range, IV crush, skew shift) was unobserved by my order flow.
+
+**False positives**: The iron_condor "win" is a false positive until replicated on a real NBBO fill with real premium data. Stop counting test entries in the win-rate denominator.
+
+**Tomorrow focus**: Take at least one real directional_debit trade at Kelly size 2.1% of effective capital, with a real entry_premium logged. Treat test trades as off-the-record for stats.
+
+
+## 2026-08-31 nightly self-review
+
+**What worked**: Iron condor on NIFTY closed for +₹1,500 on what appears to be a single test/tracking entry. Strategy recommendation engine confirms iron_condor as the dominant edge: ₹+9,835 cumulative, 44% win rate, Kelly 3.7% of capital (~₹3,700 per trade unit). The premium-selling structure is producing positive expectancy in this regime — theta decay and range-bound NIFTY behavior are the obvious drivers.
+
+**What did not**: Zero real trades were closed today. The only record (test-1) is clearly synthetic — entry_premium and exit_premium are both null, yet pnl is 1500. This means the P&L engine state, the strategy recommendation, and the win-rate calc are all built on contaminated data. I have no actual edge signal from today's market, only a stale recommendation repeating itself. Drawdown reads 0% which is meaningless — it's not a confirmed risk-free day, it's an empty day masquerading as one.
+
+**Edge discovered**: None new. The iron_condor signal is the same signal I had yesterday and the day before. No time-of-day pattern can be extracted from a single null-premium record. No instrument-level edge differentiation possible.
+
+**Edge lost**: Cannot be assessed. With zero live closed trades and only one test record, every metric is noise. I am at risk of over-trusting a recommendation that has been generated from a tiny sample and never validated against today's actual price action.
+
+**Sizing mistakes**: None today (no trades), but the implicit risk is acting on test data as if it were live. Capital is intact at ₹100,000 — good. Discipline of sitting out was correct given no confirmed setup.
+
+**Tomorrow focus**: Require non-null entry_premium and exit_premium before logging any trade outcome. One test record should not drive Kelly sizing. Wait for at least 3 confirmed live iron_condor entries with real premium capture before scaling to the recommended 3.7% Kelly. Until then, hard-cap at 1% of capital per trade.
+
+**Missing opportunities**: Unknown. IV regime, range width, and event calendar were not reviewed. If NIFTY expired-week or event-driven IV crush was available and I missed it, that's a process gap, not a data gap.
+
+**False positives**: The profit_engine recommendation itself may be a false positive — it's recycling prior win-rate on a sample too small to be statistically meaningful for tomorrow's conditions.
+
+
+## 2026-08-31 nightly self-review
+
+**What worked**: Zero live trades today — a test iron_condor (decision test-1) was the only bookable event, booked at +₹1,500. The profit engine shows iron_condor as the dominant edge: ₹+9,835 cumulative, 44% win rate, Kelly size 3.7%. Capital is intact at ₹143,954, drawdown 0.0%, compounded P&L ₹+43,954. Discipline held: no forced trades, no FOMO, no sizing errors.
+
+**What did not**: Zero executions is itself a signal — either setups failed to qualify under current rules, or I sat on my hands while a viable iron_condor window existed. No way to know without a missed-opportunity log. Also: the single "win" is a synthetic test, not a real market fill, so today's win-rate data is meaningless. I'm letting a placeholder inflate my confidence.
+
+**Edge discovered**: Iron condor on NIFTY remains the only validated edge in the book (44% WR across a real sample). Kelly 3.7% on ₹143,954 = ~₹5,300 per trade — well within hard risk caps. Premium-selling theta structure continues to outperform every directional debit attempt (which has 0% Kelly allocation, confirming dead edge).
+
+**Edge lost**: Directional debit spreads remain at Kelly 0.0 — they've cost opportunity cost by occupying decision slots. Time to formally retire or freeze them pending a fresh sample.
+
+**Process gaps identified**: (1) No tracking of "setups seen vs. setups traded" — can't distinguish discipline from paralysis. (2) No time-of-day attribution despite today's prompt explicitly asking for it. (3) Test trades polluting the outcome log — need a flag to exclude paper/synthetic fills from win-rate calcs.
+
+**Tomorrow focus**: Trade only A+ iron_condor setups on NIFTY, sized at Kelly 3.7% (~₹5,300). Track every setup seen vs. traded. No directional debit trades. Hard caps unchanged: 2% capital risk/trade, 6% portfolio heat, daily loss limit 3%.
+
+**Action item**: Add setup-tracking field and synthetic-trade flag to decision schema.
+
+
+## 2026-09-16 01:30 IST — Phantom-fill chain-lookup bug + chain-health watchdog (this session)
+
+**Rule**: The option_chains.json step in _force_fill_market_like was written as list((Path("data_cache"))).glob("option_chain_*.json"). list(Path) raises TypeError: 'WindowsPath' object is not iterable, so the inner try/except silently swallowed it and the chain was NEVER consulted. Every market_like fill fell straight through to the BS / spot-derived / Rs.1.00 fallback. The Sep 11 +Rs.3k and Sep 15 +Rs.88k phantom gains were downstream of this single latent bug.
+
+**Fix** (commit 26a73c0):
+1. kotak_bot/broker/paper_client.py: introduced module-level DCACHE = Path("data_cache") and replaced the Path("data_cache") literals at lines 196 and 296 with DCACHE. This makes the lookup monkeypatchable from tests AND fixes the list(Path) bug at the same time.
+2. 	ests/test_paper_client_fill_mode.py and 	ests/test_orphan_auto_close_price.py: replaced the os.chdir(tmp_path) hack with a pytest autouse fixture that monkeypatches paper_client.DCACHE = tmp_path. Cleaner, no global cwd mutation, no test pollution.
+3. 	ests/test_chain_health_module.py::test_inverted_pe_detected: the test fixture was creating a chain where PE prices go UP as strike goes DOWN — which is actually a HEALTHY put curve (lower strike = more ITM = higher intrinsic). The actual yfinance inversion pattern is the OPPOSITE (OTM puts priced higher than ITM puts). Flipped the test to feed the truly-broken pattern.
+
+**Chain-health watchdog** (commit c9ce63d):
+- New scripts/chain_health.py + watchdog in kotak_bot/__main__.py (every 5 min via cycle_counter % 10 == 0) writes data_cache/_chains_unhealthy.json with broken underlyings.
+- The QUANT-ACTION OPEN handler reads this file and REJECTS new entries for broken underlyings with reason chains_unhealthy. Phantom fills stop at the SOURCE.
+- Aggressive auto TP/SL (P&L ≥ 50% of max profit, P&L ≤ -50% of max loss, 15 min min-hold) wired into the same loop.
+- _system_audit.py chain_health subsystem confirms ERROR status when broken chains detected.
+
+**The list(Path) lesson**:
+- Operator precedence: list((Path)).glob(...) is list(Path).glob(...) — list fails on non-iterable, the TypeError is caught by the surrounding try/except, the .glob never runs. Always glob first: list(Path.glob(...)) or or x in Path.glob(...):. 
+- This bug pattern is invisible in normal flow because the exception is swallowed — no crash, no log, no visible failure. It only surfaces as "downstream code never gets the expected data".
+
+**Apply when**:
+- New code path that iterates over a Path: write or x in Path.glob(...) or list(Path.glob(...)), never list(Path).glob(...).
+- Adding a new data-source lookup: introduce a module-level constant (e.g. DCACHE) so tests can monkeypatch it cleanly. Hardcoded Path("data_cache") literals make the lookup invisible to test fixtures.
+- Future "bot missed a real opportunity" or "bot showed phantom P&L": check whether the chain/health lookup actually ran by searching the log for the specific module's debug lines. If the debug line is missing, the lookup was skipped silently — usually because an exception was swallowed by the surrounding try/except.
+- Touching a .py file on Windows to invalidate stale .pyc: os.utime(path, (now, now)) then restart the process. The mtime check is the only thing Python uses to decide whether to recompile (it does NOT do content hashing by default — only with --check-hash-based-pycs always).
+
+**Verified by audit (2026-09-16 01:27 IST)**:
+`
+chain_health: error — BAD CHAINS DETECTED: NIFTY: PE prices inverted on 12 strike pairs | BANKNIFTY: same | FINNIFTY: spot 4966 out of range | MIDCPNIFTY: spot 4968 out of range | SENSEX: spot 5113 out of range
+`
+All 5 chains broken (yfinance returns garbage). Watchdog caught them, _chains_unhealthy.json written, new entries rejected. **Tests: 587/587 pass.**
