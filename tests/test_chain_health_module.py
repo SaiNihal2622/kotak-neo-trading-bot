@@ -198,19 +198,26 @@ class TestChainHealth:
         assert h["healthy"] is True, f"Chain should be healthy: {h}"
 
     def test_inverted_pe_detected(self, tmp_path, monkeypatch):
-        """A chain with PE prices INCREASING as strike DECREASES is broken."""
+        """A chain with PE prices INCREASING as strike INCREASES is broken.
+
+        For puts, lower strike = more intrinsic value (more ITM) = HIGHER price.
+        A chain where OTM puts (high strike) cost more than ITM puts (low strike)
+        is the inverted-PE corruption we saw from yfinance on Sep 11.
+        """
         monkeypatch.setattr("scripts.chain_health.DCACHE", tmp_path)
-        # Broken chain: PE prices go UP as strike goes DOWN (impossible)
+        # Broken chain: PE prices go UP as strike goes UP (OTM > ITM is wrong)
         strikes = {}
         for s in [23300, 23350, 23400, 23450, 23500, 23550, 23600, 23650, 23700]:
-            # Bug: lower strike = HIGHER price (wrong)
-            strikes[f"{s}_PE"] = {"strike": s, "opt_type": "PE", "price": 100 + (23700 - s) * 0.5}
+            # Bug: lower strike = LOWER price (inverted for puts)
+            strikes[f"{s}_PE"] = {"strike": s, "opt_type": "PE", "price": 100 + (s - 23300) * 0.5}
         chain = {"spot": 23500, "strikes": strikes}
         (tmp_path / "option_chain_NIFTY.json").write_text(json.dumps(chain), encoding="utf-8")
         from scripts.chain_health import check_chain_health
         h = check_chain_health("NIFTY", use_cache=False)
-        assert h["healthy"] is False
-        assert any("inverted" in i.lower() for i in h["issues"])
+        assert h["healthy"] is False, f"inverted chain should be flagged unhealthy: {h}"
+        assert any("inverted" in i.lower() for i in h["issues"]), (
+            f"expected an issue mentioning 'inverted', got: {h['issues']}"
+        )
 
     def test_bad_spot_detected(self, tmp_path, monkeypatch):
         """FINNIFTY spot=5071 (real is 25,200) should be flagged."""

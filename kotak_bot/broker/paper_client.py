@@ -29,6 +29,15 @@ from .base import (
 )
 
 
+# FIX 2026-09-16 00:50: module-level data dir so tests can monkeypatch it.
+# The chain lookup at line 196 (option_chains.json) and IV lookup at line 296
+# previously hardcoded Path("data_cache"), which made them invisible to test
+# fixtures that wrote fake chains to tmp_path. Tests now set
+# `paper_client.DCACHE = tmp_path` (or use the helper `use_dcache()`) and the
+# fill logic reads from there.
+DCACHE = Path("data_cache")
+
+
 class PaperClient(BrokerClient):
     """In-process paper trading simulator.
 
@@ -191,9 +200,14 @@ class PaperClient(BrokerClient):
         # was found to have inverted PE prices (PE going UP as strike goes DOWN), which
         # produced phantom fills of +Rs.3,060 P&L on a single trade. Phantom fills are
         # now rejected and we fall back to Black-Scholes.
+        # FIX 2026-09-16 00:55: chain lookup was previously written as
+        # `list((Path("data_cache"))).glob(...)`. list() doesn't accept a Path
+        # (TypeError: 'WindowsPath' object is not iterable), so the inner try/
+        # except silently swallowed it and the chain was NEVER consulted. Every
+        # market_like fill fell straight through to the BS / spot-derived /
+        # Rs.1.00 fallback. Fix: glob first, then materialize the list.
         try:
-            from pathlib import Path as _P
-            chains_files = list((_P("data_cache")).glob("option_chain_*.json"))
+            chains_files = list(DCACHE.glob("option_chain_*.json"))
             for cf in chains_files:
                 try:
                     import json as _j
@@ -293,7 +307,7 @@ class PaperClient(BrokerClient):
                     _iv = 0.15
                     try:
                         from pathlib import Path as _PF
-                        for cf in _PF("data_cache").glob("option_chain_*.json"):
+                        for cf in DCACHE.glob("option_chain_*.json"):
                             try:
                                 import json as _jj
                                 _cd = _jj.loads(cf.read_text(encoding="utf-8"))

@@ -7,8 +7,34 @@ from datetime import datetime, timezone
 # add project to path so we can import kotak_bot
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import pytest
+
+from kotak_bot.broker import paper_client as _pc_mod
 from kotak_bot.broker.paper_client import PaperClient
 from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType, OrderStatus, Tick
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dcache(tmp_path, monkeypatch):
+    """Redirect paper_client's data_cache lookup to tmp_path.
+
+    Production code in paper_client._force_fill_market_like reads
+    `option_chain_*.json` from DCACHE to find a ref price. If we leave DCACHE
+    pointing at the real data_cache, the tests read whatever chain the bot
+    happens to have on disk (often inverted-PHANTOM chains from yfinance) and
+    the assertions below become flaky. Patching DCACHE to tmp_path gives us a
+    guaranteed-empty chain directory so the fallback chain (tick → limit →
+    expected → BS → spot-derived) fires as the tests expect.
+    """
+    monkeypatch.setattr(_pc_mod, "DCACHE", tmp_path)
+    # Also patch chain_health's DCACHE so its file-existence probes during
+    # validation agree with paper_client.
+    try:
+        from scripts import chain_health as _ch_mod
+        monkeypatch.setattr(_ch_mod, "DCACHE", tmp_path)
+    except ImportError:
+        pass
+    yield
 
 
 def _make_order(symbol="NIFTY12AUG2624350CE", side=OrderSide.BUY, qty=65, price=100.0, ot=OrderType.LIMIT):
@@ -107,6 +133,40 @@ def test_aggressive_limit_fills_within_5pct(tmp_path):
     print(f"  aggressive_limit: SELL @ 96 with LTP 100 filled @ {placed.avg_fill_price}")
 
 
+def test_market_like_rejects_phantom_rs1_fill(tmp_path, monkeypatch):
+    """Regression: chain price below the underlying's MIN_OPTION_PRICE must NOT be
+    used as the fill ref. The original phantom-fill bug was Rs.1.00 fills; this
+    guard makes sure that exact failure mode is rejected.
+
+    We seed a chain file with a deliberately broken price (Rs.0.5 for NIFTY
+    24350 CE — well below the NIFTY minimum of Rs.5). paper_client must reject
+    that price and fall through to the limit price (60.0).
+    """
+    import json as _json
+    persist = tmp_path / "paper_state.json"
+    # Seed an obviously broken chain: NIFTY 24350 CE priced at Rs.0.50 (way
+    # below the NIFTY minimum of Rs.5 — this is the inverted-PE class of bug).
+    bad_chain = tmp_path / "option_chain_NIFTY.json"
+    bad_chain.write_text(_json.dumps({
+        "underlying": "NIFTY",
+        "spot": 24350,
+        "strikes": {
+            "24350_CE": {"strike": 24350, "opt_type": "CE", "price": 0.50, "iv": 0.15},
+        },
+    }), encoding="utf-8")
+    pc = PaperClient(starting_capital=100000, fill_mode="market_like", persist_path=str(persist))
+    pc.connect()
+    o = _make_order(side=OrderSide.SELL, price=60.0)
+    placed = pc.place_order(o)
+    assert placed.status == OrderStatus.COMPLETE
+    # Should NOT have filled at the phantom Rs.0.50 price. Must fall through
+    # to limit price (60.0 - slippage ≈ 59.97).
+    assert placed.avg_fill_price >= 5.0, (
+        f"phantom fill accepted: avg_fill_price={placed.avg_fill_price} (chain had Rs.0.50)"
+    )
+    print(f"  market_like (phantom chain): SELL filled @ {placed.avg_fill_price} (rejected Rs.0.50 phantom)")
+
+
 # Note: aggressive_limit is documented but not a separate code path — it just adjusts
 # limit_fill_near_ltp_pct via settings.yaml. The first branch (`price <= bid`) always
 # fires for SELLs priced below bid (correctly: buyer pays bid, not limit), so the
@@ -117,6 +177,7 @@ def test_aggressive_limit_fills_within_5pct(tmp_path):
 
 if __name__ == "__main__":
     import tempfile
+    import pytest as _pt
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         print("test_market_like_fills_immediately_no_tick")
@@ -129,4 +190,7 @@ if __name__ == "__main__":
         test_realistic_limit_fills_aggressive_sell(tmp_path)
         print("test_aggressive_limit_fills_within_5pct")
         test_aggressive_limit_fills_within_5pct(tmp_path)
+        # The phantom-rejection test needs DCACHE patched; skip in __main__ mode
+        # since we don't have monkeypatch available.
+        print("test_market_like_rejects_phantom_rs1_fill: skipped (needs pytest fixtures)")
         print("ALL PASS")

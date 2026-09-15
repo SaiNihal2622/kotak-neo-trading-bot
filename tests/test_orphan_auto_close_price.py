@@ -29,10 +29,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import pytest
+
+from kotak_bot.broker import paper_client as _pc_mod
 from kotak_bot.broker.paper_client import PaperClient
 from kotak_bot.broker.base import (
     Order, OrderSide, OrderType, ProductType, OrderStatus, Tick
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dcache(tmp_path, monkeypatch):
+    """Point paper_client.DCACHE at the test's tmp_path/data_cache so it
+    reads our synthetic chain files instead of the real (broken) yfinance
+    data in the live project. Without this, paper_client._force_fill_market_like
+    would find the production chain (often inverted or phantom-priced) and the
+    assertions below become flaky.
+    """
+    dcache = tmp_path / "data_cache"
+    dcache.mkdir()
+    monkeypatch.setattr(_pc_mod, "DCACHE", dcache)
+    yield dcache
 
 
 def _write_chain(dcache: Path, underlying: str, spot: float, strike_prices: dict):
@@ -61,11 +78,10 @@ def _write_chain(dcache: Path, underlying: str, spot: float, strike_prices: dict
     return out
 
 
-def test_force_fill_parses_strike_from_symbol(tmp_path):
+def test_force_fill_parses_strike_from_symbol(tmp_path, _isolate_dcache):
     """When Order has no strike/option_type, _force_fill_market_like should
     parse them from the symbol and use the option_chain price (not Rs.1.00)."""
-    dcache = tmp_path / "data_cache"
-    dcache.mkdir()
+    dcache = _isolate_dcache
     # Realistic option chain: NIFTY 24300 PE at Rs.548.32, 24100 PE at Rs.307.73.
     _write_chain(dcache, "NIFTY", 23897.7, {
         "24300_PE": 548.32,
@@ -73,120 +89,98 @@ def test_force_fill_parses_strike_from_symbol(tmp_path):
     })
     persist = dcache / "paper_state.json"
     pc = PaperClient(starting_capital=200000, fill_mode="market_like", persist_path=str(persist))
-    # Patch data_cache path lookup: the code uses Path("data_cache"), so we need
-    # the working dir to be tmp_path. Use chdir to make the relative path work.
-    import os
-    old_cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        pc.connect()
-        # Simulate the bug: order with no strike/option_type/underlying, just symbol.
-        o = Order(
-            symbol="NIFTY10SEP2624100PE",
-            side=OrderSide.BUY,
-            qty=75,
-            order_type=OrderType.MARKET,
-            product=ProductType.MIS,
-            price=0.0,
-            tag="ORPHAN-AUTO-CLOSE-TEST",
-        )
-        assert o.strike == 0.0  # confirms the bug-state
-        assert o.option_type is None
-        assert o.underlying is None
-        placed = pc.place_order(o)
-        # Must be COMPLETE (no Rs.1.00 fallback).
-        assert placed.status == OrderStatus.COMPLETE
-        # Must use the chain price ~307.73, NOT Rs.1.00.
-        assert placed.avg_fill_price > 100.0, (
-            f"fill fell to fallback Rs.1.00; got {placed.avg_fill_price}"
-        )
-        assert 305.0 <= placed.avg_fill_price <= 310.0, (
-            f"unexpected fill price {placed.avg_fill_price}, expected ~307.73"
-        )
-        # FIX (3): Order should be backfilled with strike/option_type/underlying
-        # so the resulting Position() carries them.
-        assert placed.strike == 24100, f"order.strike not backfilled: {placed.strike}"
-        assert placed.option_type == "PE"
-        assert placed.underlying == "NIFTY"
-    finally:
-        os.chdir(old_cwd)
+    pc.connect()
+    # Simulate the bug: order with no strike/option_type/underlying, just symbol.
+    o = Order(
+        symbol="NIFTY10SEP2624100PE",
+        side=OrderSide.BUY,
+        qty=75,
+        order_type=OrderType.MARKET,
+        product=ProductType.MIS,
+        price=0.0,
+        tag="ORPHAN-AUTO-CLOSE-TEST",
+    )
+    assert o.strike == 0.0  # confirms the bug-state
+    assert o.option_type is None
+    assert o.underlying is None
+    placed = pc.place_order(o)
+    # Must be COMPLETE (no Rs.1.00 fallback).
+    assert placed.status == OrderStatus.COMPLETE
+    # Must use the chain price ~307.73, NOT Rs.1.00.
+    assert placed.avg_fill_price > 100.0, (
+        f"fill fell to fallback Rs.1.00; got {placed.avg_fill_price}"
+    )
+    assert 305.0 <= placed.avg_fill_price <= 310.0, (
+        f"unexpected fill price {placed.avg_fill_price}, expected ~307.73"
+    )
+    # FIX (3): Order should be backfilled with strike/option_type/underlying
+    # so the resulting Position() carries them.
+    assert placed.strike == 24100, f"order.strike not backfilled: {placed.strike}"
+    assert placed.option_type == "PE"
+    assert placed.underlying == "NIFTY"
 
 
-def test_force_fill_bnf_orphan_uses_chain_price(tmp_path):
+def test_force_fill_bnf_orphan_uses_chain_price(tmp_path, _isolate_dcache):
     """BNF 57200 PE orphan-close at 12:04 today got Rs.1.00. After the fix
     it should get the chain price ~392.35."""
-    dcache = tmp_path / "data_cache"
-    dcache.mkdir()
+    dcache = _isolate_dcache
     _write_chain(dcache, "BANKNIFTY", 57369.65, {
         "57200_PE": 392.35,
         "56800_PE": 245.76,
     })
     persist = dcache / "paper_state.json"
     pc = PaperClient(starting_capital=200000, fill_mode="market_like", persist_path=str(persist))
-    import os
-    old_cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        pc.connect()
-        # SELL 30 BNF 57200 PE (orphan-close of a long position)
-        o = Order(
-            symbol="BANKNIFTY10SEP2657200PE",
-            side=OrderSide.SELL,
-            qty=30,
-            order_type=OrderType.MARKET,
-            product=ProductType.MIS,
-            price=0.0,
-            tag="ORPHAN-AUTO-CLOSE-TEST",
-        )
-        placed = pc.place_order(o)
-        assert placed.status == OrderStatus.COMPLETE
-        assert placed.avg_fill_price > 100.0, (
-            f"BNF 57200 PE fill fell to Rs.1.00; got {placed.avg_fill_price}"
-        )
-        assert 390.0 <= placed.avg_fill_price <= 395.0, (
-            f"unexpected fill price {placed.avg_fill_price}, expected ~392.35"
-        )
-        assert placed.strike == 57200
-        assert placed.option_type == "PE"
-        assert placed.underlying == "BANKNIFTY"
-    finally:
-        os.chdir(old_cwd)
+    pc.connect()
+    # SELL 30 BNF 57200 PE (orphan-close of a long position)
+    o = Order(
+        symbol="BANKNIFTY10SEP2657200PE",
+        side=OrderSide.SELL,
+        qty=30,
+        order_type=OrderType.MARKET,
+        product=ProductType.MIS,
+        price=0.0,
+        tag="ORPHAN-AUTO-CLOSE-TEST",
+    )
+    placed = pc.place_order(o)
+    assert placed.status == OrderStatus.COMPLETE
+    assert placed.avg_fill_price > 100.0, (
+        f"BNF 57200 PE fill fell to Rs.1.00; got {placed.avg_fill_price}"
+    )
+    assert 390.0 <= placed.avg_fill_price <= 395.0, (
+        f"unexpected fill price {placed.avg_fill_price}, expected ~392.35"
+    )
+    assert placed.strike == 57200
+    assert placed.option_type == "PE"
+    assert placed.underlying == "BANKNIFTY"
 
 
-def test_force_fill_with_explicit_strike_uses_chain_price(tmp_path):
+def test_force_fill_with_explicit_strike_uses_chain_price(tmp_path, _isolate_dcache):
     """When the Order DOES carry strike/option_type/underlying (the new
     orphan-auto-close path), step 0 still works (uses chain price)."""
-    dcache = tmp_path / "data_cache"
-    dcache.mkdir()
+    dcache = _isolate_dcache
     _write_chain(dcache, "NIFTY", 23897.7, {
         "24300_PE": 548.32,
     })
     persist = dcache / "paper_state.json"
     pc = PaperClient(starting_capital=200000, fill_mode="market_like", persist_path=str(persist))
-    import os
-    old_cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        pc.connect()
-        # Order WITH strike/option_type/underlying (the new path)
-        o = Order(
-            symbol="NIFTY10SEP2624300PE",
-            side=OrderSide.SELL,
-            qty=75,
-            order_type=OrderType.MARKET,
-            product=ProductType.MIS,
-            price=0.0,
-            tag="ORPHAN-AUTO-CLOSE-TEST",
-            strike=24300,
-            option_type="PE",
-            expiry="2026-09-10",
-            underlying="NIFTY",
-        )
-        placed = pc.place_order(o)
-        assert placed.status == OrderStatus.COMPLETE
-        assert 545.0 <= placed.avg_fill_price <= 551.0
-    finally:
-        os.chdir(old_cwd)
+    pc.connect()
+    # Order WITH strike/option_type/underlying (the new path)
+    o = Order(
+        symbol="NIFTY10SEP2624300PE",
+        side=OrderSide.SELL,
+        qty=75,
+        order_type=OrderType.MARKET,
+        product=ProductType.MIS,
+        price=0.0,
+        tag="ORPHAN-AUTO-CLOSE-TEST",
+        strike=24300,
+        option_type="PE",
+        expiry="2026-09-10",
+        underlying="NIFTY",
+    )
+    placed = pc.place_order(o)
+    assert placed.status == OrderStatus.COMPLETE
+    assert 545.0 <= placed.avg_fill_price <= 551.0
 
 
 def test_parse_option_symbol_module_helper():
