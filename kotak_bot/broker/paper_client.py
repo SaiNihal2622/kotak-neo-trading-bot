@@ -147,14 +147,20 @@ class PaperClient(BrokerClient):
              FIX 2026-09-07 22:15: parse strike/option_type/underlying from the order
              symbol if the Order object didn't set them. Without this defensive parse,
              brain-driven orphan-auto-close Orders fell through to Rs.1.00.
-          1. Cached tick for the option symbol
-          2. Order's limit price (if set)
-          3. Order's expected_fill_price (if set)
-          4. Underlying's last-known LTP (NIFTY/BANKNIFTY spot) — ATM option ≈ 0.5% of underlying
-          5. Synthetic minimal price (Rs.1.00) — last resort, never skip a fill in paper mode
+             FIX 2026-09-11 21:00: chain price VALIDATED against sanity range +
+             expected_price. Phantom fills (Rs.1.0, 10x off) are REJECTED and
+             the function falls back to Black-Scholes.
+          1. Cached tick for the option symbol (validated)
+          2. Order's limit price (if set, validated)
+          3. Order's expected_fill_price (if set, validated)
+          4. Black-Scholes estimate from spot + IV + time-to-expiry
+          5. Underlying's last-known LTP (NIFTY/BANKNIFTY spot) — ATM option ≈ 0.5% of underlying
+          6. Synthetic minimal price (Rs.1.00) — last resort, never skip a fill in paper mode
+             (but logged loudly so it's clear when this happens)
         """
         import re as _re
         ref_price = 0.0
+        _fill_source = "default"
 
         # FIX 2026-09-07 22:15: defensively recover strike/option_type/underlying
         # from the symbol if the Order didn't carry them. This protects against
@@ -181,6 +187,10 @@ class PaperClient(BrokerClient):
 
         # FIX 2026-09-04 13:42: step 0 — look up live option LTP from option_chains.json
         # This is the most accurate source for paper fills (matches what live trading would do).
+        # FIX 2026-09-11 21:00: validate the chain price before accepting it. The NIFTY chain
+        # was found to have inverted PE prices (PE going UP as strike goes DOWN), which
+        # produced phantom fills of +Rs.3,060 P&L on a single trade. Phantom fills are
+        # now rejected and we fall back to Black-Scholes.
         try:
             from pathlib import Path as _P
             chains_files = list((_P("data_cache")).glob("option_chain_*.json"))
@@ -193,9 +203,28 @@ class PaperClient(BrokerClient):
                     if key and key in strikes:
                         lp = strikes[key].get("price", 0)
                         if lp and lp > 0:
-                            ref_price = lp
-                            logger.debug(f"[PAPER] FORCE_FILL option_chain ref for {order.order_id} {order.symbol}: chain_key={key} -> {ref_price}")
-                            break
+                            # FIX 2026-09-11 21:00: validate before accepting
+                            try:
+                                from scripts._chain_health import validate_fill_price
+                                _v = validate_fill_price(
+                                    order.symbol, lp,
+                                    expected_price=getattr(order, 'expected_fill_price', None) or 0
+                                )
+                                if _v["ok"]:
+                                    ref_price = lp
+                                    _fill_source = "chain"
+                                    logger.debug(f"[PAPER] FORCE_FILL option_chain ref for {order.order_id} {order.symbol}: chain_key={key} -> {ref_price}")
+                                    break
+                                else:
+                                    logger.warning(
+                                        f"[PAPER] FORCE_FILL chain price REJECTED for {order.symbol}: "
+                                        f"{_v['reason']}. Will fall back to BS."
+                                    )
+                            except ImportError:
+                                # _chain_health not importable — use legacy behavior
+                                ref_price = lp
+                                _fill_source = "chain"
+                                break
                 except Exception:
                     continue
         except Exception:
@@ -204,11 +233,96 @@ class PaperClient(BrokerClient):
         if ref_price <= 0:
             tick = self._ticks.get(order.symbol)
             if tick is not None and tick.ltp > 0:
-                ref_price = tick.ltp
+                # FIX 2026-09-11 21:00: validate cached tick too
+                try:
+                    from scripts._chain_health import validate_fill_price
+                    _v = validate_fill_price(order.symbol, tick.ltp,
+                                              expected_price=getattr(order, 'expected_fill_price', None) or 0)
+                    if _v["ok"]:
+                        ref_price = tick.ltp
+                        _fill_source = "tick"
+                    else:
+                        logger.warning(f"[PAPER] FORCE_FILL tick price REJECTED for {order.symbol}: {_v['reason']}")
+                except ImportError:
+                    ref_price = tick.ltp
+                    _fill_source = "tick"
         if ref_price <= 0 and order.price and order.price > 0:
-            ref_price = order.price
+            # Validate limit price too
+            try:
+                from scripts._chain_health import validate_fill_price
+                _v = validate_fill_price(order.symbol, order.price,
+                                          expected_price=getattr(order, 'expected_fill_price', None) or 0)
+                if _v["ok"]:
+                    ref_price = order.price
+                    _fill_source = "limit"
+            except ImportError:
+                ref_price = order.price
+                _fill_source = "limit"
         if ref_price <= 0 and order.expected_fill_price and order.expected_fill_price > 0:
-            ref_price = order.expected_fill_price
+            # Validate expected price too
+            try:
+                from scripts._chain_health import validate_fill_price
+                _v = validate_fill_price(order.symbol, order.expected_fill_price,
+                                          expected_price=order.expected_fill_price)
+                if _v["ok"]:
+                    ref_price = order.expected_fill_price
+                    _fill_source = "expected"
+            except ImportError:
+                ref_price = order.expected_fill_price
+                _fill_source = "expected"
+        # FIX 2026-09-11 21:00: Black-Scholes fallback. If we still don't have a
+        # valid ref price (chain bad, tick missing, expected missing), compute
+        # the option price from spot + IV + time-to-expiry. This is a real
+        # Black-Scholes price — NOT a Rs.1.0 default. Phantom fills stop here.
+        if ref_price <= 0:
+            try:
+                from scripts._chain_health import bs_estimate as _bs_est
+                # Find underlying spot
+                _spot = 0.0
+                for sym_t, t_t in self._ticks.items():
+                    if sym_t.upper().startswith((_eff_und or "").upper()):
+                        if t_t.ltp and t_t.ltp > 0:
+                            _spot = t_t.ltp
+                            break
+                if _spot > 0 and _eff_strike and _eff_opt and order.expiry:
+                    # Days to expiry
+                    from datetime import date as _date_f
+                    _exp_d = order.expiry.date() if hasattr(order.expiry, 'date') else _date_f.fromisoformat(str(order.expiry)[:10])
+                    _dte = max(0, (_exp_d - _date_f.today()).days)
+                    # IV from chain
+                    _iv = 0.15
+                    try:
+                        from pathlib import Path as _PF
+                        for cf in _PF("data_cache").glob("option_chain_*.json"):
+                            try:
+                                import json as _jj
+                                _cd = _jj.loads(cf.read_text(encoding="utf-8"))
+                                _ivs = [v.get("iv") for v in _cd.get("strikes", {}).values()
+                                        if isinstance(v, dict) and v.get("iv") and v.get("iv") > 0]
+                                if _ivs:
+                                    _iv = sum(_ivs) / len(_ivs)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                    _bs_px = _bs_est(_spot, _eff_strike, _eff_opt, _dte, iv=_iv)
+                    if _bs_px and _bs_px > 0:
+                        # Final sanity check — BS should give a sane price
+                        from scripts._chain_health import MIN_OPTION_PRICE, MAX_OPTION_PRICE
+                        _lo = MIN_OPTION_PRICE.get((_eff_und or "").upper(), 1.0)
+                        _hi = MAX_OPTION_PRICE.get((_eff_und or "").upper(), 10000.0)
+                        if _bs_px >= _lo and _bs_px <= _hi:
+                            ref_price = _bs_px
+                            _fill_source = "bs"
+                            logger.info(
+                                f"[PAPER] FORCE_FILL BS estimate for {order.symbol}: "
+                                f"spot={_spot} strike={_eff_strike} dte={_dte} iv={_iv:.2f} -> {_bs_px}"
+                            )
+            except ImportError:
+                pass
+            except Exception as _bs_err:
+                logger.debug(f"BS fallback error: {_bs_err}")
 
         if ref_price > 0:
             pass  # have a ref price
@@ -280,11 +394,15 @@ class PaperClient(BrokerClient):
             else:
                 # Fallback 5: last-resort synthetic. Rs.1.00 keeps the fill book-true
                 # so PnL accounting downstream works. Never skip a fill in paper mode.
+                # FIX 2026-09-11 21:00: log loudly + tag the order so downstream can
+                # detect phantom Rs.1.00 fills. The order.suspect_price flag is set
+                # on the order; the trade_journal can mark this as suspect.
                 ref_price = 1.0
-                logger.warning(
-                    f"[PAPER] FORCE_FILL last-resort ref for {order.order_id} {order.symbol}: "
-                    f"no tick, no price, no expected_fill_price, no underlying — using Rs.1.00 "
-                    f"(this should be rare; check that {order.underlying} spot feed is alive)"
+                _fill_source = "rs1_default"
+                logger.error(
+                    f"[PAPER] FORCE_FILL LAST-RESORT RS.1.00 FILL for {order.order_id} {order.symbol}: "
+                    f"no chain, no tick, no expected, no spot — phantom fill. "
+                    f"Underlying: {_eff_und}, strike: {_eff_strike}, opt: {_eff_opt}, expiry: {order.expiry}"
                 )
         slip = ref_price * (self.slippage_bps / 10_000)
         fill_price = ref_price + (slip if order.side == OrderSide.BUY else -slip)

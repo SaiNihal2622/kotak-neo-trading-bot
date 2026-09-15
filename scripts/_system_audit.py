@@ -272,6 +272,29 @@ def main() -> int:
         "news_freshness": audit_news_freshness(),
         "brain_activity": audit_brain_activity(),
     }
+    # FIX 2026-09-11 21:00: chain health check. The Sep 11 NIFTY chain had
+    # inverted PE prices which produced phantom +Rs.3,060 P&L. Detect this
+    # and report it as part of the audit.
+    try:
+        from scripts._chain_health import check_chain_health, reset_cache
+        reset_cache()  # always re-read on each audit
+        chain_issues = []
+        for sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+            h = check_chain_health(sym, use_cache=False)
+            if not h["healthy"]:
+                chain_issues.append(f"{sym}: {'; '.join(h['issues'])}")
+        if chain_issues:
+            audits["chain_health"] = {
+                "status": "error",
+                "details": "BAD CHAINS DETECTED - phantom fills possible: " + " | ".join(chain_issues),
+            }
+        else:
+            audits["chain_health"] = {
+                "status": "ok",
+                "details": "all 5 chains have valid price structure (PE prices decrease with strike, ATM strikes present, sane spot)",
+            }
+    except Exception as _che:
+        audits["chain_health"] = {"status": "warn", "details": f"check failed: {_che}"}
     # Overall status
     statuses = [a["status"] for a in audits.values()]
     if "error" in statuses:
