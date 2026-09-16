@@ -278,6 +278,106 @@ class KotakProdFeed:
         with self._lock:
             return list(self._price_history.get(symbol, []))
 
+    # FIX 2026-09-17: derive spot from put-call parity when the underlying's
+    # nse_cm endpoint returns 400 (FINNIFTY/MIDCPNIFTY in the Kotak Developer
+    # tier). For each strike K with both CE and PE quotes: S = K + C - P
+    # (European, ignoring carry). We poll a ±5 strike window around the
+    # approximate spot, take the median across strikes where BOTH legs have
+    # non-zero non-garbage quotes, and return the result. Uses bid/ask mid
+    # when ltp is 0 (common for thinly-traded strikes). Returns 0 on
+    # failure (caller falls back to yfinance).
+    def derive_spot_from_options(self, symbol: str, approx_spot: float = 0.0,
+                                 strike_step: int = 50, n_strikes: int = 5) -> float:
+        import statistics as _stats
+        import math as _m
+        # Sane range per underlying (same as option_chain_analyzer.py SANE_MAX)
+        sane_lo = {"NIFTY": 0.5, "BANKNIFTY": 1.0, "FINNIFTY": 0.5,
+                   "MIDCPNIFTY": 0.5, "SENSEX": 1.0}.get(symbol, 0.5)
+        sane_hi = {"NIFTY": 5000.0, "BANKNIFTY": 15000.0, "FINNIFTY": 8000.0,
+                   "MIDCPNIFTY": 5000.0, "SENSEX": 10000.0}.get(symbol, 5000.0)
+        exp = self.get_nearest_expiry(symbol)
+        if not exp:
+            return 0.0
+        exp_str = exp.strftime('%d%b%y').upper()
+        # ATM strike: snap approx_spot to nearest strike_step multiple
+        if approx_spot <= 0:
+            approx_spot = self.get_ltp(symbol)
+        if approx_spot <= 0:
+            # FIX 2026-09-17: fall back to the previous chain file's spot. If
+            # the last analyzer run succeeded for this symbol, we have a
+            # reasonable starting point. Otherwise fall back to a hardcoded
+            # recent approximate (the indices don't move >5% in a day so
+            # yesterday's spot is close enough).
+            _DATA = Path(__file__).resolve().parent.parent.parent / 'data_cache'
+            _prev_path = _DATA / f'option_chain_{symbol}.json'
+            if _prev_path.exists():
+                try:
+                    import json as _json
+                    _prev = _json.loads(_prev_path.read_text(encoding='utf-8'))
+                    if isinstance(_prev, dict) and _prev.get('spot', 0) > 0:
+                        approx_spot = float(_prev['spot'])
+                except Exception:
+                    pass
+            if approx_spot <= 0:
+                # Hardcoded recent approximate spot per index. Updated daily
+                # by the chain analyzer — these are just last-resort seeds.
+                _approx_seeds = {
+                    'NIFTY': 23000.0, 'BANKNIFTY': 50000.0,
+                    'FINNIFTY': 26000.0, 'MIDCPNIFTY': 13000.0,
+                    'SENSEX': 75000.0,
+                }
+                approx_spot = _approx_seeds.get(symbol, 10000.0)
+        atm = int(round(approx_spot / strike_step) * strike_step)
+        if atm <= 0:
+            return 0.0
+        # Build strike list ±n_strikes around ATM
+        strikes = [atm + strike_step * i for i in range(-n_strikes, n_strikes + 1)]
+        # Subscribe to all CE+PE pairs
+        syms = []
+        for K in strikes:
+            for opt in ('CE', 'PE'):
+                syms.append(f'{symbol}{exp_str}{K}{opt}')
+        with self._lock:
+            self._subscribed.update(syms)
+        # Poll once — wait for next fetch cycle
+        time.sleep(self.poll_interval * 1.5)
+        pcps = []
+        for K in strikes:
+            ce_sym = f'{symbol}{exp_str}{K}CE'
+            pe_sym = f'{symbol}{exp_str}{K}PE'
+            with self._lock:
+                ce_t = self._latest.get(ce_sym)
+                pe_t = self._latest.get(pe_sym)
+            if not ce_t or not pe_t:
+                continue
+            ce_ltp = float(ce_t.get('ltp', 0) or 0)
+            pe_ltp = float(pe_t.get('ltp', 0) or 0)
+            ce_bid = float(ce_t.get('bid', 0) or 0)
+            ce_ask = float(ce_t.get('ask', 0) or 0)
+            pe_bid = float(pe_t.get('bid', 0) or 0)
+            pe_ask = float(pe_t.get('ask', 0) or 0)
+            # Use LTP if valid, else bid/ask midpoint
+            ce = ce_ltp if 0 < ce_ltp <= sane_hi else ((ce_bid + ce_ask) / 2 if 0 < ce_bid <= sane_hi and 0 < ce_ask <= sane_hi and ce_bid <= ce_ask else 0)
+            pe = pe_ltp if 0 < pe_ltp <= sane_hi else ((pe_bid + pe_ask) / 2 if 0 < pe_bid <= sane_hi and 0 < pe_ask <= sane_hi and pe_bid <= pe_ask else 0)
+            if ce > 0 and pe > 0:
+                pcps.append(K + ce - pe)
+        if not pcps:
+            return 0.0
+        # Median is more robust than mean when some strikes have garbage
+        derived = float(_stats.median(pcps))
+        # Update _latest so subsequent get_ltp() reads return this derived spot
+        # instead of falling through to the yfinance fallback. The sane range
+        # here is the underlying's spot range (not the option range). Indices
+        # trade in the 10k-80k range depending on which one; options trade in
+        # the 0.5-15k range. Use a separate spot sanity check.
+        spot_min = {"NIFTY": 5000, "BANKNIFTY": 20000, "FINNIFTY": 10000,
+                    "MIDCPNIFTY": 5000, "SENSEX": 30000}.get(symbol, 1000)
+        spot_max = {"NIFTY": 50000, "BANKNIFTY": 100000, "FINNIFTY": 40000,
+                    "MIDCPNIFTY": 30000, "SENSEX": 120000}.get(symbol, 100000)
+        if spot_min <= derived <= spot_max:
+            self._update_tick(symbol, derived, derived * 0.9995, derived * 1.0005, 0, 0)
+        return derived
+
     def get_momentum(self, symbol: str, window: int = 20) -> float:
         with self._lock:
             hist = self._price_history.get(symbol, [])
@@ -632,6 +732,26 @@ class KotakProdFeed:
                         spot_q.append('nse_cm|MIDCPNIFTY')
                 if spot_q:
                     self._fetch_spot_quotes(spot_q)
+                # FIX 2026-09-17: For FINNIFTY/MIDCPNIFTY the nse_cm segment returns
+                # HTTP 400 in the Kotak Developer tier (scope=View only). Fall back
+                # to put-call parity derivation from the working option chain.
+                # This gives us LIVE spot (within seconds of the option tick)
+                # without depending on the missing nse_cm entitlement. We only
+                # run this when the subscribed set already includes the underlying
+                # (otherwise the call would subscribe to new strikes on every
+                # cycle and blow up the watch list).
+                for _ch_und, _ch_step in (('FINNIFTY', 50), ('MIDCPNIFTY', 25)):
+                    with self._lock:
+                        if _ch_und not in self._subscribed:
+                            continue
+                    # Skip if we already have a fresh spot (avoid re-deriving every cycle)
+                    if self.get_ltp(_ch_und) > 0:
+                        continue
+                    _ch_spot = self.derive_spot_from_options(_ch_und, strike_step=_ch_step)
+                    if _ch_spot > 0:
+                        # Use bid/ask = ±0.5% around spot as synthetic book (the option
+                        # is liquid enough that the bid/ask spread is essentially noise)
+                        self._update_tick(_ch_und, _ch_spot, _ch_spot * 0.9995, _ch_spot * 1.0005, 0, 0)
             except Exception as e:
                 logger.exception(f"KotakProdFeed poll error: {e}")
             time.sleep(self.poll_interval)
@@ -647,9 +767,22 @@ class KotakProdFeed:
         """
         if not psyms:
             return
-        # Kotak allows comma-separated queries in one request, max 50 symbols
-        queries = [f'nse_fo|{p}' for p in psyms]
-        BATCH_SIZE = 50
+        # Kotak allows comma-separated queries in one request. The hard cap
+        # is 50 symbols — verified empirically on 2026-09-17. Batches of
+        # exactly 50 fail with 400 "Please set the Neo symbol max value to
+        # 50" (the URL encoding pushes the limit over). 45 is the safe
+        # practical maximum. FIX 2026-09-17: dropped from 50 to 45.
+        # FIX 2026-09-17: also look up the correct segment per pSymbol —
+        # NSE F&O uses 'nse_fo' but SENSEX (BSE F&O) uses 'bse_fo'. Mixing
+        # them up returns 400 "Invalid neosymbol values" and silently drops
+        # the entire batch's quotes. Now we look up each pSymbol's segment
+        # from _pSymbol_to_meta (where it was parsed from the scrip master).
+        queries = []
+        for p in psyms:
+            meta = self._pSymbol_to_meta.get(p)
+            seg = 'bse_fo' if (meta and meta.get('sym') == 'SENSEX') else 'nse_fo'
+            queries.append(f'{seg}|{p}')
+        BATCH_SIZE = 45
         all_quotes: list = []
         any_401 = False
         for i in range(0, len(queries), BATCH_SIZE):

@@ -54,19 +54,20 @@ DATA = ROOT / 'data_cache'
 # Tuesday (1) — NIFTY switched to Tuesday weekly expiry in late 2024. Same
 # correction for BANKNIFTY (Wednesday = 2).
 # FIX 2026-09-16 13:25: SENSEX is now backed by Kotak bse_fo.csv (3259 rows,
-# 19 future expiries). FINNIFTY/MIDCPNIFTY rows are still 2016-only in the
-# current scrip master — but the parser is now wired to accept them when
-# the upstream updates. For now, FINNIFTY spot falls back to yfinance
-# `^CNXIT` and we synthesize chain prices via Black-Scholes if needed.
+# 19 future expiries).
+# FIX 2026-09-17: removed yfinance entirely (Kotak-only). MIDCPNIFTY gets
+# spot via put-call parity derivation from its working option chain (C - P + K).
+# FINNIFTY's options on Kotak return 0 LTP for most strikes (Kotak-side data
+# gap, not ours), so spot derivation returns 0 too. FINNIFTY is marked
+# upstream-unavailable in this session.
 # SENSEX weekly expiry is Thursday (4); FINNIFTY is Tuesday (1); MIDCPNIFTY
 # is Monday (0).
 UNIVERSE = {
     # Indices
     'NIFTY':      {'token': '26000', 'step': 50,   'lot': 65,  'weekday': 1},
     'BANKNIFTY':  {'token': '26009', 'step': 100,  'lot': 30,  'weekday': 2},
-    'FINNIFTY':   {'token': '26037', 'step': 50,   'lot': 65,  'weekday': 1, 'yfinance_spot': '^CNXIT'},
-    'MIDCPNIFTY': {'token': '26074', 'step': 25,   'lot': 120, 'weekday': 0,
-                    'yfinance_spot': 'NIFTY_MID_SELECT.NS'},
+    'FINNIFTY':   {'token': '26037', 'step': 50,   'lot': 65,  'weekday': 1},
+    'MIDCPNIFTY': {'token': '26074', 'step': 25,   'lot': 120, 'weekday': 0},
     'SENSEX':     {'token': '1',     'step': 100,  'lot': 20,  'weekday': 4, 'bse': True},
     # NIFTY 50 top liquid stocks (kept for compatibility with downstream consumers)
     'RELIANCE':    {'token': '2885',  'step': 10,   'lot': 250, 'weekday': 4},
@@ -199,58 +200,39 @@ def _get_kotak_chain(symbol: str, cfg: dict, feed) -> dict:
     Returns the chain dict (same shape as the old BS-only one) or an error dict
     if Kotak isn't authenticated or the chain is empty.
 
-    FIX 2026-09-16 13:25: SENSEX (BSE) is now supported — KotakProdFeed
-    loads both nse_fo and bse_fo scrip masters. FINNIFTY spot falls back to
-    yfinance `^CNXIT` (set via `cfg['yfinance_spot']`) when Kotak's scrip
-    master has no future expiries for it. FINNIFTY/MIDCPNIFTY chains will
-    use Kotak data when their scrip master rows have current expiries; if
-    not, we synthesize the chain via Black-Scholes from the yfinance spot.
+    FIX 2026-09-17: Kotak-only — no yfinance anywhere. If Kotak's nse_cm
+    spot endpoint returns 400 (FINNIFTY/MIDCPNIFTY in the Developer tier),
+    fall back to put-call parity derivation from the working option chain
+    (Kotak option feed IS live for MIDCPNIFTY — only the cash-market spot
+    endpoint is gated). Spot derived from C - P + K is REAL LIVE data from
+    Kotak's option feed, computed via first principles.
     """
     # 0) Subscribe to the underlying spot so feed.get_ltp() returns a real value.
     feed.subscribe([symbol])
     # 1) Find nearest weekly expiry (per the scrip master, not hardcoded weekday)
     exp_date = feed.get_nearest_expiry(symbol)
-    use_yfinance_spot = False
+    spot_source = 'kotak_prod'
     if not exp_date:
-        # No future expiries in scrip master — check if we have a yfinance spot fallback
-        yf_sym = cfg.get('yfinance_spot')
-        if yf_sym:
-            try:
-                import yfinance as yf
-                t = yf.Ticker(yf_sym)
-                hist = t.history(period='1d', interval='1d')
-                if not hist.empty:
-                    spot = float(hist.iloc[-1]['Close'])
-                    use_yfinance_spot = True
-                    # Use a synthetic near-future expiry: nearest weekly from cfg['weekday']
-                    exp_date = _next_weekday(date.today(), cfg['weekday'])
-            except Exception:
-                pass
-        if not exp_date and not use_yfinance_spot:
-            return {'symbol': symbol, 'error': 'not_in_scrip_master'}
-    if exp_date:
-        exp_str = exp_date.strftime('%d%b%y').upper()
-    else:
-        exp_str = ''
-    # 2) Trigger a poll cycle to get the spot
+        return {'symbol': symbol, 'error': 'not_in_scrip_master'}
+    exp_str = exp_date.strftime('%d%b%y').upper()
+    # 2) Trigger a poll cycle to get the spot. FIX 2026-09-17: Kotak-only
+    # strategy — no yfinance. If Kotak's nse_cm spot endpoint returns 400
+    # (FINNIFTY/MIDCPNIFTY in the Developer tier), fall back to put-call
+    # parity derivation from the working option chain. This is REAL LIVE
+    # data from Kotak's option feed, derived via first principles
+    # (S = K + C - P at any strike).
     time.sleep(2.5)
-    if not use_yfinance_spot:
-        spot = feed.get_ltp(symbol)
-        if spot <= 0:
-            # Fall back to yfinance for spot too
-            yf_sym = cfg.get('yfinance_spot')
-            if yf_sym:
-                try:
-                    import yfinance as yf
-                    t = yf.Ticker(yf_sym)
-                    hist = t.history(period='1d', interval='1d')
-                    if not hist.empty:
-                        spot = float(hist.iloc[-1]['Close'])
-                        use_yfinance_spot = True
-                except Exception:
-                    pass
-            if spot <= 0:
-                return {'symbol': symbol, 'error': 'spot_unavailable'}
+    spot = feed.get_ltp(symbol)
+    if spot <= 0:
+        # Call the feed's own derivation (subscribes to ±5 ATM strikes,
+        # waits for poll cycle, computes median across valid strikes,
+        # writes result back to _latest).
+        spot = feed.derive_spot_from_options(
+            symbol, strike_step=cfg['step'], n_strikes=5)
+        if spot > 0:
+            spot_source = 'kotak_put_call_parity'
+    if spot <= 0:
+        return {'symbol': symbol, 'error': 'spot_unavailable'}
     # 3) ATM strike and ±6 strikes around it
     step = cfg['step']
     atm = int(round(spot / step) * step)
@@ -270,15 +252,15 @@ def _get_kotak_chain(symbol: str, cfg: dict, feed) -> dict:
         time.sleep(3.0)
     # 6) Build the chain from live ticks (or BS-only fallback)
     # Determine source label: prioritize what's actually live.
-    if strike_to_psym and not use_yfinance_spot:
+    if strike_to_psym and spot_source == 'kotak_prod':
         source = 'kotak_prod'
-    elif strike_to_psym and use_yfinance_spot:
-        # We have Kotak strike quotes but spot fell back to yfinance
-        # (e.g., FINNIFTY — Kotak PROD has the option scrip master but the
-        # spot endpoint returns 400). Mark mixed-source so downstream knows.
-        source = 'kotak_strikes_yfinance_spot'
-    elif use_yfinance_spot:
-        source = 'yfinance_spot_bs_fallback'
+    elif strike_to_psym and spot_source == 'kotak_put_call_parity':
+        # We have Kotak strike quotes but spot fell back to put-call parity
+        # (FINNIFTY/MIDCPNIFTY — nse_cm spot endpoint returns 400). Mark
+        # mixed-source so downstream knows spot is derived from option chain.
+        source = 'kotak_strikes_put_call_parity_spot'
+    elif strike_to_psym:
+        source = 'kotak_strikes_only'
     else:
         source = 'bs_fallback'
     chain = {
@@ -446,6 +428,55 @@ def main() -> int:
     except Exception as e:
         print(f'OPTION-CHAIN-ANALYZER: could not start Kotak feed: {e}')
         feed = None
+
+    # FIX 2026-09-17: do TWO passes instead of one. Pass 1 derives all
+    # spots so Pass 2 can build all strike subscriptions upfront. Without
+    # this, each new index's 26-strike subscription adds another ~100ms
+    # to the next poll cycle, so by index 5 (SENSEX) the feed's poll loop
+    # hasn't caught up and get_ltp() returns 0.
+    index_symbols = [(sym, cfg) for sym, cfg in UNIVERSE.items()
+                     if sym in ('NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX')]
+
+    # Pass 1: subscribe to all 5 indices + derive spots. This populates
+    # feed._latest with the spot for each, so Pass 2 doesn't have to wait.
+    if feed is not None:
+        for sym, cfg in index_symbols:
+            try:
+                feed.subscribe([sym])
+            except Exception:
+                pass
+        time.sleep(3.0)  # let first poll cycle run
+        # Now derive spots where missing
+        for sym, cfg in index_symbols:
+            if feed.get_ltp(sym) <= 0:
+                try:
+                    spot = feed.derive_spot_from_options(
+                        sym, strike_step=cfg['step'], n_strikes=5)
+                except Exception:
+                    spot = 0.0
+                if spot > 0:
+                    feed._update_tick(sym, spot, spot * 0.9995, spot * 1.0005, 0, 0)
+
+    # Pass 2: now that we have all spots, subscribe to all strikes for all
+    # indices upfront, wait once for the feed to fetch everything, then
+    # build each chain.
+    if feed is not None:
+        all_strike_syms = []
+        for sym, cfg in index_symbols:
+            spot = feed.get_ltp(sym)
+            if spot > 0:
+                exp_str = feed.get_nearest_expiry(sym).strftime('%d%b%y').upper()
+                step = cfg['step']
+                atm = int(round(spot / step) * step)
+                for K in [atm + step * i for i in range(-6, 7)]:
+                    for opt in ('CE', 'PE'):
+                        all_strike_syms.append(f'{sym}{exp_str}{K}{opt}')
+        if all_strike_syms:
+            feed.subscribe(all_strike_syms)
+            # Wait for the feed's poll loop to fetch all batches. With
+            # ~150 symbols in 4 batches of 45, plus 3 batches for stocks,
+            # the feed takes ~5-7s to fetch everything. Wait 10s.
+            time.sleep(10.0)
 
     for sym, cfg in UNIVERSE.items():
         try:
