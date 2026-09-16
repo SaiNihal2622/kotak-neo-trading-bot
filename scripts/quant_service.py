@@ -1827,6 +1827,11 @@ last_news_cache_date = None       # 09:00 Mon-Fri: LLM-judge sentiment aggregate
 last_eod_backup_date = None       # 15:45 Mon-Fri: paper_state + trades_state to Telegram (was kotak-bot-state-backup)
 last_eod_postmortem_date = None   # 15:35 Mon-Fri: comprehensive daily post-mortem (trades, signals, missed, bugs fixed)
 last_pre_eod_check_date = None    # 15:25 Mon-Fri: pre-EOD safety check (verify bot will force-square correctly at 15:30)
+# FIX 2026-09-16: one-shot flag so the news_cache.py scheduler also fires on
+# the first cycle after brain startup, not only at the daily 09:00 window. If
+# the brain restarts at 14:00 (e.g. after a code deploy), the news cache
+# stays stale until the next morning without this flag.
+_news_cache_first_run_done = False
 last_post_eod_check_date = None   # 17:30 Mon-Fri: post-EOD health check (verify bot + session still alive 2h after close)
 last_overnight_research_date = None  # 17:30-09:00 IST (when NSE closed): every 2h, brain logs hypothetical signals + pre-market plans
 last_pre_market_plan_date = None  # 09:00 IST Mon-Fri: write today's pre-market plan before market opens
@@ -2940,7 +2945,7 @@ def watch_loop():
     global last_eod_backup_date, last_weekend_intel_date, last_weekly_summary_date
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
     global last_candle_refresh_ts, last_alpha_refresh_ts, last_chain_refresh_ts, last_dashboard_refresh_ts
-    global last_periodic_scan_ts, last_global_check_ts
+    global last_periodic_scan_ts, last_global_check_ts, _news_cache_first_run_done
     global last_grok_desk_ts, last_grok_desk_date
     global last_rss_news_ts, last_rss_news_date
     global last_fii_dii_ts
@@ -3172,6 +3177,21 @@ def watch_loop():
                 if datetime.now().timestamp() - last_predictive_signals_ts > 300:
                     last_predictive_signals_ts = datetime.now().timestamp()
                     _scheduled_subprocess("scripts/predictive_signals.py", "predictive", timeout=60)
+                # FIX 2026-09-16: trigger news_cache.py on the FIRST cycle after
+                # brain restart so we don't stay stuck on yesterday's stale
+                # news_aggregate.json. The 09:00 scheduler below only fires
+                # once at 9:00-9:05 — if the brain restarts at 14:00, the
+                # news cache stays stale until tomorrow morning.
+                if not _news_cache_first_run_done:
+                    try:
+                        log("SCHED-NEWS-CACHE: first-cycle after brain startup")
+                        _scheduled_subprocess("scripts/rss_news_fetcher.py", "rss-fetch", timeout=60)
+                        _scheduled_subprocess("scripts/news_cache.py", "news-cache", timeout=180)
+                        last_news_cache_date = _now.date()
+                        _news_cache_first_run_done = True
+                    except Exception as _nc_init_err:
+                        log(f"SCHED-NEWS-CACHE-err: {_nc_init_err}")
+
                 # FIX 2026-09-09 14:20: system self-audit every 30 min. Catches
                 # the 5 recurring issues (stale LTP, stale news, stale FII/DII,
                 # LLM HOLD loop, brain state not persisting). The dashboard
@@ -3279,7 +3299,13 @@ def watch_loop():
                     last_pre_eod_check_date = _now.date()
                     log("SCHED-PRE-EOD-CHECK: triggering (15:25)")
                     try:
-                        from kotak_bot.alerts.telegram import send as tg_send
+                        # FIX 2026-09-16: telegram.py exposes TelegramAlerter.send() (a
+                        # method) but NOT a module-level `send` function. The previous
+                        # `from ... import send` raised ImportError at runtime, silently
+                        # logging an error and never sending the pre-EOD alert. Construct
+                        # an alerter and call .send() instead.
+                        from kotak_bot.alerts.telegram import TelegramAlerter
+                        _tg_alerter = TelegramAlerter(voice_enabled=False)
                         # Verify state integrity before EOD
                         _paper = _safe_read_json(DATA / "paper_state.json", default={})
                         _positions = _paper.get("positions", {}) or {}
@@ -3291,7 +3317,7 @@ def watch_loop():
                                f"cash=Rs.{_cash:,.0f} paper_positions={len(_positions)}")
                         if _open_pos > 0 and not _bot_alive:
                             msg += " WARNING: bot not alive but positions open — NSSM will need to retry force-square"
-                        tg_send(msg, category='pre_eod', force=True)
+                        _tg_alerter.send(msg)
                     except Exception as _pre_eod_err:
                         log(f"SCHED-PRE-EOD-CHECK-err: {_pre_eod_err}")
                 # 17:30 post-EOD health check (verify both still alive 2h after close)
@@ -3299,7 +3325,8 @@ def watch_loop():
                     last_post_eod_check_date = _now.date()
                     log("SCHED-POST-EOD-CHECK: triggering (17:30)")
                     try:
-                        from kotak_bot.alerts.telegram import send as tg_send
+                        from kotak_bot.alerts.telegram import TelegramAlerter
+                        _tg_alerter = TelegramAlerter(voice_enabled=False)
                         _liveness = _safe_read_json(DATA / "liveness.json", default={})
                         _bot_alive = bool(_liveness.get("main_thread_alive"))
                         _open_pos = _liveness.get("snapshot", {}).get("open_positions", 0)
@@ -3311,7 +3338,7 @@ def watch_loop():
                         _remaining_h = round((_exp - time.time()) / 3600, 2) if _exp else 0
                         msg = (f"[post-EOD 17:30] bot_alive={_bot_alive} tick={_tick} uptime={_uptime}s "
                                f"open_pos={_open_pos} session_remaining={_remaining_h}h")
-                        tg_send(msg, category='post_eod', force=True)
+                        _tg_alerter.send(msg)
                     except Exception as _post_eod_err:
                         log(f"SCHED-POST-EOD-CHECK-err: {_post_eod_err}")
                 # 15:45 EOD state backup (paper_state + trades_state to Telegram)

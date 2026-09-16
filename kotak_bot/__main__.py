@@ -2484,18 +2484,31 @@ def run_paper() -> None:
                 except Exception as e:
                     logger.debug(f"margin check failed: {e}")
             # 3f) FIX 2026-09-04 12:24: candle data staleness watchdog (every 1 hour during market hours).
-            # If intraday_levels.json is older than 1 hour, trigger a refresh from yfinance.
+            # If session_opens.json is older than 1 hour, trigger a refresh from yfinance.
             # Today the candle engine was stuck on Aug 31 for 4 days — brain was making HOLDs because
             # the data was fundamentally broken. This watchdog self-heals.
+            #
+            # FIX 2026-09-16: the watchdog used to check `intraday_levels.json` (which the engine
+            # stopped writing months ago), but the engine writes to `session_opens.json`. The
+            # mismatch caused the watchdog to fire every hour reporting a 12-day-stale file even
+            # though the engine was actively backfilling `session_opens.json` every cycle.
+            # Now it reads from the right file.
             if cycle_counter % 120 == 0 and is_market_open(now):  # every 1 hour (30s * 120)
                 try:
                     from pathlib import Path as _PathWatch
+                    import time as _time_w
+                    # Prefer the engine's actual output file (session_opens.json); fall
+                    # back to intraday_levels.json for legacy compatibility.
+                    _session_path = _PathWatch("data_cache/session_opens.json")
                     _intraday_path = _PathWatch("data_cache/intraday_levels.json")
-                    if _intraday_path.exists():
-                        import time as _time_w
-                        _age_h = (_time_w.time() - _intraday_path.stat().st_mtime) / 3600
+                    _active_path = _session_path if _session_path.exists() else _intraday_path
+                    if _active_path.exists():
+                        _age_h = (_time_w.time() - _active_path.stat().st_mtime) / 3600
                         if _age_h > 1.0:
-                            logger.warning(f"[CANDLE-WATCHDOG] intraday_levels.json is {_age_h:.1f}h old, refreshing from yfinance")
+                            logger.warning(
+                                f"[CANDLE-WATCHDOG] {_active_path.name} is {_age_h:.1f}h old, "
+                                f"refreshing from yfinance"
+                            )
                             try:
                                 from scripts.candle_engine import get_engine as _get_eng
                                 _eng = _get_eng()
