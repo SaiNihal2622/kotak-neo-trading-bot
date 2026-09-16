@@ -101,8 +101,21 @@ _MONTHS = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
 
 
 def _parse_scrip_ref(ref: str) -> Optional[dict]:
-    """Parse pScripRefKey like 'NIFTY11AUG2624600.00CE' → {date, strike, opt, sym}."""
-    m = re.match(r'^(NIFTY|BANKNIFTY)(\d{2})([A-Z]{3})(\d{2})(\d+)\.00(CE|PE)$', ref)
+    """Parse pScripRefKey like 'NIFTY11AUG2624600.00CE' → {date, strike, opt, sym}.
+
+    FIX 2026-09-16 13:10: regex extended to also accept SENSEX (BSE index) and
+    FINNIFTY/MIDCPNIFTY (NSE broad indices). The previous regex only matched
+    NIFTY/BANKNIFTY, which silently dropped the SENSEX options from the bse_fo
+    scrip master (3259 SENSEX rows, 19 future expiries, all dropped before this
+    fix). FINNIFTY/MIDCPNIFTY rows still don't have future expiries in the NSE
+    scrip master, so they remain empty until the upstream updates — but the
+    parser is ready for when they do.
+    """
+    m = re.match(
+        r'^(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)'
+        r'(\d{2})([A-Z]{3})(\d{2})(\d+)\.00(CE|PE)$',
+        ref
+    )
     if not m:
         return None
     sym, dd, mm, yy, strike, opt = m.groups()
@@ -164,6 +177,7 @@ class KotakProdFeed:
 
     PROD_BASE_URL = "https://e22.kotaksecurities.com"
     SCRIP_MASTER_FILE = "data_cache/nse_fo.csv"
+    BSE_SCRIP_MASTER_FILE = "data_cache/bse_fo.csv"
     SESSION_FILE = "data_cache/kotak_prod_session.json"
 
     def __init__(self, env: str = "uat", access_token: str = "", mobile: str = "",
@@ -433,37 +447,60 @@ class KotakProdFeed:
         return True
 
     def _load_scrip_master(self) -> None:
-        """Download (or load cached) PROD nse_fo scrip master; build pSymbol maps."""
-        csv_path = Path(self.SCRIP_MASTER_FILE)
-        need_download = True
-        if csv_path.exists():
-            age_hours = (time.time() - csv_path.stat().st_mtime) / 3600
-            if age_hours < 18:  # scrip master refreshes daily
-                need_download = False
-                logger.info(f"KotakProdFeed: using cached scrip master (age {age_hours:.1f}h)")
+        """Download (or load cached) PROD nse_fo + bse_fo scrip masters; build pSymbol maps.
+
+        FIX 2026-09-16 13:15: also load bse_fo.csv (BSE F&O) so SENSEX options
+        can be quoted. The SENSEX scrip master has 3259 rows + 19 future expiries
+        — all of which were silently dropped before this fix because the feed
+        only loaded nse_fo.csv. FINNIFTY/MIDCPNIFTY still get empty maps (their
+        rows in nse_fo have only 2016 expiries) but the parser is ready.
+        """
+        csv_paths = [Path(self.SCRIP_MASTER_FILE)]
+        need_download = []
+        for p in csv_paths:
+            if p.exists() and (time.time() - p.stat().st_mtime) / 3600 < 18:
+                logger.info(f"KotakProdFeed: using cached {p.name} (age {(time.time() - p.stat().st_mtime)/3600:.1f}h)")
+            else:
+                need_download.append(p)
         if need_download:
             if not self._reauth_if_needed():
                 logger.error("KotakProdFeed: cannot download scrip master — not authed")
-                return
-            ok = self._download_scrip_master()
-            if not ok:
-                logger.warning("KotakProdFeed: scrip master download failed, using whatever is cached")
-        # Parse
-        if not csv_path.exists():
+            else:
+                ok = self._download_scrip_master()
+                if not ok:
+                    logger.warning("KotakProdFeed: scrip master download failed, using whatever is cached")
+        # Also download bse_fo.csv if not present (or stale)
+        bse_path = Path(self.BSE_SCRIP_MASTER_FILE)
+        if not bse_path.exists() or (time.time() - bse_path.stat().st_mtime) / 3600 > 18:
+            if self.is_authenticated():
+                self._download_bse_scrip_master()
+        # Parse both files
+        scrip_files = [p for p in csv_paths + [bse_path] if p.exists()]
+        if not scrip_files:
             logger.error("KotakProdFeed: no scrip master file available")
             return
-        with open(csv_path, 'r', encoding='utf-8', errors='ignore') as f:
-            self._scrip_rows = list(csv.DictReader(f))
+        all_rows = []
+        for p in scrip_files:
+            try:
+                with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+                    rows = list(csv.DictReader(f))
+                logger.info(f"KotakProdFeed: {p.name}: {len(rows)} rows")
+                all_rows.extend(rows)
+            except Exception as e:
+                logger.warning(f"KotakProdFeed: failed to parse {p.name}: {e}")
+        self._scrip_rows = all_rows
         # Build pSymbol maps.
         # We keep historical rows in the map; the today-filter happens in
         # get_nearest_expiry() (and other query methods) so tests can drive
         # time without reloading the scrip master.
+        accepted = ('NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'MIDCPNIFTY')
+        n_per_sym = {s: 0 for s in accepted}
         for r in self._scrip_rows:
             ref = r.get('pScripRefKey', '').strip()
             p = _parse_scrip_ref(ref)
             if not p:
                 continue
-            if p['sym'] not in ('NIFTY', 'BANKNIFTY'):
+            if p['sym'] not in accepted:
                 continue
             ps = r.get('pSymbol', '').strip()
             trd = r.get('pTrdSymbol', '').strip()
@@ -485,8 +522,12 @@ class KotakProdFeed:
             # from pScripRefKey 'NIFTY11AUG2624600.00CE'.
             ref_clean = re.sub(r'\.00(CE|PE)$', r'\1', ref)
             self._strategySym_to_pSymbol[ref_clean] = ps
-        logger.info(f"KotakProdFeed: scrip master loaded — {len(self._pSymbol_to_meta)} active NIFTY/BN options "
-                    f"({len(self._strategySym_to_pSymbol)} strategy symbols mapped)")
+            n_per_sym[p['sym']] = n_per_sym.get(p['sym'], 0) + 1
+        logger.info(
+            f"KotakProdFeed: scrip master loaded — {len(self._pSymbol_to_meta)} total options "
+            f"({len(self._strategySym_to_pSymbol)} strategy symbols mapped); "
+            f"per-underlying: " + ", ".join(f"{s}={n_per_sym.get(s, 0)}" for s in accepted)
+        )
 
     def _download_scrip_master(self) -> bool:
         url = f"{self.session.base_url}/script-details/1.0/masterscrip/file-paths"
@@ -518,6 +559,44 @@ class KotakProdFeed:
             logger.error(f"KotakProdFeed: scrip master download error: {e}")
             return False
 
+    def _download_bse_scrip_master(self) -> bool:
+        """Download the BSE F&O scrip master (bse_fo.csv) for SENSEX options.
+
+        FIX 2026-09-16 13:15: separate download path so SENSEX (BSE-only index)
+        can be quoted via Kotak PROD. The NSE F&O scrip master has no SENSEX
+        rows. Without this, the chain_health watchdog marks SENSEX as
+        upstream-unavailable even though Kotak has the data — it was a
+        parser gap, not a real upstream issue.
+        """
+        url = f"{self.session.base_url}/script-details/1.0/masterscrip/file-paths"
+        code, body = _http_get(url, {'Authorization': self.access_token})
+        if code != 200:
+            logger.warning(f"KotakProdFeed: file-paths HTTP {code}")
+            return False
+        try:
+            files = json.loads(body)['data']['filesPaths']
+        except Exception as e:
+            logger.warning(f"KotakProdFeed: parse file-paths: {e}")
+            return False
+        bse_url = next((f for f in files if 'bse_fo' in f and not f.endswith('-v1.csv')), None)
+        if not bse_url:
+            logger.warning("KotakProdFeed: no bse_fo.csv in file-paths response")
+            return False
+        try:
+            req = urllib.request.Request(bse_url, headers={'User-Agent': 'curl/8.0', 'Accept-Encoding': 'gzip'})
+            r = urllib.request.urlopen(req, timeout=120)
+            data = r.read()
+            if data[:2] == b'\x1f\x8b':
+                data = gzip.decompress(data)
+            bse_path = Path(self.BSE_SCRIP_MASTER_FILE)
+            bse_path.parent.mkdir(parents=True, exist_ok=True)
+            bse_path.write_bytes(data)
+            logger.info(f"KotakProdFeed: bse_fo.csv downloaded ({len(data)} bytes)")
+            return True
+        except Exception as e:
+            logger.warning(f"KotakProdFeed: bse_fo.csv download error: {e}")
+            return False
+
     def _poll_loop(self) -> None:
         """Background thread: poll PROD quotes for subscribed symbols."""
         while self._running:
@@ -533,13 +612,24 @@ class KotakProdFeed:
                 psyms = self.get_subscribed_pSymbols()
                 if psyms:
                     self._fetch_option_quotes(psyms)
-                # 2) Fetch spot quotes if NIFTY/BANKNIFTY subscribed
+                # 2) Fetch spot quotes for subscribed underlyings.
+                # FIX 2026-09-16 13:15: also pull SENSEX (bse_cm|SENSEX),
+                # FINNIFTY (nse_cm|FINNIFTY), MIDCPNIFTY (nse_cm|MIDCPNIFTY).
+                # The pTrdSymbol values come from nse_cm-v1.csv and bse_cm-v1.csv
+                # scrip masters. The mapping is best-effort — if Kotak returns
+                # 404 for an unknown segment, _fetch_spot_quotes silently no-ops.
                 spot_q = []
                 with self._lock:
                     if 'NIFTY' in self._subscribed:
                         spot_q.append('nse_cm|Nifty 50')
                     if 'BANKNIFTY' in self._subscribed:
                         spot_q.append('nse_cm|Nifty Bank')
+                    if 'SENSEX' in self._subscribed:
+                        spot_q.append('bse_cm|SENSEX')
+                    if 'FINNIFTY' in self._subscribed:
+                        spot_q.append('nse_cm|FINNIFTY')
+                    if 'MIDCPNIFTY' in self._subscribed:
+                        spot_q.append('nse_cm|MIDCPNIFTY')
                 if spot_q:
                     self._fetch_spot_quotes(spot_q)
             except Exception as e:
@@ -622,6 +712,13 @@ class KotakProdFeed:
             self._update_tick(strat_sym, ltp, bid, ask, oi, vol)
 
     def _fetch_spot_quotes(self, queries: list[str]) -> None:
+        """FIX 2026-09-16 13:15: handle SENSEX/BSE, FINNIFTY, MIDCPNIFTY spots too.
+
+        The previous version only recognized "Nifty 50" and "Nifty Bank"
+        display symbols, silently dropping every other index spot. SENSEX uses
+        the BSE scrip master (`bse_cm|SENSEX`) and FINNIFTY/MIDCPNIFTY use
+        NSE cash-market (`nse_cm|NIFTY_FIN_SERVICE`, `nse_cm|NIFTY_MID_SELECT`).
+        """
         encoded = ','.join(urllib.parse.quote(q, safe='') for q in queries)
         url = f"{self.session.base_url}/script-details/1.0/quotes/neosymbol/{encoded}/all"
         code, body = _http_get(url, {'Authorization': self.access_token})
@@ -632,17 +729,23 @@ class KotakProdFeed:
         except Exception:
             return
         for q in quotes:
-            ds = q.get('display_symbol', '')
-            if 'Nifty 50' in ds or ds == 'NIFTY 50':
+            ds = q.get('display_symbol', '') or ''
+            dsu = ds.upper()
+            # match against known display symbols
+            sym = None
+            if 'NIFTY 50' in dsu or dsu == 'NIFTY 50' or ds == 'Nifty 50':
                 sym = 'NIFTY'
-            elif 'Nifty Bank' in ds or 'BANK' in ds.upper():
+            elif 'NIFTY BANK' in dsu or 'NIFTY BANK' in ds:
                 sym = 'BANKNIFTY'
-            else:
+            elif 'FINNIFTY' in dsu or ds == 'FINNIFTY':
+                sym = 'FINNIFTY'
+            elif 'MIDCPNIFTY' in dsu or ds == 'MIDCPNIFTY':
+                sym = 'MIDCPNIFTY'
+            elif 'SENSEX' in dsu or ds == 'SENSEX-IN':
+                sym = 'SENSEX'
+            if sym is None:
                 continue
             ltp = float(q.get('ltp', 0) or 0)
-            ohlc = q.get('ohlc', {}) or {}
-            oi_val = 0
-            # spot has no OI; use 0
             self._update_tick(sym, ltp, ltp - 0.05, ltp + 0.05, 0, 0)
 
     def _update_tick(self, sym: str, ltp: float, bid: float, ask: float, oi: int, vol: int) -> None:

@@ -51,20 +51,22 @@ DATA = ROOT / 'data_cache'
 # expiry day-of-week (0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri). Used to pick the
 # right contracts.
 # FIX 2026-09-16 12:40: corrected NIFTY weekly expiry from Monday (0) to
-# Tuesday (1) — NIFTY switched to Tuesday weekly expiry in late 2024. The old
-# config caused every chain lookup to miss, falling back to no-data. Same
-# correction for BANKNIFTY (Wednesday = 2). FINNIFTY/MIDCPNIFTY: their scrip
-# master rows weren't found in the PROD CSV on first load — kept for
-# forward-compat with the next scrip master that may include them.
+# Tuesday (1) — NIFTY switched to Tuesday weekly expiry in late 2024. Same
+# correction for BANKNIFTY (Wednesday = 2).
+# FIX 2026-09-16 13:25: SENSEX is now backed by Kotak bse_fo.csv (3259 rows,
+# 19 future expiries). FINNIFTY/MIDCPNIFTY rows are still 2016-only in the
+# current scrip master — but the parser is now wired to accept them when
+# the upstream updates. For now, FINNIFTY spot falls back to yfinance
+# `^CNXIT` and we synthesize chain prices via Black-Scholes if needed.
+# SENSEX weekly expiry is Thursday (4); FINNIFTY is Tuesday (1); MIDCPNIFTY
+# is Monday (0).
 UNIVERSE = {
     # Indices
     'NIFTY':      {'token': '26000', 'step': 50,   'lot': 65,  'weekday': 1},
     'BANKNIFTY':  {'token': '26009', 'step': 100,  'lot': 30,  'weekday': 2},
-    'FINNIFTY':   {'token': '26037', 'step': 50,   'lot': 65,  'weekday': 1},
-    'MIDCPNIFTY': {'token': '26074', 'step': 25,   'lot': 120, 'weekday': 1},
-    # SENSEX is BSE-only; Kotak Neo PROD is NSE-only. We still write a
-    # placeholder file with error='kotak_nse_only' so the audit doesn't flag
-    # a missing chain as broken (it'll show as a known-unavailable upstream).
+    'FINNIFTY':   {'token': '26037', 'step': 50,   'lot': 65,  'weekday': 1, 'yfinance_spot': '^CNXIT'},
+    'MIDCPNIFTY': {'token': '26074', 'step': 25,   'lot': 120, 'weekday': 0,
+                    'yfinance_spot': 'NIFTY_MID_SELECT.NS'},
     'SENSEX':     {'token': '1',     'step': 100,  'lot': 20,  'weekday': 4, 'bse': True},
     # NIFTY 50 top liquid stocks (kept for compatibility with downstream consumers)
     'RELIANCE':    {'token': '2885',  'step': 10,   'lot': 250, 'weekday': 4},
@@ -197,71 +199,145 @@ def _get_kotak_chain(symbol: str, cfg: dict, feed) -> dict:
     Returns the chain dict (same shape as the old BS-only one) or an error dict
     if Kotak isn't authenticated or the chain is empty.
 
-    FIX 2026-09-16 12:40: subscribe to the underlying spot (Kotak spot quotes
-    are pulled on a separate nse_cm endpoint). Without this, feed.get_ltp()
-    returned 0 and the chain was never built. Also: if no scrip master match
-    for the expiry (e.g., FINNIFTY/MIDCPNIFTY/SENSEX which Kotak PROD may
-    not have), return error='not_in_scrip_master' so downstream consumers
-    can distinguish "broken chain" from "underlying not supported by Kotak".
+    FIX 2026-09-16 13:25: SENSEX (BSE) is now supported — KotakProdFeed
+    loads both nse_fo and bse_fo scrip masters. FINNIFTY spot falls back to
+    yfinance `^CNXIT` (set via `cfg['yfinance_spot']`) when Kotak's scrip
+    master has no future expiries for it. FINNIFTY/MIDCPNIFTY chains will
+    use Kotak data when their scrip master rows have current expiries; if
+    not, we synthesize the chain via Black-Scholes from the yfinance spot.
     """
     # 0) Subscribe to the underlying spot so feed.get_ltp() returns a real value.
-    if cfg.get('bse'):
-        return {'symbol': symbol, 'error': 'kotak_nse_only_bse_skipped'}
     feed.subscribe([symbol])
     # 1) Find nearest weekly expiry (per the scrip master, not hardcoded weekday)
     exp_date = feed.get_nearest_expiry(symbol)
+    use_yfinance_spot = False
     if not exp_date:
-        return {'symbol': symbol, 'error': 'not_in_scrip_master'}
-    exp_str = exp_date.strftime('%d%b%y').upper()
+        # No future expiries in scrip master — check if we have a yfinance spot fallback
+        yf_sym = cfg.get('yfinance_spot')
+        if yf_sym:
+            try:
+                import yfinance as yf
+                t = yf.Ticker(yf_sym)
+                hist = t.history(period='1d', interval='1d')
+                if not hist.empty:
+                    spot = float(hist.iloc[-1]['Close'])
+                    use_yfinance_spot = True
+                    # Use a synthetic near-future expiry: nearest weekly from cfg['weekday']
+                    exp_date = _next_weekday(date.today(), cfg['weekday'])
+            except Exception:
+                pass
+        if not exp_date and not use_yfinance_spot:
+            return {'symbol': symbol, 'error': 'not_in_scrip_master'}
+    if exp_date:
+        exp_str = exp_date.strftime('%d%b%y').upper()
+    else:
+        exp_str = ''
     # 2) Trigger a poll cycle to get the spot
     time.sleep(2.5)
-    spot = feed.get_ltp(symbol)
-    if spot <= 0:
-        return {'symbol': symbol, 'error': 'spot_unavailable'}
+    if not use_yfinance_spot:
+        spot = feed.get_ltp(symbol)
+        if spot <= 0:
+            # Fall back to yfinance for spot too
+            yf_sym = cfg.get('yfinance_spot')
+            if yf_sym:
+                try:
+                    import yfinance as yf
+                    t = yf.Ticker(yf_sym)
+                    hist = t.history(period='1d', interval='1d')
+                    if not hist.empty:
+                        spot = float(hist.iloc[-1]['Close'])
+                        use_yfinance_spot = True
+                except Exception:
+                    pass
+            if spot <= 0:
+                return {'symbol': symbol, 'error': 'spot_unavailable'}
     # 3) ATM strike and ±6 strikes around it
     step = cfg['step']
     atm = int(round(spot / step) * step)
     strikes = [atm + step * i for i in range(-6, 7)]
-    # 4) Resolve strategy symbols via scrip master
+    # 4) Resolve strategy symbols via scrip master (may be empty for FINNIFTY/MIDCPNIFTY)
     strike_to_psym = {}
-    for K in strikes:
-        for opt in ('CE', 'PE'):
-            strat_sym = f"{symbol}{exp_str}{int(K)}{opt}"
-            psym = feed.get_pSymbol(strat_sym)
-            if psym:
-                strike_to_psym[(K, opt)] = (strat_sym, psym)
-    if not strike_to_psym:
-        return {'symbol': symbol, 'error': 'no_strikes_in_scrip_master'}
-    feed.subscribe([s for (s, _) in strike_to_psym.values()])
-    # 5) Trigger another poll cycle for option strikes (batches of 50)
-    time.sleep(3.0)
-    # 6) Build the chain from live ticks
+    if exp_date:
+        for K in strikes:
+            for opt in ('CE', 'PE'):
+                strat_sym = f"{symbol}{exp_str}{int(K)}{opt}"
+                psym = feed.get_pSymbol(strat_sym)
+                if psym:
+                    strike_to_psym[(K, opt)] = (strat_sym, psym)
+    if strike_to_psym:
+        feed.subscribe([s for (s, _) in strike_to_psym.values()])
+        # 5) Trigger another poll cycle for option strikes (batches of 50)
+        time.sleep(3.0)
+    # 6) Build the chain from live ticks (or BS-only fallback)
+    # Determine source label: prioritize what's actually live.
+    if strike_to_psym and not use_yfinance_spot:
+        source = 'kotak_prod'
+    elif strike_to_psym and use_yfinance_spot:
+        # We have Kotak strike quotes but spot fell back to yfinance
+        # (e.g., FINNIFTY — Kotak PROD has the option scrip master but the
+        # spot endpoint returns 400). Mark mixed-source so downstream knows.
+        source = 'kotak_strikes_yfinance_spot'
+    elif use_yfinance_spot:
+        source = 'yfinance_spot_bs_fallback'
+    else:
+        source = 'bs_fallback'
     chain = {
         'symbol': symbol,
         'spot': round(spot, 2),
         'atm_strike': atm,
         'strike_step': step,
         'lot_size': cfg['lot'],
-        'expiry': exp_date.isoformat(),
+        'expiry': exp_date.isoformat() if exp_date else '',
         'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
-        'source': 'kotak_prod',
+        'source': source,
         'strikes': {},
     }
-    T_days = max(1, (exp_date - date.today()).days)
+    T_days = max(1, (exp_date - date.today()).days) if exp_date else 5
     T = T_days / 365
     r = 0.07
+    # Sanity range per underlying — Kotak occasionally returns garbage prices
+    # for thinly-traded contracts (e.g., FINNIFTY 29300 PE showed bid=3522 ask=4351
+    # when real price should be ~100). Anything outside this range is treated
+    # as bad and falls back to BS math.
+    SANE_MIN = {"NIFTY": 0.5, "BANKNIFTY": 1.0, "FINNIFTY": 0.5,
+                "MIDCPNIFTY": 0.5, "SENSEX": 1.0}
+    SANE_MAX = {"NIFTY": 5000.0, "BANKNIFTY": 15000.0, "FINNIFTY": 8000.0,
+                "MIDCPNIFTY": 5000.0, "SENSEX": 10000.0}
+    sane_lo = SANE_MIN.get(symbol, 0.5)
+    sane_hi = SANE_MAX.get(symbol, 5000.0)
     ivs_seen = []
+    n_kotak_kept = 0
+    n_kotak_dropped = 0
     for K in strikes:
         for opt in ('CE', 'PE'):
-            strat_sym, _psym = strike_to_psym.get((K, opt), (None, None))
-            if not strat_sym:
-                continue
-            latest = feed.get_latest(strat_sym)
-            ltp = float(latest.get('ltp', 0) or 0) if latest else 0.0
-            bid = float(latest.get('bid', 0) or 0) if latest else 0.0
-            ask = float(latest.get('ask', 0) or 0) if latest else 0.0
-            oi = int(latest.get('oi', 0) or 0) if latest else 0
-            vol = int(latest.get('volume', 0) or 0) if latest else 0
+            ltp = bid = ask = oi = vol = 0.0
+            kotak_used = False
+            if (K, opt) in strike_to_psym:
+                strat_sym, _psym = strike_to_psym[(K, opt)]
+                latest = feed.get_latest(strat_sym)
+                if latest:
+                    raw_ltp = float(latest.get('ltp', 0) or 0)
+                    raw_bid = float(latest.get('bid', 0) or 0)
+                    raw_ask = float(latest.get('ask', 0) or 0)
+                    # Sanity check: drop Kotak quotes that are wildly off
+                    # (zero or way outside the sane range) and fall back to BS
+                    # for that strike. The chain_health watchdog will see the
+                    # BS-fallback price as "synthetic" (iv=0.16 default).
+                    if raw_ltp > 0 and sane_lo <= raw_ltp <= sane_hi:
+                        ltp = raw_ltp
+                        bid = raw_bid if sane_lo <= raw_bid <= sane_hi else 0.0
+                        ask = raw_ask if sane_lo <= raw_ask <= sane_hi else 0.0
+                        oi = int(latest.get('oi', 0) or 0)
+                        vol = int(latest.get('volume', 0) or 0)
+                        kotak_used = True
+                        n_kotak_kept += 1
+                    else:
+                        n_kotak_dropped += 1
+                        if raw_ltp > 0:
+                            logger.debug(
+                                f"Kotak quote for {strat_sym} dropped: ltp={raw_ltp} "
+                                f"outside sane range [{sane_lo}, {sane_hi}]"
+                            )
             iv = _bs_implied_vol(spot, K, T, r, ltp, opt) if ltp > 0 else 0.16
             if 0.01 < iv < 3.0:
                 ivs_seen.append(iv)
@@ -277,10 +353,13 @@ def _get_kotak_chain(symbol: str, cfg: dict, feed) -> dict:
                 'spread': round(ask - bid, 2) if bid > 0 and ask > 0 else 0.0,
                 'oi': oi,
                 'volume': vol,
+                'source': 'kotak' if kotak_used else 'bs_fallback',
                 **greeks,
             }
     if ivs_seen:
         chain['_median_iv'] = round(sum(ivs_seen) / len(ivs_seen), 4)
+    chain['_n_kotak_kept'] = n_kotak_kept
+    chain['_n_kotak_dropped'] = n_kotak_dropped
     return chain
 
 
