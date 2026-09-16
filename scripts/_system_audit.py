@@ -275,18 +275,29 @@ def main() -> int:
     # FIX 2026-09-11 21:00: chain health check. The Sep 11 NIFTY chain had
     # inverted PE prices which produced phantom +Rs.3,060 P&L. Detect this
     # and report it as part of the audit.
+    # FIX 2026-09-16 12:50: distinguish between `healthy=False` (broken data,
+    # phantom fills possible) and `available=False` (upstream data source
+    # doesn't carry this instrument). The latter is a known gap, not a bug.
     try:
         from scripts.chain_health import check_chain_health, reset_cache
         reset_cache()  # always re-read on each audit
         chain_issues = []
+        unavailable = []
         for sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
             h = check_chain_health(sym, use_cache=False)
-            if not h["healthy"]:
+            if h.get("healthy") is False:
                 chain_issues.append(f"{sym}: {'; '.join(h['issues'])}")
+            elif h.get("available") is False:
+                unavailable.append(f"{sym}: {h.get('upstream_error', 'upstream_unavailable')}")
         if chain_issues:
             audits["chain_health"] = {
                 "status": "error",
                 "details": "BAD CHAINS DETECTED - phantom fills possible: " + " | ".join(chain_issues),
+            }
+        elif unavailable:
+            audits["chain_health"] = {
+                "status": "warn",
+                "details": "upstream_unavailable (Kotak doesn't carry these — known gap, no phantom-fill risk because nothing is filled): " + " | ".join(unavailable),
             }
         else:
             audits["chain_health"] = {

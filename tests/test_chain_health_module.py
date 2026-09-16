@@ -183,14 +183,17 @@ class TestChainHealth:
         reset_cache()
 
     def test_healthy_chain(self, tmp_path, monkeypatch):
-        """A chain with monotonically decreasing PE prices is healthy."""
+        """A chain with correct monotonicity is healthy: PE prices INCREASE
+        as strike increases (more intrinsic / closer-to-ATM for puts), and
+        CE prices DECREASE as strike increases (more OTM = less intrinsic)."""
         monkeypatch.setattr("scripts.chain_health.DCACHE", tmp_path)
-        # Healthy chain: PE prices decrease as strike decreases
-        # Spot 23500: ATM=23500, strikes 23300-23700
+        # Healthy chain: spot 23500, strikes 23300-23700 (all near ATM)
         strikes = {}
         for s in [23300, 23350, 23400, 23450, 23500, 23550, 23600, 23650, 23700]:
-            strikes[f"{s}_PE"] = {"strike": s, "opt_type": "PE", "price": 200 - (s - 23300) * 0.5}
-            strikes[f"{s}_CE"] = {"strike": s, "opt_type": "CE", "price": 200 - (23700 - s) * 0.5}
+            # Correct: PE price goes UP as strike goes UP (intrinsic + time value)
+            strikes[f"{s}_PE"] = {"strike": s, "opt_type": "PE", "price": 100 + (s - 23300) * 0.5}
+            # Correct: CE price goes DOWN as strike goes UP (less intrinsic)
+            strikes[f"{s}_CE"] = {"strike": s, "opt_type": "CE", "price": 100 - (s - 23300) * 0.5}
         chain = {"spot": 23500, "strikes": strikes}
         (tmp_path / "option_chain_NIFTY.json").write_text(json.dumps(chain), encoding="utf-8")
         from scripts.chain_health import check_chain_health
@@ -198,18 +201,20 @@ class TestChainHealth:
         assert h["healthy"] is True, f"Chain should be healthy: {h}"
 
     def test_inverted_pe_detected(self, tmp_path, monkeypatch):
-        """A chain with PE prices INCREASING as strike INCREASES is broken.
+        """A chain with PE prices DECREASING as strike INCREASES is broken.
 
         For puts, lower strike = more intrinsic value (more ITM) = HIGHER price.
-        A chain where OTM puts (high strike) cost more than ITM puts (low strike)
-        is the inverted-PE corruption we saw from yfinance on Sep 11.
+        A chain where ITM puts (low strike) cost LESS than OTM puts (high strike)
+        is the inverted-PE corruption we saw from yfinance on Sep 11 — the
+        opposite of what a correct put curve looks like.
         """
         monkeypatch.setattr("scripts.chain_health.DCACHE", tmp_path)
-        # Broken chain: PE prices go UP as strike goes UP (OTM > ITM is wrong)
+        # Broken chain: PE prices go DOWN as strike goes UP (ITM < OTM is wrong).
+        # Spot 23500, strikes 23300-23700.
         strikes = {}
         for s in [23300, 23350, 23400, 23450, 23500, 23550, 23600, 23650, 23700]:
-            # Bug: lower strike = LOWER price (inverted for puts)
-            strikes[f"{s}_PE"] = {"strike": s, "opt_type": "PE", "price": 100 + (s - 23300) * 0.5}
+            # Bug: lower strike (more ITM) = LOWER price (opposite of reality)
+            strikes[f"{s}_PE"] = {"strike": s, "opt_type": "PE", "price": 100 - (s - 23300) * 0.5}
         chain = {"spot": 23500, "strikes": strikes}
         (tmp_path / "option_chain_NIFTY.json").write_text(json.dumps(chain), encoding="utf-8")
         from scripts.chain_health import check_chain_health
@@ -218,6 +223,24 @@ class TestChainHealth:
         assert any("inverted" in i.lower() for i in h["issues"]), (
             f"expected an issue mentioning 'inverted', got: {h['issues']}"
         )
+
+    def test_healthy_chain_with_correct_pe_curve(self, tmp_path, monkeypatch):
+        """Sanity: a CORRECT put curve (price goes UP as strike goes UP, because
+        higher strike = more ITM = more intrinsic for puts above spot) should
+        NOT be flagged as inverted. The pre-fix check was backwards and would
+        have flagged this normal behavior."""
+        monkeypatch.setattr("scripts.chain_health.DCACHE", tmp_path)
+        strikes = {}
+        for s in [23300, 23350, 23400, 23450, 23500, 23550, 23600, 23650, 23700]:
+            # Correct: higher strike = higher PE price
+            strikes[f"{s}_PE"] = {"strike": s, "opt_type": "PE", "price": 100 + (s - 23300) * 0.5}
+        chain = {"spot": 23500, "strikes": strikes}
+        (tmp_path / "option_chain_NIFTY.json").write_text(json.dumps(chain), encoding="utf-8")
+        from scripts.chain_health import check_chain_health
+        h = check_chain_health("NIFTY", use_cache=False)
+        # No inversion issue (other issues like spot-range might still flag)
+        inv_issues = [i for i in h["issues"] if "inverted" in i.lower()]
+        assert inv_issues == [], f"correct put curve flagged as inverted: {inv_issues}"
 
     def test_bad_spot_detected(self, tmp_path, monkeypatch):
         """FINNIFTY spot=5071 (real is 25,200) should be flagged."""

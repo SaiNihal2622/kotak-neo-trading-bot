@@ -1446,6 +1446,30 @@ def run_paper() -> None:
                                     logger.error("[RESET] FAILED to write clean paper_state.json after 3 attempts")
                                 else:
                                     logger.info(f"[RESET] wrote clean paper_state.json: cash={_starting_capital:.0f}, realized=0, orders={len(_clean_orders)}, positions=0")
+                                # FIX 2026-09-16 13:30: also drop a _skip_save.json flag so the
+                                # freshly-spawned bot's PaperClient._save_state doesn't
+                                # overwrite the clean state with in-memory state on its
+                                # first tick. Without this, on Sep 16 the reset was
+                                # silently undone within ~10 sec because the new bot
+                                # loaded the OLD contaminated state (the file write race
+                                # left the old bytes on disk) and then _save_state wrote
+                                # those OLD orders/positions back to disk, undoing the
+                                # reset. PaperClient._save_state already honors this flag
+                                # (60s safety check built in). The flag is removed
+                                # automatically once PaperClient._save_state runs (60s) or
+                                # on next startup if stale.
+                                try:
+                                    _skip_flag = _ps_path.parent / "_skip_save.json"
+                                    _skip_flag.write_text(
+                                        json.dumps({
+                                            "reason": "RESET_PAPER_STATE race",
+                                            "set_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                        }),
+                                        encoding="utf-8"
+                                    )
+                                    logger.info(f"[RESET] wrote _skip_save.json (60s grace for new bot)")
+                                except Exception as _sf_err:
+                                    logger.warning(f"[RESET] could not write _skip_save flag: {_sf_err}")
                                 # Send alert
                                 try:
                                     alerter.send(
@@ -1613,15 +1637,27 @@ def run_paper() -> None:
                                     # prevents phantom fills (the +Rs.88k on Sep 15 /
                                     # +Rs.3k on Sep 11 were both from broken-chain
                                     # force-fills at wrong-strike prices).
+                                    # FIX 2026-09-16 12:50: also reject if the upstream is
+                                    # unavailable (no chain file from Kotak at all). Better
+                                    # to skip than to fall through to BS fallback for an
+                                    # instrument the data source doesn't cover.
                                     _ch_unhealthy_file = Path("data_cache/_chains_unhealthy.json")
                                     if _qa_inst and _ch_unhealthy_file.exists():
                                         try:
                                             _ch_state = _read_json(_ch_unhealthy_file, default={})
                                             _unhealthy = _ch_state.get("unhealthy_underlyings", []) or []
-                                            if _qa_inst.upper() in [u.upper() for u in _unhealthy]:
+                                            _unavailable = _ch_state.get("unavailable_underlyings", []) or []
+                                            _qa_inst_u = (_qa_inst or "").upper()
+                                            if _qa_inst_u in [u.upper() for u in _unhealthy]:
                                                 logger.warning(
                                                     f"[QUANT-ACTION] REJECT: chain unhealthy for {_qa_inst} "
-                                                    f"(broken yfinance data). Phantom fill risk."
+                                                    f"(broken data). Phantom fill risk."
+                                                )
+                                                continue
+                                            if _qa_inst_u in [u.upper() for u in _unavailable]:
+                                                logger.warning(
+                                                    f"[QUANT-ACTION] REJECT: chain unavailable for {_qa_inst} "
+                                                    f"(upstream data source doesn't carry it). Phantom fill risk."
                                                 )
                                                 continue
                                         except Exception:
@@ -1893,6 +1929,18 @@ def run_paper() -> None:
                         if isinstance(_sea, dict) and _sea.get("actions") and not _sea.get("consumed"):
                             _sea_actions = _sea.get("actions", [])
                             _sea_placed = 0
+                            # FIX 2026-09-16 12:55: refuse system-enforced entries when
+                            # the underlying's chain is unhealthy or upstream-unavailable.
+                            # The SYS-ENFORCE path was bypassing the chain-health guard
+                            # (it doesn't go through QUANT-ACTION OPEN). On Sep 16 the
+                            # chain happened to have valid prices for the strikes the
+                            # bot chose, so the fills were real, but if yfinance or Kotak
+                            # returned plausible-but-wrong prices the bot would phantom-fill.
+                            # Gate on the same _chains_unhealthy.json the watchdog writes.
+                            _ch_gate = Path("data_cache/_chains_unhealthy.json")
+                            _ch_gate_state = _read_json(_ch_gate, default={}) if _ch_gate.exists() else {}
+                            _ch_gate_unhealthy = set(u.upper() for u in (_ch_gate_state.get("unhealthy_underlyings", []) or []))
+                            _ch_gate_unavailable = set(u.upper() for u in (_ch_gate_state.get("unavailable_underlyings", []) or []))
                             for _sea_a in _sea_actions:
                                 try:
                                     _sea_type = str(_sea_a.get("type", "")).upper()
@@ -1908,6 +1956,21 @@ def run_paper() -> None:
                                         if _da <= 0:
                                             _da += 7
                                         _se_expiry = (_t + _td(days=_da)).isoformat()
+                                    # Chain-health gate (FIX 2026-09-16 12:55): refuse the
+                                    # entire action if the underlying is unhealthy or
+                                    # upstream-unavailable. Skip BEFORE placing any legs.
+                                    if _sea_inst in _ch_gate_unhealthy:
+                                        logger.warning(
+                                            f"[SYS-ENFORCE] REJECT: chain unhealthy for {_sea_inst} "
+                                            f"(phantom-fill risk). Skipping {_len(_sea_legs)}-leg action."
+                                        )
+                                        continue
+                                    if _sea_inst in _ch_gate_unavailable:
+                                        logger.warning(
+                                            f"[SYS-ENFORCE] REJECT: chain unavailable for {_sea_inst} "
+                                            f"(upstream data source doesn't carry it). Skipping."
+                                        )
+                                        continue
                                     for _leg in _sea_legs:
                                         _strike = int(_leg.get("strike", 0))
                                         _ot = str(_leg.get("opt_type", "")).upper()
@@ -2448,14 +2511,22 @@ def run_paper() -> None:
             # bot's main loop reads this file and REJECTS new entries with the reason
             # 'chains_unhealthy'. Phantom fills (the +Rs.88k Sep 15 / +Rs.3k Sep 11
             # bugs) stop at the source instead of being detected after the fact.
+            # FIX 2026-09-16 12:50: chain_health now returns `healthy=None, available=False`
+            # for chains the upstream doesn't carry at all (FINNIFTY/MIDCPNIFTY/SENSEX
+            # missing from Kotak PROD scrip master). These are NOT broken — they're
+            # upstream-unavailable. We track them separately in `_chains_unavailable.json`
+            # so the dashboard/audit can see them, but they don't trigger entry-blocking.
             if cycle_counter % 10 == 0:
                 try:
                     from scripts.chain_health import check_chain_health as _ch_chain
                     _ch_unhealthy = []
+                    _ch_unavailable = []
                     for _ch_sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
                         _ch = _ch_chain(_ch_sym, use_cache=False)
-                        if not _ch["healthy"]:
+                        if _ch.get("healthy") is False:
                             _ch_unhealthy.append(_ch_sym)
+                        elif _ch.get("available") is False:
+                            _ch_unavailable.append(_ch_sym)
                     from scripts.chain_health import reset_cache as _ch_reset
                     _ch_reset()
                     _ch_state_path = Path("data_cache/_chains_unhealthy.json")
@@ -2463,6 +2534,8 @@ def run_paper() -> None:
                         "ts": now.isoformat(),
                         "unhealthy_underlyings": _ch_unhealthy,
                         "n_unhealthy": len(_ch_unhealthy),
+                        "unavailable_underlyings": _ch_unavailable,
+                        "n_unavailable": len(_ch_unavailable),
                     }
                     _ch_state_path.write_text(
                         json.dumps(_ch_state, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -2472,6 +2545,12 @@ def run_paper() -> None:
                             f"[CHAIN-WATCHDOG] {len(_ch_unhealthy)} broken chain(s): "
                             f"{', '.join(_ch_unhealthy)} - new entries will be REJECTED "
                             f"with reason=chains_unhealthy"
+                        )
+                    if _ch_unavailable:
+                        logger.info(
+                            f"[CHAIN-WATCHDOG] {len(_ch_unavailable)} upstream-unavailable: "
+                            f"{', '.join(_ch_unavailable)} - entries will be rejected too "
+                            f"(no valid chain to fill from)"
                         )
                 except Exception as _ch_err:
                     logger.debug(f"chain-watchdog failed: {_ch_err}")

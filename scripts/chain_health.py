@@ -62,14 +62,34 @@ def check_chain_health(underlying, use_cache=True):
       - Missing strikes (chain incomplete)
       - All-zero prices (chain is empty/stale)
 
-    Returns: {"healthy": bool, "issues": [str, ...], "spot": float}
+    FIX 2026-09-16 12:50: added `unavailable` status for chains that the
+    upstream data source (Kotak PROD scrip master) doesn't carry at all
+    (e.g., FINNIFTY/MIDCPNIFTY/SENSEX in some sessions). The chain file
+    exists but contains `{"error": "not_in_scrip_master"}`. This is NOT a
+    broken chain — it's a known upstream gap. Treating it as broken would
+    block trading for the whole session. `available=False, healthy=None`
+    is the new shape; downstream consumers check availability before
+    gating on health.
+
+    Returns: {"healthy": bool, "available": bool, "issues": [str, ...], "spot": float}
     """
     if use_cache and underlying in _CHAIN_HEALTH_CACHE:
         return _CHAIN_HEALTH_CACHE[underlying]
     issues = []
     cd = _read_chain(underlying)
     if not cd:
-        result = {"healthy": False, "issues": ["chain file missing"], "spot": 0}
+        result = {"healthy": False, "available": False, "issues": ["chain file missing"], "spot": 0}
+        _CHAIN_HEALTH_CACHE[underlying] = result
+        return result
+    # FIX 2026-09-16: chain file with explicit error → upstream gap, not broken data
+    if "error" in cd:
+        result = {
+            "healthy": None,
+            "available": False,
+            "issues": [f"upstream_unavailable: {cd['error']}"],
+            "spot": 0,
+            "upstream_error": cd["error"],
+        }
         _CHAIN_HEALTH_CACHE[underlying] = result
         return result
     spot = float(cd.get("spot", 0) or 0)
@@ -85,25 +105,50 @@ def check_chain_health(underlying, use_cache=True):
     lo, hi = spot_ranges.get(underlying, (0, 1000000))
     if not (lo <= spot <= hi):
         issues.append(f"spot {spot} out of plausible range [{lo}, {hi}]")
-    # PE/CE price inversion check
+    # PE/CE price inversion check.
+    # FIX 2026-09-16 13:00: the previous check was BACKWARDS for puts.
+    # For puts: as strike goes UP, price should INCREASE (more intrinsic or
+    # more time value as you move from deep-OTM to ATM/ITM). The old check
+    # flagged this NORMAL behavior as inverted, so it would always fail on
+    # any chain with multiple put strikes. The correct "broken" pattern
+    # (yfinance Sep 11) was: as strike goes UP, price goes DOWN — the
+    # OPPOSITE of the expected direction. Calls have the opposite expected
+    # monotonicity: as strike goes UP, price should DECREASE.
     pe_strikes = []
+    ce_strikes = []
     for k, v in strikes.items():
         if not isinstance(v, dict):
             continue
+        s = v.get("strike", 0)
+        p = v.get("price", 0)
+        if not s or not p:
+            continue
         if v.get("opt_type") == "PE":
-            s = v.get("strike", 0)
-            p = v.get("price", 0)
-            if s and p:
-                pe_strikes.append((s, p))
+            pe_strikes.append((s, p))
+        elif v.get("opt_type") == "CE":
+            ce_strikes.append((s, p))
     pe_strikes.sort()  # by strike ascending
-    inverted = 0
+    ce_strikes.sort()
+    pe_inverted = 0
     for i in range(1, len(pe_strikes)):
         s0, p0 = pe_strikes[i - 1]
         s1, p1 = pe_strikes[i]
-        if s1 > s0 and p1 > p0 * 1.05:  # 5% tolerance
-            inverted += 1
-    if inverted >= 3:
-        issues.append(f"PE prices inverted on {inverted} strike pairs (chain corrupted)")
+        # As strike goes UP, PE price should also go UP. Broken = price goes DOWN.
+        if s1 > s0 and p1 < p0 * 0.95:
+            pe_inverted += 1
+    ce_inverted = 0
+    for i in range(1, len(ce_strikes)):
+        s0, p0 = ce_strikes[i - 1]
+        s1, p1 = ce_strikes[i]
+        # As strike goes UP, CE price should go DOWN. Broken = price goes UP.
+        if s1 > s0 and p1 > p0 * 1.05:
+            ce_inverted += 1
+    total_inverted = pe_inverted + ce_inverted
+    if total_inverted >= 3:
+        issues.append(
+            f"prices inverted on {total_inverted} strike pairs "
+            f"(PE: {pe_inverted}, CE: {ce_inverted}; chain corrupted)"
+        )
     # All-zero prices
     all_zero = all(
         v.get("price", 0) == 0
@@ -119,8 +164,9 @@ def check_chain_health(underlying, use_cache=True):
                     if f"{s}_PE" in strikes or f"{s}_CE" in strikes)
         if nearby < 2:
             issues.append(f"only {nearby} strikes near ATM (chain incomplete)")
-    result = {"healthy": len(issues) == 0, "issues": issues, "spot": spot,
-              "n_strikes": len(strikes), "n_inverted_pe_pairs": inverted}
+    result = {"healthy": len(issues) == 0, "available": True, "issues": issues, "spot": spot,
+              "n_strikes": len(strikes), "n_inverted_pe_pairs": pe_inverted,
+              "n_inverted_ce_pairs": ce_inverted}
     _CHAIN_HEALTH_CACHE[underlying] = result
     return result
 
