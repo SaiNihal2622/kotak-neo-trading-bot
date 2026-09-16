@@ -279,7 +279,14 @@ def main() -> int:
     # phantom fills possible) and `available=False` (upstream data source
     # doesn't carry this instrument). The latter is a known gap, not a bug.
     try:
-        from scripts.chain_health import check_chain_health, reset_cache
+        # FIX 2026-09-17 02:30: try scripts.chain_health first (preferred when
+        # run as a module via `python -m scripts._system_audit`), fall back
+        # to plain `chain_health` (works when run as `python scripts\_system_audit.py`
+        # from the project root, where scripts/ is auto-added to sys.path).
+        try:
+            from scripts.chain_health import check_chain_health, reset_cache
+        except ImportError:
+            from chain_health import check_chain_health, reset_cache
         reset_cache()  # always re-read on each audit
         chain_issues = []
         unavailable = []

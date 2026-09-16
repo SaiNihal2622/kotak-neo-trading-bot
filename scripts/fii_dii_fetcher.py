@@ -135,10 +135,49 @@ def _to_float(s: str) -> float:
     s = s.strip().replace(",", "")
     if s.startswith("(") and s.endswith(")"):
         s = "-" + s[1:-1]
+    # Strip leading '+' signs (Groww uses '+3,908.23' for positive net)
+    if s.startswith("+"):
+        s = s[1:]
     try:
         return float(s)
     except Exception:
         return 0.0
+
+
+def _fetch_groww() -> list[dict]:
+    """FIX 2026-09-17: fetch FII/DII from Groww's static HTML table.
+
+    URL: https://groww.in/fii-dii-data
+    Format: rows of (date, fii_buy, fii_sell, fii_net, dii_buy, dii_sell, dii_net).
+    The net fields can have '+' or '-' prefix.
+    """
+    url = "https://groww.in/fii-dii-data"
+    html = _fetch_url(url)
+    if not html:
+        return []
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"\s+", " ", text).strip()
+    pattern = re.compile(
+        r"(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\s+"
+        r"([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\-+]?[\d,]+(?:\.\d+)?)\s+"
+        r"([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\-+]?[\d,]+(?:\.\d+)?)"
+    )
+    out = []
+    for m in pattern.finditer(text):
+        try:
+            out.append({
+                "date": m.group(1),
+                "fii_buy_cr": _to_float(m.group(2)),
+                "fii_sell_cr": _to_float(m.group(3)),
+                "fii_net_cr": _to_float(m.group(4)),
+                "dii_buy_cr": _to_float(m.group(5)),
+                "dii_sell_cr": _to_float(m.group(6)),
+                "dii_net_cr": _to_float(m.group(7)),
+                "source": "groww",
+            })
+        except Exception:
+            continue
+    return out
 
 
 def _fetch_moneycontrol() -> list[dict]:
@@ -226,6 +265,21 @@ def main() -> int:
                 sources.append({"source": "nse_archives", "ok": True, "n": len(nse_rows), "ms": int((time.time() - t_nse) * 1000)})
         except Exception as e:
             sources.append({"source": "nse_archives", "ok": False, "n": 0, "err": str(e)[:80]})
+        time.sleep(0.5)
+
+    # 4. FIX 2026-09-17: Groww fallback. Moneycontrol's FII/DII table is
+    # JS-rendered and returns empty via static HTML. NSE archives URL is 404.
+    # Groww (groww.in/fii-dii-data) is a static HTML table with the same
+    # date + 6 numbers format — it has the most-recent session date reliably.
+    if not rows:
+        try:
+            t_gw = time.time()
+            gw_rows = _fetch_groww()
+            if gw_rows:
+                rows = gw_rows
+                sources.append({"source": "groww", "ok": True, "n": len(gw_rows), "ms": int((time.time() - t_gw) * 1000)})
+        except Exception as e:
+            sources.append({"source": "groww", "ok": False, "n": 0, "err": str(e)[:80]})
 
     # FIX 2026-09-09 14:05: date freshness filter.
     # The MC/NSE pages sometimes return 2-year-old rows from old table renders

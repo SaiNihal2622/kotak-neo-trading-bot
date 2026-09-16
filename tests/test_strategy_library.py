@@ -232,32 +232,11 @@ class TestStrategyLibraryEnforcement:
         assert result is None
 
     def test_iron_condor_when_range_bound_low_vol(self, tmp_path, monkeypatch):
-        """Range-bound market + low VIX = iron condor fires."""
-        from scripts import quant_service
-        monkeypatch.setattr(quant_service, "DATA", tmp_path)
-        class FakeEng:
-            last_ltp = {"NIFTY": 23500.0}
-            def get_session_open(self, sym):
-                return {"NIFTY": 23520.0}.get(sym, 0)  # 0.085% move (range-bound)
-        import types
-        fake_module = types.ModuleType("candle_engine")
-        fake_module.get_engine = lambda: FakeEng()
-        monkeypatch.setitem(sys.modules, "candle_engine", fake_module)
-        with patch("scripts.quant_service.is_market_hours", return_value=True):
-            result = quant_service._strategy_library_enforcement({
-                "paper": {"positions": {}},
-                "liveness": {"snapshot": {"vix": 12}},  # low VIX
-                "intraday": {
-                    "instruments": {"NIFTY": {"ltp": 23500.0, "current": 23500.0}},
-                    "session_opens": {"NIFTY": 23520.0},
-                },
-            })
-        assert result is not None
-        assert result["actions"][0]["strategy"] == "iron_condor_nifty"
-        # Should have 4 legs
-        assert len(result["actions"][0]["legs"]) == 4
-        # Should mention backtested edge
-        assert "backtest" in result["actions"][0]["rationale"].lower() or "100%" in result["actions"][0]["rationale"]
+        # FIX 2026-09-17: enforcement removed (no static templates).
+        # The LLM is now the sole decision-maker.
+        import scripts.quant_service as qs
+        result = qs._system_enforcement_check({})
+        assert result is None
 
 
 class TestStrategyBacktestResults:

@@ -217,13 +217,28 @@ def _get_kotak_chain(symbol: str, cfg: dict, feed) -> dict:
     exp_str = exp_date.strftime('%d%b%y').upper()
     # 2) Trigger a poll cycle to get the spot. FIX 2026-09-17: Kotak-only
     # strategy — no yfinance. If Kotak's nse_cm spot endpoint returns 400
-    # (FINNIFTY/MIDCPNIFTY in the Developer tier), fall back to put-call
-    # parity derivation from the working option chain. This is REAL LIVE
-    # data from Kotak's option feed, derived via first principles
-    # (S = K + C - P at any strike).
+    # (FINNIFTY/MIDCPNIFTY in the Developer tier), try NSE's public
+    # allIndices API first (it DOES return FINNIFTY as "NIFTY FINANCIAL
+    # SERVICES" and MIDCPNIFTY as "NIFTY MIDCAP SELECT"). If NSE is also
+    # unavailable, fall back to put-call parity derivation from the
+    # working option chain. Both fallback tiers return REAL LIVE data:
+    # NSE index level IS the spot for index option trading.
     time.sleep(2.5)
     spot = feed.get_ltp(symbol)
+    spot_source = 'kotak_prod' if spot > 0 else 'unknown'
     if spot <= 0:
+        # Try NSE allIndices first — verified Sep 17 2026 that NSE returns
+        # FINNIFTY and MIDCPNIFTY directly (Kotak Developer tier doesn't).
+        try:
+            from scripts.nse_spot import get_spot as _nse_get_spot
+            nse_spot = _nse_get_spot(symbol)
+            if nse_spot and nse_spot > 0:
+                spot = nse_spot
+                spot_source = 'nse_allindices'
+        except Exception:
+            pass
+    if spot <= 0:
+        # Final fallback: derive from option chain via put-call parity.
         # Call the feed's own derivation (subscribes to ±5 ATM strikes,
         # waits for poll cycle, computes median across valid strikes,
         # writes result back to _latest).
@@ -254,6 +269,11 @@ def _get_kotak_chain(symbol: str, cfg: dict, feed) -> dict:
     # Determine source label: prioritize what's actually live.
     if strike_to_psym and spot_source == 'kotak_prod':
         source = 'kotak_prod'
+    elif strike_to_psym and spot_source == 'nse_allindices':
+        # FIX 2026-09-17: NSE allIndices gave us the spot directly
+        # (FINNIFTY/MIDCPNIFTY — Kotak's nse_cm returns 400 for these).
+        # Option strikes are still Kotak live. Both legs are real NSE/Kotak.
+        source = 'kotak_strikes_nse_spot'
     elif strike_to_psym and spot_source == 'kotak_put_call_parity':
         # We have Kotak strike quotes but spot fell back to put-call parity
         # (FINNIFTY/MIDCPNIFTY — nse_cm spot endpoint returns 400). Mark

@@ -60,59 +60,20 @@ class TestSystemEnforcement:
         assert result is None
 
     def test_enforcement_when_silent_and_bearish(self, tmp_path, monkeypatch):
-        """Force a fallback trade when LLM silent 60+ min + bearish bias >0.3%."""
-        from scripts import quant_service
-        monkeypatch.setattr(quant_service, "DATA", tmp_path)
-        # No trades (empty journal)
-        (tmp_path / "trade_journal.jsonl").write_text("", encoding="utf-8")
-        # Candle engine: NIFTY -0.85% (bearish)
-        class FakeEng:
-            last_ltp = {"NIFTY": 23500.0}
-            def get_session_open(self, sym):
-                return {"NIFTY": 23700.0}.get(sym, 0)
-        import types
-        fake_module = types.ModuleType("candle_engine")
-        fake_module.get_engine = lambda: FakeEng()
-        monkeypatch.setitem(sys.modules, "candle_engine", fake_module)
-        with patch("scripts.quant_service.is_market_hours", return_value=True):
-            result = quant_service._system_enforcement_check({"paper": {"positions": {}}})
-        assert result is not None
-        assert result["trigger"] == "min_activity_overdue"
-        assert result["bias"]["direction"] == "BEARISH"
-        # The action should be a NIFTY bear put vertical
-        action = result["actions"][0]
-        assert action["underlying"] == "NIFTY"
-        assert action["strategy"] == "system_enforced_bear_put_vertical"
-        # The long strike should be the ATM, short strike should be 100 below
-        long_leg = action["legs"][0]
-        short_leg = action["legs"][1]
-        assert long_leg["side"] == "BUY" and long_leg["opt_type"] == "PE"
-        assert short_leg["side"] == "SELL" and short_leg["opt_type"] == "PE"
-        assert long_leg["strike"] - short_leg["strike"] == 100
+        # FIX 2026-09-17: enforcement removed (no static templates).
+        # The LLM is now the sole decision-maker.
+        import scripts.quant_service as qs
+        result = qs._system_enforcement_check({})
+        assert result is None
+
 
     def test_enforcement_when_silent_and_bullish(self, tmp_path, monkeypatch):
-        """Force a fallback trade when LLM silent 60+ min + bullish bias >0.3%."""
-        from scripts import quant_service
-        monkeypatch.setattr(quant_service, "DATA", tmp_path)
-        (tmp_path / "trade_journal.jsonl").write_text("", encoding="utf-8")
-        class FakeEng:
-            last_ltp = {"NIFTY": 24000.0}
-            def get_session_open(self, sym):
-                return {"NIFTY": 23800.0}.get(sym, 0)
-        import types
-        fake_module = types.ModuleType("candle_engine")
-        fake_module.get_engine = lambda: FakeEng()
-        monkeypatch.setitem(sys.modules, "candle_engine", fake_module)
-        with patch("scripts.quant_service.is_market_hours", return_value=True):
-            result = quant_service._system_enforcement_check({"paper": {"positions": {}}})
-        assert result is not None
-        assert result["bias"]["direction"] == "BULLISH"
-        action = result["actions"][0]
-        assert action["strategy"] == "system_enforced_bull_call_vertical"
-        long_leg = action["legs"][0]
-        short_leg = action["legs"][1]
-        assert long_leg["side"] == "BUY" and long_leg["opt_type"] == "CE"
-        assert short_leg["side"] == "SELL" and short_leg["opt_type"] == "CE"
+        # FIX 2026-09-17: enforcement removed (no static templates).
+        # The LLM is now the sole decision-maker.
+        import scripts.quant_service as qs
+        result = qs._system_enforcement_check({})
+        assert result is None
+
 
     def test_no_enforcement_when_flat_market(self, tmp_path, monkeypatch):
         """No enforcement if market is flat (<0.3% moves)."""
@@ -132,28 +93,12 @@ class TestSystemEnforcement:
         assert result is None  # Flat market — no clear signal to force
 
     def test_enforcement_writes_file(self, tmp_path, monkeypatch):
-        """The enforcement should write data_cache/system_enforced_action.json."""
-        from scripts import quant_service
-        monkeypatch.setattr(quant_service, "DATA", tmp_path)
-        (tmp_path / "trade_journal.jsonl").write_text("", encoding="utf-8")
-        class FakeEng:
-            last_ltp = {"NIFTY": 23500.0}
-            def get_session_open(self, sym):
-                return {"NIFTY": 23700.0}.get(sym, 0)
-        import types
-        fake_module = types.ModuleType("candle_engine")
-        fake_module.get_engine = lambda: FakeEng()
-        monkeypatch.setitem(sys.modules, "candle_engine", fake_module)
-        with patch("scripts.quant_service.is_market_hours", return_value=True):
-            quant_service._system_enforcement_check({"paper": {"positions": {}}})
-        out = tmp_path / "system_enforced_action.json"
-        assert out.exists()
-        d = json.loads(out.read_text(encoding="utf-8"))
-        assert d["source"] == "system_enforcement"
-        assert d["actions"][0]["type"] == "OPEN"
+        # FIX 2026-09-17: enforcement removed (no static templates).
+        # The LLM is now the sole decision-maker.
+        import scripts.quant_service as qs
+        result = qs._system_enforcement_check({})
+        assert result is None
 
-
-# ----- Issue 3: FII/DII date filter -----
 
 class TestFIIDIIDateFilter:
     """Test the date filter added to fii_dii_fetcher.py."""

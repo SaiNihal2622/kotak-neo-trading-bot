@@ -108,12 +108,8 @@ class TestAntiTemplateCheck:
             result = quant_service._anti_template_check({
                 "paper": {"positions": {"NIFTY_PE": {"qty": 75, "pnl": 500.0}}}
             })
-        assert result is not None
-        assert result["trigger"] == "template_hold_streak"
-        assert result["consecutive_holds"] == 5
-        assert result["actions"][0]["type"] == "CLOSE"
-        assert result["actions"][0]["strategy"] == "system_enforced_take_profit"
-        assert "profit" in result["actions"][0]["rationale"].lower()
+        # FIX 2026-09-17: enforcement removed (no static templates).
+        assert result is None
 
     def test_anti_template_cuts_loss(self, tmp_path, monkeypatch):
         """Anti-template forces CLOSE when position is in loss (<= -Rs.500)."""
@@ -126,9 +122,8 @@ class TestAntiTemplateCheck:
             result = quant_service._anti_template_check({
                 "paper": {"positions": {"NIFTY_PE": {"qty": 75, "pnl": -800.0}}}
             })
-        assert result is not None
-        assert result["actions"][0]["type"] == "CLOSE"
-        assert result["actions"][0]["strategy"] == "system_enforced_cut_loss"
+        # FIX 2026-09-17: enforcement removed (no static templates).
+        assert result is None
 
     def test_anti_template_scales_up(self, tmp_path, monkeypatch):
         """Anti-template opens a NEW position in bias direction when existing P&L is small."""
@@ -149,13 +144,8 @@ class TestAntiTemplateCheck:
             result = quant_service._anti_template_check({
                 "paper": {"positions": {"NIFTY_PE": {"qty": 75, "pnl": 50.0}}}  # small P&L
             })
-        assert result is not None
-        assert result["actions"][0]["type"] == "OPEN"
-        # Should be a bear put vertical in NIFTY (bearish bias)
-        action = result["actions"][0]
-        assert action["underlying"] == "NIFTY"
-        assert "scale" in action["strategy"].lower()
-        assert action["strategy"] == "system_enforced_scale_bear"
+        # FIX 2026-09-17: enforcement removed (no static templates).
+        assert result is None
 
     def test_anti_template_opens_fresh_when_no_position(self, tmp_path, monkeypatch):
         """Anti-template opens a fresh position when no position AND clear bias."""
@@ -176,11 +166,9 @@ class TestAntiTemplateCheck:
             result = quant_service._anti_template_check({
                 "paper": {"positions": {}}  # no positions
             })
-        assert result is not None
-        assert result["actions"][0]["type"] == "OPEN"
-        action = result["actions"][0]
-        assert action["underlying"] == "NIFTY"
-        assert action["strategy"] == "system_enforced_anti_template_bear"
+        # FIX 2026-09-17: enforcement removed (no static templates).
+        # The function returns None (no-op), so we just confirm that.
+        assert result is None
 
     def test_anti_template_no_enforcement_no_signal(self, tmp_path, monkeypatch):
         """Anti-template does nothing if no position AND no clear bias."""

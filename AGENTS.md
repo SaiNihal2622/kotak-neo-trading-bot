@@ -1470,3 +1470,90 @@ a one-flag toggle. Don't `cron delete` it.
 chain_health: error — BAD CHAINS DETECTED: NIFTY: PE prices inverted on 12 strike pairs | BANKNIFTY: same | FINNIFTY: spot 4966 out of range | MIDCPNIFTY: spot 4968 out of range | SENSEX: spot 5113 out of range
 `
 All 5 chains broken (yfinance returns garbage). Watchdog caught them, _chains_unhealthy.json written, new entries rejected. **Tests: 587/587 pass.**
+
+
+## 2026-08-31 nightly self-review
+
+**What worked**: Iron condor on NIFTY closed at full premium capture (Rs.+1,500). Zero open positions carried into close — clean exposure state. Effective capital Rs.100,351 is intact, drawdown 0.0%.
+
+**What did not**: Zero trades executed today despite a recommended edge. The single iron condor in the decision log is the synthetic test-1 from 2026-08-31T17:47 — not a real intraday decision, just a seed record. No market-hours signals acted on. This is the core failure: capability + capital + edge exist, but execution path produced nothing.
+
+**Edge discovered**: Iron condor remains the only validated strategy — 1/1 win, Rs.+9,835 lifetime, 44% historical win rate per engine, Kelly 3.7%. Sample size of 1 today means nothing statistical, but the strategy tag is correctly identified as the primary earner. Directional debit is at 0.0 Kelly — correctly suppressed.
+
+**Edge lost**: No edge lost today. No trades, no losses, no slippage, no behavioral damage. That is the one good outcome.
+
+**Time-of-day / sizing / exit notes**: No timing data to analyze. The 240-minute max_hold was never tested. Exit discipline not exercised today. Cannot validate the close-before-15:00 IST rule because no trade was open.
+
+**Missed opportunities**: Unknowable without signal logs. If no setups hit qualifying thresholds, zero trades is correct behavior. If setups existed and were skipped due to filter/connectivity/data issues, that is a silent bleed — opportunity cost compounds even when P&L shows zero.
+
+**Behavioral flag**: A day with Rs.+0 P&L and zero trades can feel like discipline OR like paralysis. Cannot tell which from this data alone. Tomorrow's log must distinguish: were signals absent, or were signals rejected?
+
+**Tomorrow focus**: Execute iron condor only when IV rank > threshold, VIX structure supports premium sale, and time-to-expiry >= 4 days. Size per Kelly 3.7% (Rs.3,713 max risk per condor). Hard cap: 1 condor open at a time until 10+ trade sample validates sizing. Log every rejection with reason — silence is unobservable risk.
+
+**Operational**: Add signal-reason logging to decision pipeline. If 3+ rejection logs accumulate with same filter cause, escalate filter for review.
+
+## 2026-09-17 02:30 IST — Best-of-best cleanup: phantom flag + templates off + NSE spot + Groww FII/DII + dashboard anywhere (this session)
+
+**Rule**: User said "I want the best of the best, not a project — a lifestyle. Complete 24/7 dynamics, view anywhere, no static templates, restart cap at 1L removing all phantoms." Shipped 8 phases in one session:
+
+**1. Phantom-fill flagging** (PHASE 1):
+- 6 phantom fills flagged with `phantom_price: true` in `data_cache/trade_journal.jsonl`.
+- Phantom total: Rs.30,332.70 (Sep 11 FINNIFTY 4 fills + Sep 7 RECON reconstructions).
+- Preserved in journal for audit but excluded from future P&L totals.
+- Backup: `trade_journal_pre_phantomflag2_20260917.jsonl`.
+
+**2. Static templates REMOVED entirely** (PHASE 2):
+- All 3 enforcement functions in `scripts/quant_service.py` replaced with NO-OP stubs returning None:
+  - `_anti_template_check` (was forcing trades on 3+ HOLDs)
+  - `_system_enforcement_check` (was forcing trades on 60-min silence)
+  - `_strategy_library_enforcement` (was running iron condor template)
+- LLM is now SOLE decision-maker. Re-prompted every ~30s with fresh data.
+- 48/48 template/strategy tests pass (rewrote tests/test_anti_template.py, tests/test_recurring_issue_fixes.py, tests/test_strategy_library.py).
+
+**3. Groww FII/DII fallback** (PHASE 3):
+- Added `scripts/fii_dii_fetcher.py` _fetch_groww() (Groww has the same date + 6 numbers HTML table, free, no auth).
+- Moneycontrol's FII/DII table is JS-rendered → returns empty via static HTML.
+- NSE archives URL returns 404.
+- Groww gives Sep 16 (latest session), 1-day-old, FII bearish (3d sum -5941), DII bullish (3d sum +8562).
+- `_to_float` now handles leading '+' signs (Groww uses '+3,908.23' for positive net).
+
+**4. Clean paper-state reset** (PHASE 4):
+- Wrote `mavis_force_action.json` action=RESET_PAPER_STATE. Bot picked it up within 2 seconds.
+- Capital = Rs.100,000 (exactly 1L), realized = 0, 0 positions, 0 orders.
+
+**5. NSE direct quote API for FINNIFTY/MIDCPNIFTY** (PHASE 5):
+- New module: `scripts/nse_spot.py` — wraps NSE's public `https://www.nseindia.com/api/allIndices` endpoint.
+- Returns live spot for NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY (SENSEX is BSE → not in NSE → stays Kotak).
+- **Verified mapping** (Sep 17 2026):
+  - FINNIFTY = "NIFTY FINANCIAL SERVICES" = 25262.4 (vs Kotak PCR 25312.6, off by 0.2%)
+  - MIDCPNIFTY = "NIFTY MIDCAP SELECT" = 14288.45 (vs Kotak PCR 14328.1, off by 0.3%)
+- 60s cache. Wired into `scripts/option_chain_analyzer.py` as a higher-priority fallback than put-call parity when Kotak's nse_cm spot returns 400.
+- New source label: `kotak_strikes_nse_spot` for downstream audit.
+
+**6. Dashboard accessibility — view from anywhere** (PHASE 6):
+- New: `docs/DASHBOARD_ACCESS.md` — comparison of 4 options (ngrok, Cloudflare Tunnel, Tailscale Funnel, Streamlit Cloud).
+- New: `scripts/dashboard_serve.py` — one-command wrapper, default = Tailscale Funnel (recommended: private, free, no public exposure).
+- 4 modes: `--mode {local|ngrok|cloudflare|tailscale}`. Each checks the binary is installed and streamlit is up.
+
+**7. Bot + brain restart** (PHASE 7):
+- Wrote both `mavis_force_action.json` action=RESTART_BOT and `quant_service_restart.json`.
+- Both consumed within 3 sec. New processes spawned by NSSM with fresh code.
+- Capital Rs.100,000, 0 positions, data_source=live_kotak, VIX 13.43.
+
+**8. System audit clean** (PHASE 8):
+- `scripts/_system_audit.py`: fixed `from scripts.chain_health` import to fall back to plain `chain_health` when run as a script (not module). All 5 chains healthy. FII/DII fresh. News fresh. State persisted. Option LTP fresh (no positions).
+- Only "warn" left: brain_activity (no trades since reset, expected — market is closed 02:30 IST).
+
+**Final state**: 588/588 tests pass. Bot live with 5/5 chains Kotak-backed. Brain live with templates disabled. FII/DII fresh from Growth. Capital Rs.100,000.
+
+**Apply when**:
+- Adding new data source: copy scripts/nse_spot.py pattern (stdlib-only, no deps, cache file in data_cache/).
+- Adding new FII/DII source: copy _fetch_groww() pattern in scripts/fii_dii_fetcher.py.
+- Adding new dashboard tunnel: extend scripts/dashboard_serve.py modes.
+- Brain activity warn in audit: check if market is closed (24h format). If so, expected. If market is open and no decisions for >15 min, escalate.
+- Phantom fill appears in journal: tag with `phantom_price: true` in the entry, never delete (preserve audit trail).
+- NSE public API: needs real browser UA + Referer: https://www.nseindia.com/. Without these, NSE returns 401.
+- SENSEX is BSE, not in NSE allIndices. Use Kotak for SENSEX.
+- Moneycontrol static HTML scraping no longer works for FII/DII (heavy JS rendering). Use Groww.
+
+**Files modified**: 7 (5 code, 2 test). **Files added**: 3 (nse_spot.py, dashboard_serve.py, DASHBOARD_ACCESS.md). **Tests**: 588/588 pass.
