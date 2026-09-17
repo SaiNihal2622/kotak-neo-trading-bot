@@ -1,4 +1,4 @@
-"""Regression test for PaperClient save/load enum round-trip.
+﻿"""Regression test for PaperClient save/load enum round-trip.
 
 This test caught a real production bug (commits 1493ae0):
 - _save_state was using o.__dict__ directly, mutating the live Order object's
@@ -45,7 +45,7 @@ class TestPaperClientSaveLoadEnumRoundTrip(unittest.TestCase):
         c1 = PaperClient(starting_capital=100_000, persist_path=self.path)
         c1.connect()
         order = Order(
-            symbol="NIFTY11AUG2624450CE",
+            symbol="NIFTY31DEC2624450CE",
             side=OrderSide.BUY,
             qty=130,
             order_type=OrderType.LIMIT,
@@ -53,12 +53,12 @@ class TestPaperClientSaveLoadEnumRoundTrip(unittest.TestCase):
             price=21.60,
             strike=24450,
             option_type="CE",
-            expiry="2026-08-11",
+            expiry="2026-12-31",
             underlying="NIFTY",
         )
         # Inject a tick so it fills
         c1.inject_tick(Tick(
-            symbol="NIFTY11AUG2624450CE", ltp=21.60, bid=21.55, ask=21.65,
+            symbol="NIFTY31DEC2624450CE", ltp=21.60, bid=21.55, ask=21.65,
             exchange="NFO", underlying="NIFTY",
         ))
         c1.place_order(order)
@@ -81,7 +81,7 @@ class TestPaperClientSaveLoadEnumRoundTrip(unittest.TestCase):
         self.assertEqual(loaded.side, OrderSide.BUY)
         self.assertEqual(loaded.order_type, OrderType.LIMIT)
         self.assertEqual(loaded.product, ProductType.MIS)
-        self.assertEqual(loaded.symbol, "NIFTY11AUG2624450CE")
+        self.assertEqual(loaded.symbol, "NIFTY31DEC2624450CE")
         self.assertEqual(loaded.qty, 130)
         self.assertEqual(loaded.avg_fill_price, 21.60)
         self.assertEqual(loaded.status, OrderStatus.COMPLETE)
@@ -94,7 +94,7 @@ class TestPaperClientSaveLoadEnumRoundTrip(unittest.TestCase):
             "realized_pnl": 0.0,
             "orders": {
                 "PAPER-OLD00001": {
-                    "symbol": "NIFTY11AUG2624450CE",
+                    "symbol": "NIFTY31DEC2624450CE",
                     "side": "BUY",  # string, not enum
                     "qty": 130,
                     "order_type": "LIMIT",  # string, not enum
@@ -103,14 +103,14 @@ class TestPaperClientSaveLoadEnumRoundTrip(unittest.TestCase):
                     "avg_fill_price": 21.60,
                     "filled_qty": 130,
                     "status": "complete",  # string
-                    "placed_at": "2026-08-11T13:00:00",
-                    "filled_at": "2026-08-11T13:00:01",
+                    "placed_at": "2026-12-31T13:00:00",
+                    "filled_at": "2026-12-31T13:00:01",
                     "trigger_price": 0.0,
                     "tag": "old",
                     "exchange": "NFO",
                     "strike": 24450.0,
                     "option_type": "CE",
-                    "expiry": "2026-08-11",
+                    "expiry": "2026-12-31",
                     "underlying": "NIFTY",
                     "rejection_reason": "",
                     "expected_fill_price": 0.0,
@@ -135,11 +135,11 @@ class TestPaperClientSaveLoadEnumRoundTrip(unittest.TestCase):
         c1 = PaperClient(starting_capital=100_000, persist_path=self.path)
         c1.connect()
         # Inject tick + place + fill
-        c1.inject_tick(Tick(symbol="NIFTY11AUG2624450CE", ltp=21.60, exchange="NFO"))
+        c1.inject_tick(Tick(symbol="NIFTY31DEC2624450CE", ltp=21.60, exchange="NFO"))
         c1.place_order(Order(
-            symbol="NIFTY11AUG2624450CE", side=OrderSide.BUY, qty=130,
+            symbol="NIFTY31DEC2624450CE", side=OrderSide.BUY, qty=130,
             order_type=OrderType.LIMIT, product=ProductType.MIS, price=21.60,
-            exchange="NFO", strike=24450, option_type="CE", expiry="2026-08-11",
+            exchange="NFO", strike=24450, option_type="CE", expiry="2026-12-31",
             underlying="NIFTY",
         ))
         # Verify position exists with enum product
@@ -152,7 +152,7 @@ class TestPaperClientSaveLoadEnumRoundTrip(unittest.TestCase):
         self.assertEqual(len(c2._positions), 1)
         pos2 = list(c2._positions.values())[0]
         self.assertIsInstance(pos2.product, ProductType)
-        self.assertEqual(pos2.symbol, "NIFTY11AUG2624450CE")
+        self.assertEqual(pos2.symbol, "NIFTY31DEC2624450CE")
         self.assertEqual(pos2.qty, 130)
         self.assertEqual(pos2.avg_price, 21.60)
 
@@ -172,7 +172,7 @@ class TestPaperClientFillLogic(unittest.TestCase):
         c.connect()
         # Tick at 100, spread 0.1%
         c.inject_tick(Tick(symbol="X", ltp=100.0, exchange="NFO"))
-        # BUY LIMIT at 100.5 (above ask ~100.10) — should fill at 100.10
+        # BUY LIMIT at 100.5 (above ask ~100.10) â€” should fill at 100.10
         order = Order(
             symbol="X", side=OrderSide.BUY, qty=10, order_type=OrderType.LIMIT,
             product=ProductType.MIS, price=100.5, exchange="NFO",
@@ -186,7 +186,7 @@ class TestPaperClientFillLogic(unittest.TestCase):
         c = PaperClient(starting_capital=100_000, persist_path=self.path)
         c.connect()
         c.inject_tick(Tick(symbol="X", ltp=100.0, exchange="NFO"))
-        # SELL LIMIT at 99.5 (below bid ~99.90) — should fill at 99.90
+        # SELL LIMIT at 99.5 (below bid ~99.90) â€” should fill at 99.90
         order = Order(
             symbol="X", side=OrderSide.SELL, qty=10, order_type=OrderType.LIMIT,
             product=ProductType.MIS, price=99.5, exchange="NFO",
@@ -200,7 +200,7 @@ class TestPaperClientFillLogic(unittest.TestCase):
         c = PaperClient(starting_capital=100_000, slippage_bps=5.0, persist_path=self.path)
         c.connect()
         c.inject_tick(Tick(symbol="X", ltp=100.0, exchange="NFO"))
-        # MARKET BUY at 100 → fill at 100 + 0.05% = 100.05
+        # MARKET BUY at 100 â†’ fill at 100 + 0.05% = 100.05
         order = Order(
             symbol="X", side=OrderSide.BUY, qty=10, order_type=OrderType.MARKET,
             product=ProductType.MIS, price=0, exchange="NFO",
@@ -213,3 +213,4 @@ class TestPaperClientFillLogic(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

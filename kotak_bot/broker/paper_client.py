@@ -1095,6 +1095,146 @@ class PaperClient(BrokerClient):
             logger.debug(f"get_recent_rejections failed: {e}")
             return []
 
+    def _settle_expired_positions(self, state: dict) -> None:
+        """FIX 2026-09-17 22:50: 0DTE expiry settlement on bot startup.
+
+        Scans positions dict for any option with expiry < today OR expiry==today
+        + market closed (>= 15:30 IST). These positions expired at 15:30 IST
+        (NSE auto-settlement for 0DTE options). In live trading, NSE handles this:
+          - OTM option (strike < spot for CE, strike > spot for PE): Rs.0
+          - ITM option: intrinsic value (|spot - strike|)
+        In paper, we settle at startup to avoid carrying stale positions
+        into the next session.
+
+        Settlement process:
+          1. For each expired position in state['positions'] (raw dict):
+             a. Determine settlement price (0 for OTM, intrinsic for ITM)
+             b. Update state['positions'] to remove the position
+             c. Compute realized_delta = (settlement - avg_price) * qty
+             d. Add to state['realized_pnl'] AND self._realized_pnl
+          2. Save state after settlement.
+
+        Note: this operates on the RAW state dict, NOT self._positions,
+        because _load_state calls this BEFORE self._positions is populated.
+        The settlement closes positions by removing them from state['positions']
+        directly. When _load_state later iterates state['positions'], the
+        expired positions are already gone.
+        """
+        from datetime import date as _date, time as _time
+        try:
+            positions = state.get("positions", {}) or {}
+            if not positions:
+                return
+            today = _date.today()
+            # India-local time check (UTC+5:30) for "is the market closed today?"
+            now_utc = datetime.now(timezone.utc)
+            ist_offset = __import__('datetime').timedelta(hours=5, minutes=30)
+            now_ist = (now_utc + ist_offset).replace(tzinfo=None)
+            market_closed_today = now_ist.time() >= _time(15, 30)
+            expired_symbols = []
+            for sym, pos in positions.items():
+                exp_str = pos.get("expiry") if isinstance(pos, dict) else getattr(pos, "expiry", None)
+                if not exp_str:
+                    continue
+                try:
+                    exp_date = _date.fromisoformat(str(exp_str)[:10])
+                except Exception:
+                    continue
+                # Position is expired if: (a) expiry is in the past, OR
+                # (b) expiry is today AND market has closed (>= 15:30 IST).
+                if exp_date < today or (exp_date == today and market_closed_today):
+                    expired_symbols.append((sym, pos, exp_date))
+            if not expired_symbols:
+                return
+            logger.warning(
+                f"[PAPER] 0DTE EXPIRY SETTLEMENT: {len(expired_symbols)} position(s) expired in previous sessions"
+            )
+            # Use the latest tick's underlying INDEX price as spot reference.
+            # Must NOT match option ticks (which start with same underlying name).
+            # Index ticks are like "NIFTY 50", "BANKNIFTY", "FINNIFTY" etc.
+            # Option ticks are like "NIFTY17SEP2623500CE".
+            import re as _re_settle
+            _opt_sym_re = _re_settle.compile(
+                r'^(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)'
+                r'\d{2}[A-Z]{3}\d{2}\d+(CE|PE)$'
+            )
+            n_settled = 0
+            total_realized_delta = 0.0
+            for sym, pos, exp_date in expired_symbols:
+                try:
+                    qty = pos.get("qty") if isinstance(pos, dict) else getattr(pos, "qty", 0)
+                    avg_price = pos.get("avg_price") if isinstance(pos, dict) else getattr(pos, "avg_price", 0)
+                    opt_type = pos.get("option_type") if isinstance(pos, dict) else getattr(pos, "option_type", "")
+                    strike = pos.get("strike") if isinstance(pos, dict) else getattr(pos, "strike", 0)
+                    underlying = pos.get("underlying") if isinstance(pos, dict) else getattr(pos, "underlying", "")
+                    if qty == 0 or not opt_type or not underlying:
+                        continue
+                    # Determine spot reference (for ITM check).
+                    spot = 0.0
+                    for tick_sym, tick in self._ticks.items():
+                        tick_sym_clean = tick_sym.upper().strip()
+                        if _opt_sym_re.match(tick_sym_clean):
+                            continue
+                        if (tick_sym_clean == underlying.upper()
+                            or tick_sym_clean.startswith(underlying.upper() + " ")
+                            or (underlying.upper() == "NIFTY" and "NIFTY 50" in tick_sym_clean)
+                            or (underlying.upper() == "BANKNIFTY" and "NIFTY BANK" in tick_sym_clean)):
+                            if tick.ltp and tick.ltp > 0:
+                                spot = tick.ltp
+                                break
+                    if spot <= 0:
+                        # Fall back to chain LTP for the underlying from option_chains.json
+                        try:
+                            chains_path = DCACHE / "option_chains.json"
+                            if chains_path.exists():
+                                chains = json.loads(chains_path.read_text(encoding="utf-8"))
+                                chain_data = chains.get("chains", {}).get(underlying.upper(), {})
+                                spot = float(chain_data.get("spot", 0) or 0)
+                        except Exception:
+                            pass
+                    # Compute intrinsic value at expiry
+                    if opt_type.upper() == "CE":
+                        intrinsic = max(0.0, spot - strike)
+                    else:  # PE
+                        intrinsic = max(0.0, strike - spot)
+                    # Settlement price = intrinsic. OTM options settle at 0.
+                    settlement_price = round(intrinsic, 2)
+                    # P&L = (settlement_price - avg_price) * qty
+                    realized_delta = (settlement_price - avg_price) * qty
+                    total_realized_delta += realized_delta
+                    # FIX 2026-09-17 23:00: write back to RAW state dict (not
+                    # self._positions, which isn't populated yet at this point).
+                    # We add the realized_delta to realized_pnl and remove the
+                    # position. When _load_state later iterates state['positions'],
+                    # the expired position is already gone.
+                    if "realized_pnl" not in state:
+                        state["realized_pnl"] = 0.0
+                    state["realized_pnl"] += realized_delta
+                    # Also update in-memory so the bot's later _save_state uses
+                    # the new realized_pnl.
+                    self._realized_pnl = state["realized_pnl"]
+                    # Remove from RAW state['positions'] dict
+                    if sym in state.get("positions", {}):
+                        del state["positions"][sym]
+                    logger.warning(
+                        f"[PAPER] 0DTE EXPIRY: {sym} qty={qty} settled @ Rs.{settlement_price} "
+                        f"(intrinsic={intrinsic:.2f}, avg={avg_price:.2f}, "
+                        f"realized_delta=Rs.{realized_delta:+,.2f})"
+                    )
+                    n_settled += 1
+                except Exception as _sse:
+                    logger.warning(f"[PAPER] 0DTE EXPIRY: error settling {sym}: {_sse}")
+            if n_settled:
+                logger.info(
+                    f"[PAPER] 0DTE EXPIRY: settled {n_settled} expired positions, "
+                    f"new realized_pnl=Rs.{self._realized_pnl:,.2f} (delta Rs.{total_realized_delta:+,.2f})"
+                )
+                # Note: do NOT call _save_state here. _load_state is mid-process
+                # and the state is still being read. _save_state at the end of
+                # run_paper will write the updated state to disk.
+        except Exception as _ss_err:
+            logger.warning(f"[PAPER] 0DTE EXPIRY: settlement sweep failed: {_ss_err}")
+
     def _save_state(self) -> None:
         # FIX 2026-09-08 14:20: skip-save flag for clean resets. The pre-market
         # reset script (scripts/pre_market_reset_paper_state.py) creates this
@@ -1185,6 +1325,14 @@ class PaperClient(BrokerClient):
             state = json.loads(self.persist_path.read_text(encoding="utf-8"))
             self._cash = state.get("cash", self.starting_capital)
             self._realized_pnl = state.get("realized_pnl", 0.0)
+            # FIX 2026-09-17 22:50: 0DTE expiry settlement. If a position's
+            # expiry is < today, it expired on its expiry date at 15:30 IST.
+            # In live trading, NSE auto-settles these (OTM = Rs.0, ITM = intrinsic).
+            # In paper, we settle at startup so tomorrow's bot doesn't carry
+            # stale LTP positions. This is critical for the orphan-cleanup
+            # loop and prevents the bot from being confused by yesterday's
+            # expired contracts showing as "open" with stale prices.
+            self._settle_expired_positions(state)
             for oid, od in state.get("orders", {}).items():
                 if "placed_at" in od and od["placed_at"]:
                     od["placed_at"] = datetime.fromisoformat(od["placed_at"])
