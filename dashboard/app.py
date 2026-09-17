@@ -611,7 +611,8 @@ def render_sidebar() -> DataProvider:
             st.cache_resource.clear()
             st.rerun()
         if is_real:
-            st.caption(f"📊 Reading from `data_cache/` ({len(_list_data_cache_files())} files)")
+            n_files = _list_data_cache_files()
+            st.caption(f"📊 Reading from `data_cache/` ({n_files} files)")
         else:
             st.caption("⚠️ Mock data layer — start the bot to see real data")
 

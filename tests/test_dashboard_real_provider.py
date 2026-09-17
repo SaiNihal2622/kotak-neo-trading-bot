@@ -206,6 +206,28 @@ def test_real_provider_update_config_returns_false(monkeypatch, tmp_path):
     assert p.update_config("some_key", "value") is False
 
 
+def test_list_data_cache_files_returns_int():
+    """FIX 2026-09-18 02:35: _list_data_cache_files must return an int, not
+    a list. The render_sidebar() caller wraps the result in len() which would
+    raise TypeError: object of type 'int' has no len() if the function
+    returned a list. This test guards against that regression.
+    """
+    from dashboard.app import _list_data_cache_files
+    n = _list_data_cache_files()
+    assert isinstance(n, int)
+    assert n >= 0
+
+
+def test_list_data_cache_files_works_in_fstring():
+    """The render_sidebar caption must format without raising."""
+    from dashboard.app import _list_data_cache_files
+    n = _list_data_cache_files()
+    # Mirrors the actual usage in render_sidebar (post-fix)
+    caption = f"📊 Reading from `data_cache/` ({n} files)"
+    assert "files" in caption
+    assert str(n) in caption
+
+
 def test_real_provider_handles_missing_files(monkeypatch, tmp_path):
     """No data_cache → RealDataProvider returns safe defaults, doesn't crash."""
     dc = tmp_path / "empty_cache"
