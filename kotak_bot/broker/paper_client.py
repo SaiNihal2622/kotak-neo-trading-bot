@@ -1232,6 +1232,79 @@ class PaperClient(BrokerClient):
                 # Note: do NOT call _save_state here. _load_state is mid-process
                 # and the state is still being read. _save_state at the end of
                 # run_paper will write the updated state to disk.
+                # FIX 2026-09-17 23:35: append the settlement close-fills to
+                # trade_journal.jsonl directly. Without this, the dashboard's
+                # day-P&L computed from the journal is wrong (missing the
+                # settlement entries). _apply_fill fires _fill_callbacks but
+                # they aren't registered yet at _load_state time.
+                try:
+                    _jrnl = self.persist_path.parent / "trade_journal.jsonl"
+                    with _jrnl.open("a", encoding="utf-8") as _jf:
+                        for _sym, _pos, _exp in expired_symbols:
+                            try:
+                                _qty = _pos.get("qty", 0) if isinstance(_pos, dict) else 0
+                                _avg = _pos.get("avg_price", 0) if isinstance(_pos, dict) else 0
+                                _stype = _pos.get("option_type", "") if isinstance(_pos, dict) else ""
+                                _strike = _pos.get("strike", 0) if isinstance(_pos, dict) else 0
+                                _und = _pos.get("underlying", "") if isinstance(_pos, dict) else ""
+                                if _qty == 0:
+                                    continue
+                                # Use settlement_price from the round above.
+                                # Compute it inline (mirrors the loop above).
+                                _spot = 0.0
+                                import re as _re_j
+                                _opt_re = _re_j.compile(
+                                    r'^(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)'
+                                    r'\d{2}[A-Z]{3}\d{2}\d+(CE|PE)$'
+                                )
+                                for _ts, _tk in self._ticks.items():
+                                    if _opt_re.match(_ts.upper().strip()):
+                                        continue
+                                    if _tk.ltp and _tk.ltp > 0:
+                                        _spot = _tk.ltp
+                                        break
+                                if _spot <= 0:
+                                    try:
+                                        _chains_p = DCACHE / "option_chains.json"
+                                        if _chains_p.exists():
+                                            _ch = json.loads(_chains_p.read_text(encoding="utf-8"))
+                                            _spot = float(_ch.get("chains", {}).get(_und.upper(), {}).get("spot", 0) or 0)
+                                    except Exception:
+                                        pass
+                                if _stype.upper() == "CE":
+                                    _intr = max(0.0, _spot - _strike)
+                                else:
+                                    _intr = max(0.0, _strike - _spot)
+                                _settle = round(_intr, 2)
+                                _cls = _qty > 0  # closing: side opposite of position
+                                _cls_side = "SELL" if _cls else "BUY"
+                                _rd = (_settle - _avg) * _qty
+                                _rec = {
+                                    "trade_id": f"EXPIRY-{_exp}-{_sym}",
+                                    "order_id": f"EXPIRY-CLOSE-{_sym}",
+                                    "symbol": _sym,
+                                    "underlying": _und,
+                                    "strike": _strike,
+                                    "option_type": _stype,
+                                    "side": _cls_side,
+                                    "qty": abs(_qty),
+                                    "avg_fill_price": _settle,
+                                    "expected_fill_price": _settle,
+                                    "tag": "0dte_expiry_settlement",
+                                    "realized_delta": round(_rd, 2),
+                                    "status": "complete",
+                                    "placed_at": datetime.now(timezone.utc).isoformat(),
+                                    "filled_at": datetime.now(timezone.utc).isoformat(),
+                                    "event": "FILL",
+                                    "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+                                    "phantom_price": False,
+                                    "suspect_price": False,
+                                }
+                                _jf.write(json.dumps(_rec, ensure_ascii=False) + "\n")
+                            except Exception:
+                                continue
+                except Exception as _je:
+                    logger.debug(f"settlement journal append failed: {_je}")
         except Exception as _ss_err:
             logger.warning(f"[PAPER] 0DTE EXPIRY: settlement sweep failed: {_ss_err}")
 

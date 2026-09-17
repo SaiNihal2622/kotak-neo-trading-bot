@@ -55,8 +55,16 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from pathlib import Path
 
 from loguru import logger
+
+# Project root (used by RealDataProvider wiring to locate data_cache/).
+# FIX 2026-09-17 23:55: was missing — get_provider() tried `ROOT / ...` which
+# raised NameError; the try/except silently swallowed it and returned
+# MockDataProvider. The dashboard was always showing mock data despite the
+# real_provider.py being wired correctly.
+ROOT = Path(__file__).parent.parent.resolve()
 
 # Optional backtester — only loaded on the Backtest page to keep cold-start
 # fast. Wrapped in try/except so a missing vectorbt does not break the rest
@@ -87,6 +95,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# FIX 2026-09-17 23:30: live auto-refresh. The dashboard now shows real bot
+# state via RealDataProvider (reads from data_cache/*.json). We add a
+# sidebar toggle for auto-refresh + a manual refresh button so the user
+# can either let it poll (every 15s by default) or force-refresh on demand.
+if "auto_refresh" not in st.session_state:
+    st.session_state["auto_refresh"] = False
+if "refresh_interval_sec" not in st.session_state:
+    st.session_state["refresh_interval_sec"] = 15
 
 
 # Custom CSS — small touches, no theme overhaul.
@@ -505,10 +522,18 @@ class MockDataProvider(DataProvider):
 def get_provider() -> DataProvider:
     """Return a cached ``DataProvider`` instance.
 
-    For production this would attempt to import the live broker adapter and
-    fall back to ``MockDataProvider`` if it fails. We always return the mock
-    here so the dashboard works without broker credentials.
+    FIX 2026-09-17 23:30: returns RealDataProvider if data_cache/paper_state.json
+    exists, otherwise MockDataProvider. RealDataProvider reads from the bot's
+    actual data files (paper_state, strategy_performance, system_audit, etc.)
+    so the dashboard shows live state instead of synthetic mock data.
     """
+    try:
+        from dashboard.real_provider import RealDataProvider
+        paper_state = ROOT / "data_cache" / "paper_state.json"
+        if paper_state.exists():
+            return RealDataProvider()
+    except Exception:
+        pass
     return MockDataProvider()
 
 
@@ -543,10 +568,16 @@ def render_sidebar() -> DataProvider:
     risk = provider.get_risk_state()
     now = _ist_now()
     state_label, state_class = _market_state(now)
+    # FIX 2026-09-17 23:30: detect whether we're serving real or mock data
+    from dashboard.real_provider import RealDataProvider
+    is_real = isinstance(provider, RealDataProvider)
 
     with st.sidebar:
         st.markdown("## 🤖 Kotak Neo Bot")
-        st.caption(f"Status: 🟢 Connected (mock)" if not risk.kill_switch else "Status: 🔴 KILL SWITCH")
+        if is_real:
+            st.caption("Status: 🟢 Connected (live data)")
+        else:
+            st.caption("Status: 🟡 Connected (mock — data_cache/paper_state.json not found)")
 
         st.markdown("---")
         st.markdown(f"**IST**: {now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -566,9 +597,38 @@ def render_sidebar() -> DataProvider:
             delta_color="normal",
         )
         st.metric("Open positions", account.open_positions)
+
+        # FIX 2026-09-17 23:30: live refresh controls.
         st.markdown("---")
-        st.caption("v0.1.0 · mock data layer")
+        st.markdown("### 🔄 Live refresh")
+        st.session_state["auto_refresh"] = st.checkbox(
+            "Auto-refresh every 15s",
+            value=st.session_state.get("auto_refresh", False),
+            key="auto_refresh_checkbox",
+        )
+        if st.button("🔄 Refresh now"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.rerun()
+        if is_real:
+            st.caption(f"📊 Reading from `data_cache/` ({len(_list_data_cache_files())} files)")
+        else:
+            st.caption("⚠️ Mock data layer — start the bot to see real data")
+
+        st.markdown("---")
+        st.caption(f"v0.2.0 · {'real' if is_real else 'mock'} data layer")
     return provider
+
+
+def _list_data_cache_files() -> int:
+    """Count files in data_cache/ for the sidebar caption."""
+    try:
+        return len(list(Path("data_cache").rglob("*")))
+    except Exception:
+        return 0
+
+
+# Path is imported at module top — see imports above.
 
 
 # ===========================================================================
@@ -636,6 +696,64 @@ def page_overview(provider: DataProvider) -> None:
     fig = px.line(df, x="date", y="equity", title="Equity Curve (60d)")
     fig.update_layout(height=300, margin=dict(l=0, r=0, t=30, b=0))
     st.plotly_chart(fig, use_container_width=True)
+
+    # FIX 2026-09-17 23:30: live-trading gates + go-live policy panels
+    cfg = provider.get_config().data
+    lgs = cfg.get("live_go_progress") or {}
+    gates = cfg.get("live_trading_gates") or {}
+    sa = cfg.get("slippage_audit") or {}
+
+    st.markdown("---")
+    st.markdown("### 🚦 Live-trading gates")
+    if gates and "results" in gates:
+        st.metric(
+            "Live-readiness",
+            f"{gates.get('live_readiness_pct', 0):.0f}%",
+            f"{gates.get('live_readiness', 'n/a')}",
+        )
+        # Compact gate list
+        gate_cols = st.columns(min(len(gates.get("results", [])), 6))
+        for i, r in enumerate(gates.get("results", [])[:11]):
+            icon = "✅" if r.get("ok") else "❌"
+            tip = r.get("msgs", [""])[0][:60] if r.get("msgs") else ""
+            with gate_cols[i % len(gate_cols)]:
+                st.markdown(f"{icon} **{r['id']}**  \n_{tip}_", help=r.get("name", ""))
+    else:
+        st.caption("Gate data unavailable.")
+
+    # Live-go policy progress
+    if lgs:
+        st.markdown("### 🎯 Live-go policy")
+        g1, g2, g3, g4 = st.columns(4)
+        with g1:
+            streak = lgs.get("streak") or 0
+            st.metric("Green day streak", f"{streak} / 5", delta=("+1 today" if streak > 0 else None))
+        with g2:
+            r_pct = lgs.get("return_pct") or 0
+            st.metric("Cumulative return", f"{r_pct:+.2f}%", f"need +5%")
+        with g3:
+            ready = lgs.get("ready", False)
+            st.metric("Ready for live?", "YES" if ready else "NOT YET",
+                      delta=("Telegram alert sent" if ready else None),
+                      delta_color=("normal" if ready else "off"))
+        with g4:
+            missing = lgs.get("missing") or []
+            st.metric("Missing conditions", len(missing), ", ".join(missing) if missing else "none")
+    else:
+        st.caption("Live-go status will populate at 15:30 IST daily evaluation.")
+
+    # Slippage audit summary
+    if sa:
+        st.markdown("### 📉 Slippage model (live-equivalent)")
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            st.metric("Mean slippage", f"{sa.get('mean_slippage_bps', 0):.2f} bps")
+        with sc2:
+            st.metric("BUY-SELL asymmetry", f"{sa.get('buy_sell_asymmetry_bps', 0):.2f} bps")
+        with sc3:
+            delta = sa.get("live_equivalent_pnl_delta") or 0
+            st.metric("Live-eq P&L delta", f"Rs.{delta:,.0f}",
+                      delta=f"{sa.get('fill_mode_detected', '?')}")
 
 
 def page_positions(provider: DataProvider) -> None:
@@ -1007,6 +1125,19 @@ PAGES = {
 
 
 def main() -> None:
+    # FIX 2026-09-17 23:30: auto-refresh loop. When the user enables
+    # auto-refresh in the sidebar, this reruns the page every N seconds.
+    if st.session_state.get("auto_refresh"):
+        import time as _t
+        interval = st.session_state.get("refresh_interval_sec", 15)
+        # Use st_autorefresh if available; fall back to time.sleep + rerun
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=interval * 1000, key="data_autorefresh")
+        except ImportError:
+            # Manual approach: sleep then rerun
+            _t.sleep(interval)
+            st.rerun()
     provider = render_sidebar()
     page_name = st.radio(
         "Page",

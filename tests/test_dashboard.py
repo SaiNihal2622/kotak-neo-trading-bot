@@ -10,7 +10,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "scripts"))
+# Don't add ROOT/scripts — that would make `scripts/dashboard.py` shadow
+# the `dashboard/` package (FIX 2026-09-17 23:55). `from scripts import
+# dashboard` works because `scripts/__init__.py` makes scripts a package
+# found via the ROOT path.
 
 
 def test_dashboard_module_imports():
