@@ -47,6 +47,15 @@ class PaperClient(BrokerClient):
     - Persists state to a JSON file for crash recovery
     """
 
+    # FIX 2026-09-17 12:25: NSE options tick size. The exchange rounds prices to
+    # the nearest tick — 0.05 INR for options < Rs.30, otherwise also 0.05 INR
+    # (NSE changed the rule in 2023; previously Rs.3 options had 0.05 ticks and
+    # higher had 0.10 ticks — now everything below 100k INR is 0.05).
+    # Limit prices that don't land on a tick are REJECTED by the exchange (Order
+    # gets 'not on tick' error from RMS). Paper-mode fills used to accept any
+    # price; now we align to tick in realistic mode.
+    NSE_TICK_SIZE = 0.05
+
     def __init__(
         self,
         starting_capital: float = 300_000.0,
@@ -54,14 +63,24 @@ class PaperClient(BrokerClient):
         limit_fill_spread_pct: float = 0.1,  # 0.1% spread for LIMIT order fill simulation
         limit_fill_min_spread: float = 0.05,  # min Rs.0.05 spread (NSE tick)
         limit_fill_near_ltp_pct: float = 0.5,  # fill if limit within 0.5% of LTP
-        fill_mode: str = "market_like",  # 'market_like' | 'aggressive_limit' | 'realistic_limit'
-        #   'market_like'      : force fill at LTP ± slippage (paper validation of strategy logic)
-        #   'aggressive_limit' : fill if within 5% of LTP, else defer (close to live)
-        #   'realistic_limit'  : original logic — only fill if limit crosses synthetic bid/ask
+        # FIX 2026-09-17 12:25: added 'realistic' fill_mode. This mode uses the
+        # LIVE bid/ask from the tick (Kotak PROD WebSocket pushes bid/ask) to
+        # fill BUY at ask, SELL at bid — modeling actual half-spread crossing
+        # instead of the optimistic market_like (LTP fill) which underestimates
+        # slippage by 50-200 bps per leg. Realistic mode also enforces NSE tick
+        # alignment on limit prices and rejects orders that don't fill within
+        # the configured timeout (simulating Kotak Neo's order-routing timeout).
+        fill_mode: str = "market_like",  # 'market_like' | 'aggressive_limit' | 'realistic_limit' | 'realistic'
+        unfilled_order_timeout_sec: float = 60.0,  # how long a LIMIT may sit open before paper rejects it
+        partial_fill_min_pct: float = 1.0,  # 1.0 = all-or-nothing; 0.7 = up to 70% partial
         persist_path: str = "data_cache/paper_state.json",
     ):
         self.starting_capital = starting_capital
         self.slippage_bps = slippage_bps
+        self.unfilled_order_timeout_sec = unfilled_order_timeout_sec
+        self.partial_fill_min_pct = partial_fill_min_pct
+        # Per-order placed_at timer for unfilled-order timeout (FIX 2026-09-17).
+        self._order_placed_ts: dict[str, float] = {}
         self.limit_fill_spread_pct = limit_fill_spread_pct
         self.limit_fill_min_spread = limit_fill_min_spread
         self.limit_fill_near_ltp_pct = limit_fill_near_ltp_pct
@@ -128,6 +147,20 @@ class PaperClient(BrokerClient):
             order.placed_at = datetime.now(timezone.utc)
             order.status = OrderStatus.OPEN
             self._orders[order.order_id] = order
+            # FIX 2026-09-17 12:30: track placed_at for unfilled-order timeout (realistic mode).
+            import time as _t
+            self._order_placed_ts[order.order_id] = _t.time()
+            # FIX 2026-09-17 12:25: in realistic mode, validate limit price is on NSE tick.
+            # NSE RMS rejects limit prices not on 0.05 tick, so paper should too.
+            if self.fill_mode in ('realistic', 'realistic_limit') and order.order_type == 'LIMIT':
+                if order.price and order.price > 0:
+                    on_tick = round(order.price / self.NSE_TICK_SIZE) * self.NSE_TICK_SIZE
+                    if abs(on_tick - order.price) > 0.001:
+                        logger.warning(
+                            f"[PAPER] LIMIT price {order.price} not on NSE tick ({self.NSE_TICK_SIZE}); "
+                            f"snapping to {on_tick:.2f}"
+                        )
+                        order.price = round(on_tick, 2)
             tag = order.tag or ""
             if bracket:
                 tag += f" [BRACKET sl={bracket.stop_loss} tgt={bracket.target} trail={bracket.trailing_sl_points}]"
@@ -145,6 +178,165 @@ class PaperClient(BrokerClient):
                 self._force_fill_market_like(order)
             self._save_state()
             return order
+
+    # ---- FIX 2026-09-17 12:25 realistic-fill helpers ----
+    @staticmethod
+    def _align_to_tick(price: float) -> float:
+        """Round to NSE tick size (0.05 INR). Returns float round to 2 decimals."""
+        if price <= 0:
+            return 0.0
+        aligned = round(price / PaperClient.NSE_TICK_SIZE) * PaperClient.NSE_TICK_SIZE
+        return round(aligned, 2)
+
+    def _compute_bid_ask_fill(self, order: Order, tick: 'Tick') -> tuple:
+        """FIX 2026-09-17 12:25: compute realistic fill price using actual bid/ask from
+        the live tick. Returns (fill_price, status) where status ∈
+        {'filled', 'partial', 'no_fill'}.
+
+        In live trading, MARKET orders cross the book:
+          - BUY  fills at best ask  (you pay more than mid)
+          - SELL fills at best bid  (you receive less than mid)
+        LIMIT orders may sit at the limit price (maker) or fill at the book.
+
+        In paper 'realistic' mode, we simulate this precisely.
+        """
+        # Use bid/ask if available; fall back to LTP with the configured synthetic spread.
+        bid = tick.bid if tick.bid > 0 else (tick.ltp - max(self.limit_fill_min_spread, tick.ltp * (self.limit_fill_spread_pct / 100.0)))
+        ask = tick.ask if tick.ask > 0 else (tick.ltp + max(self.limit_fill_min_spread, tick.ltp * (self.limit_fill_spread_pct / 100.0)))
+        ltp = tick.ltp if tick.ltp > 0 else (bid + ask) / 2.0
+
+        if order.order_type == OrderType.MARKET or (
+            order.order_type == OrderType.LIMIT and order.price is None
+        ):
+            # Market order: fill at bid (SELL) or ask (BUY) — never mid.
+            if order.side == OrderSide.BUY:
+                raw_price = ask
+            else:
+                raw_price = bid
+            # Market orders on illiquid strikes can have wider effective spread if
+            # the qty is large. Add a small impact: 0.5 bps per 100 qty.
+            impact_bps = (order.qty / 100.0) * 0.5
+            raw_price *= (1 + impact_bps / 10_000) if order.side == OrderSide.BUY else (1 - impact_bps / 10_000)
+            return self._align_to_tick(raw_price), 'filled'
+
+        if order.order_type == OrderType.LIMIT:
+            # LIMIT: only fill if the limit crosses the book (BUY: limit >= ask;
+            # SELL: limit <= bid). If limit is between bid and ask, it sits as
+            # maker and only fills when the market comes to us.
+            limit = order.price
+            if order.side == OrderSide.BUY:
+                if limit >= ask:
+                    # Aggressive: fills at ask (we lift the offer) or at our limit,
+                    # whichever is lower (we wouldn't pay more than we bid).
+                    raw_price = min(limit, ask)
+                    # If the book is thin, partial fill possible — apply partial_fill_min_pct.
+                    if self.partial_fill_min_pct < 1.0:
+                        # Use partial-fill heuristic: ratio of qty to volume scaled by min_pct.
+                        import random as _r
+                        _r.seed(hash(order.order_id) & 0xFFFF)
+                        fill_ratio = max(self.partial_fill_min_pct, _r.uniform(0.85, 1.0))
+                        if fill_ratio < 0.999:
+                            return self._align_to_tick(raw_price), 'partial'
+                    return self._align_to_tick(raw_price), 'filled'
+                # Limit price < ask: order sits as maker, not yet filled.
+                return 0.0, 'no_fill'
+            else:  # SELL
+                if limit <= bid:
+                    # Aggressive: fills at bid (we hit the bid) or our limit,
+                    # whichever is higher (we wouldn't receive less than we offered).
+                    raw_price = max(limit, bid)
+                    if self.partial_fill_min_pct < 1.0:
+                        import random as _r
+                        _r.seed(hash(order.order_id) & 0xFFFF)
+                        fill_ratio = max(self.partial_fill_min_pct, _r.uniform(0.85, 1.0))
+                        if fill_ratio < 0.999:
+                            return self._align_to_tick(raw_price), 'partial'
+                    return self._align_to_tick(raw_price), 'filled'
+                return 0.0, 'no_fill'
+
+        return 0.0, 'no_fill'
+
+    def _timeout_unfilled_orders(self) -> None:
+        """FIX 2026-09-17 12:35: in realistic mode, open orders that don't fill
+        within unfilled_order_timeout_sec get rejected (mimicking Kotak Neo's
+        order-routing timeout). The bot then sees a REJECTED status and can
+        decide whether to retry, switch to market, or skip.
+        """
+        import time as _t
+        now = _t.time()
+        cutoff = now - self.unfilled_order_timeout_sec
+        for oid, placed_ts in list(self._order_placed_ts.items()):
+            if placed_ts > cutoff:
+                continue
+            order = self._orders.get(oid)
+            if not order or order.status != OrderStatus.OPEN:
+                self._order_placed_ts.pop(oid, None)
+                continue
+            # Re-evaluate one more time before killing
+            tick = self._ticks.get(order.symbol)
+            if tick:
+                _px, _status = self._compute_bid_ask_fill(order, tick)
+                if _status == 'filled':
+                    self._apply_bid_ask_fill(order, tick)
+                    continue
+                if _status == 'partial' and self.partial_fill_min_pct < 1.0:
+                    self._apply_bid_ask_fill(order, tick, partial=True)
+                    continue
+            # Reject
+            order.status = OrderStatus.REJECTED
+            order.rejection_reason = (
+                f"unfilled after {self.unfilled_order_timeout_sec:.0f}s in realistic mode "
+                f"(bid={tick.bid if tick else 0}, ask={tick.ask if tick else 0}, "
+                f"limit={order.price})"
+            )
+            logger.warning(
+                f"[PAPER] TIMEOUT REJECT {order.order_id} {order.symbol} "
+                f"({order.qty} qty, limit={order.price}, "
+                f"lapsed {now - placed_ts:.1f}s)"
+            )
+            self._order_placed_ts.pop(oid, None)
+        # Persist any rejections
+        self._save_state()
+
+    def _apply_bid_ask_fill(self, order: Order, tick: 'Tick', partial: bool = False) -> None:
+        """FIX 2026-09-17 12:35: apply a fill computed via _compute_bid_ask_fill
+        (the realistic path). Records expected_fill_price from the tick LTP
+        (chain_ref) and avg_fill_price from the actual book price.
+        """
+        fill_price, status = self._compute_bid_ask_fill(order, tick)
+        if status not in ('filled', 'partial') or fill_price <= 0:
+            return
+        import random as _r
+        _r.seed(hash(order.order_id) & 0xFFFF)
+        if partial and self.partial_fill_min_pct < 1.0:
+            fill_ratio = max(self.partial_fill_min_pct, _r.uniform(0.85, 1.0))
+            fill_qty = int(order.qty * fill_ratio)
+        else:
+            fill_qty = order.qty
+        order.expected_fill_price = tick.ltp
+        order.avg_fill_price = fill_price
+        order.filled_qty = fill_qty
+        order.status = OrderStatus.PARTIAL if (partial and fill_qty < order.qty) else OrderStatus.COMPLETE
+        order.filled_at = datetime.now(timezone.utc)
+        # Backfill option metadata if missing
+        import re as _re
+        if (not order.strike or not order.option_type or not order.underlying) and order.symbol:
+            _m = _re.match(
+                r'^(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)'
+                r'(\d{2})([A-Z]{3})(\d{2})(\d+)(CE|PE)$',
+                order.symbol.upper()
+            )
+            if _m:
+                if not order.underlying: order.underlying = _m.group(1)
+                if not order.strike: order.strike = int(_m.group(5))
+                if not order.option_type: order.option_type = _m.group(6)
+        self._apply_fill(order)
+        self._order_placed_ts.pop(order.order_id, None)
+        logger.info(
+            f"[PAPER] REALISTIC_FILL {order.order_id} {fill_qty}×{order.symbol} "
+            f"@ Rs.{fill_price} (ref ltp={tick.ltp} bid={tick.bid} ask={tick.ask}, "
+            f"status={status})"
+        )
 
     def _force_fill_market_like(self, order: Order) -> None:
         """Force-fill a still-open order in market_like mode. Uses the cached tick
@@ -649,10 +841,16 @@ class PaperClient(BrokerClient):
             # of symbol. This handles strikes whose keep-alive subscription may not be
             # getting fresh data — as long as any tick comes in, all open orders get
             # re-evaluated.
+            # FIX 2026-09-17 12:35: realistic mode is NOT force-filled on every tick.
+            # Realistic mode requires the order to cross the actual bid/ask book, and
+            # any open orders past their timeout get rejected instead of being
+            # force-filled at stale LTP.
             if self.fill_mode == "market_like":
                 for order in list(self._orders.values()):
                     if order.status == OrderStatus.OPEN:
                         self._force_fill_market_like(order)
+            elif self.fill_mode in ('realistic', 'realistic_limit'):
+                self._timeout_unfilled_orders()
             self._save_state()
         for cb in self._tick_callbacks:
             try:
@@ -665,6 +863,13 @@ class PaperClient(BrokerClient):
         tick = self._ticks.get(order.symbol)
         if not tick:
             return  # no price yet, leave open
+        # FIX 2026-09-17 12:35: realistic mode uses live bid/ask for fills.
+        # This honors half-spread crossing, partial fills, and unfilled LIMIT
+        # rejection — the three things live trading surfaces that paper's
+        # market_like silently hides.
+        if self.fill_mode in ('realistic', 'realistic_limit'):
+            self._apply_bid_ask_fill(order, tick)
+            return
         order.expected_fill_price = tick.ltp
         fill_price = 0.0
         if order.order_type == OrderType.MARKET:

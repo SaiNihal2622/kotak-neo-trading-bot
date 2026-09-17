@@ -239,13 +239,18 @@ def build_broker(cfg: dict):
     mode = cfg.get("mode", "paper")
     broker_cfg = cfg.get("broker", {})
     if mode == "paper" or broker_cfg.get("type", "paper") == "paper":
+        # FIX 2026-09-17 12:35: env-var override for fill_mode. Allows forcing
+        # market_like for fast backtests even when the YAML default is realistic.
+        fill_mode = os.environ.get("KOTAK_FILL_MODE_OVERRIDE") or broker_cfg.get("fill_mode", "market_like")
         return PaperClient(
             starting_capital=broker_cfg.get("paper_capital", 300_000.0),
             slippage_bps=cfg.get("backtest", {}).get("slippage_bps", 5.0),
             limit_fill_spread_pct=broker_cfg.get("limit_fill_spread_pct", 0.1),
             limit_fill_min_spread=broker_cfg.get("limit_fill_min_spread", 0.05),
             limit_fill_near_ltp_pct=broker_cfg.get("limit_fill_near_ltp_pct", 0.5),
-            fill_mode=broker_cfg.get("fill_mode", "market_like"),
+            fill_mode=fill_mode,
+            unfilled_order_timeout_sec=broker_cfg.get("unfilled_order_timeout_sec", 60.0),
+            partial_fill_min_pct=broker_cfg.get("partial_fill_min_pct", 0.7),
         )
     # LIVE mode — require explicit confirmation to prevent accidental real-money trading
     if os.environ.get("KOTAK_LIVE_CONFIRMED") != "YES":

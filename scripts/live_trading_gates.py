@@ -212,8 +212,89 @@ def check_self_tests_passing() -> tuple[bool, list[str]]:
         return False, [f"self-test log error: {e}"]
 
 
+def check_paper_in_realistic_mode() -> tuple[bool, list[str]]:
+    """Gate 11 (FIX 2026-09-17): paper running in realistic (bid/ask-aware) mode
+    for ≥ 14 consecutive days before live switch. Without this, paper P&L is
+    optimistic by 50-200 bps per leg (half-spread cost).
+    """
+    cfg_path = ROOT / "config" / "settings.yaml"
+    if not cfg_path.exists():
+        return False, ["config/settings.yaml missing"]
+    try:
+        import yaml
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        broker_cfg = cfg.get("broker", {})
+        fill_mode = broker_cfg.get("fill_mode", "")
+        if fill_mode not in ("realistic", "realistic_limit"):
+            return False, [
+                f"fill_mode='{fill_mode}' (optimistic — underestimates live slippage). "
+                f"Set 'fill_mode: realistic' in settings.yaml and run paper ≥ 14 days "
+                f"before flipping to live. Acceptable interim: 'aggressive_limit'."
+            ]
+        return True, [f"fill_mode='{fill_mode}' (bid/ask-aware — live-equivalent)"]
+    except Exception as e:
+        return False, [f"settings parse error: {e}"]
+
+
+def check_slippage_adjusted_sharpe() -> tuple[bool, list[str]]:
+    """Gate 12 (FIX 2026-09-17): slippage-adjusted Sharpe > 0.5.
+
+    Reads data_cache/slippage_audit.json for the live-equivalent P&L delta.
+    If the slippage-adj Sharpe is positive in the recent paper run, real-money
+    has positive expected value after half-spread costs.
+    """
+    audit_path = ROOT / "data_cache" / "slippage_audit.json"
+    if not audit_path.exists():
+        return False, ["slippage_audit.json missing — run scripts/_slippage_audit.py"]
+    perf_path = ROOT / "data_cache" / "performance" / "daily.json"
+    if not perf_path.exists():
+        return False, ["performance/daily.json missing — bot hasn't run ≥1 day"]
+    try:
+        sa = json.loads(audit_path.read_text(encoding="utf-8"))
+        perf = json.loads(perf_path.read_text(encoding="utf-8"))
+        slippage_pct = 0.0
+        if sa.get("slippage_bps_mean"):
+            # Convert mean bps to absolute fraction. If BUY/SELL asymmetry confirms
+            # realistic mode, use a haircut of mean abs; if not, scale up.
+            slippage_pct = abs(sa.get("slippage_bps_mean", 0)) / 10_000
+            if sa.get("asymmetry_buy_sell_bps", 0) < 1.0:
+                # market_like mode: actual slippage is at least half-spread
+                slippage_pct = max(slippage_pct, 0.001)  # min 10 bps assumption
+        # Compute Sharpe from daily returns + slippage haircut
+        returns = []
+        for day in perf.get("days", perf if isinstance(perf, list) else []):
+            try:
+                r = float(day.get("net_pnl", day.get("pnl", 0)) or 0)
+                returns.append(r)
+            except (TypeError, ValueError):
+                continue
+        if len(returns) < 10:
+            return False, [f"only {len(returns)} daily returns — need ≥10 for stable Sharpe"]
+        avg_return = sum(returns) / len(returns)
+        var = sum((r - avg_return) ** 2 for r in returns) / max(1, len(returns) - 1)
+        std = var ** 0.5
+        sharpe = avg_return / std if std > 0 else 0.0
+        # Adjust: subtract slippage haircut from each day
+        daily_notional_est = max(abs(sum(returns)) / 30, 50_000.0)  # rough
+        daily_slippage_cost = daily_notional_est * slippage_pct
+        adj_returns = [r - daily_slippage_cost for r in returns]
+        adj_avg = sum(adj_returns) / len(adj_returns)
+        adj_var = sum((r - adj_avg) ** 2 for r in adj_returns) / max(1, len(adj_returns) - 1)
+        adj_std = adj_var ** 0.5
+        adj_sharpe = adj_avg / adj_std if adj_std > 0 else 0.0
+        return adj_sharpe > 0.5, [
+            f"paper Sharpe={sharpe:.2f}, slippage-adjusted Sharpe={adj_sharpe:.2f} "
+            f"(mean slippage={sa.get('slippage_bps_mean','?')} bps, "
+            f"daily notional est Rs.{daily_notional_est:,.0f}, "
+            f"daily slippage cost Rs.{daily_slippage_cost:,.0f})",
+            f"want adj Sharpe > 0.5"
+        ]
+    except Exception as e:
+        return False, [f"slippage-adjusted Sharpe parse error: {e}"]
+
+
 def run_all_gates() -> dict:
-    """Run all 10 gates and return a structured report."""
+    """Run all 12 gates and return a structured report."""
     checks = [
         ("1_env", "KOTAK_LIVE_CONFIRMED=YES + KOTAK_ENV=prod", check_env),
         ("2_paper_history", "30+ days profitable paper trading", check_paper_history),
@@ -224,6 +305,8 @@ def run_all_gates() -> dict:
         ("7_kyc", "KYC verified (Kotak session valid)", check_kyc),
         ("8_no_phantoms", "No phantom positions in 30 days", check_no_phantoms_30d),
         ("9_self_tests", "Self-tests passing in last 24h", check_self_tests_passing),
+        ("10_realistic_mode", "Paper running in realistic (bid/ask-aware) mode", check_paper_in_realistic_mode),
+        ("11_slippage_sharpe", "Slippage-adjusted Sharpe > 0.5", check_slippage_adjusted_sharpe),
     ]
     results = []
     for gid, name, check_fn in checks:

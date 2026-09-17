@@ -11,11 +11,26 @@ broker:
   limit_fill_spread_pct: 0.1      # 0.1% spread for LIMIT order fill simulation
   limit_fill_min_spread: 0.05    # min Rs.0.05 spread (NSE tick)
   limit_fill_near_ltp_pct: 0.5    # fill LIMIT if within 0.5% of LTP
-  # Fill mode for paper:
-  #   'market_like'      : force fill at LTP +/- slippage (paper validation of strategy logic) - DEFAULT
-  #   'aggressive_limit' : fill if within 5% of LTP, else defer (close to live)
+  # FIX 2026-09-17 12:25: fill_mode. Added 'realistic' which fills at live
+  # bid/ask (BUY at ask, SELL at bid) instead of LTP. Models half-spread crossing
+  # and exposes unfilled-order timeouts.
+  #
+  # FIX 2026-09-17 12:35: switched default to 'realistic'. We are 1 step
+  # away from live trading (KOTAK_LIVE_CONFIRMED); running paper with the
+  # optimistic market_like model would systematically over-estimate P&L.
+  # Realistic mode is the only valid baseline for slippage-aware gates
+  # (live_trading_gates.gate 10+11). Set KOTAK_FILL_MODE_OVERRIDE=market_like
+  # env var to override for fast backtests / smoke tests.
+  #
+  #   'market_like'      : force fill at LTP +/- slippage (fast backtesting only)
+  #   'aggressive_limit' : fill if within 5% of LTP, else defer
   #   'realistic_limit'  : original logic - only fill if limit crosses synthetic bid/ask
-  fill_mode: market_like
+  #   'realistic'        : bid/ask-aware fills (BUY at ask, SELL at bid); unfilled LIMIT
+  #                        orders reject after unfilled_order_timeout_sec; NSE tick
+  #                        alignment enforced; partial fills when partial_fill_min_pct < 1.0
+  fill_mode: realistic
+  unfilled_order_timeout_sec: 60   # realistic mode only — how long a LIMIT may sit before reject
+  partial_fill_min_pct: 0.7        # realistic mode only — below this fill, the order rejects
 
 # =============================================================
 # MARKET HOURS — NSE standard. All time thresholds live here.

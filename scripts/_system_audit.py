@@ -313,6 +313,47 @@ def main() -> int:
             }
     except Exception as _che:
         audits["chain_health"] = {"status": "warn", "details": f"check failed: {_che}"}
+    # FIX 2026-09-17 12:50: slippage model audit. Surfaces when paper fills are
+    # unrealistically close to LTP (market_like mode underestimating slippage)
+    # and when fills aren't bid/ask-aware. See scripts/_slippage_audit.py.
+    try:
+        sa_path = Path("data_cache") / "slippage_audit.json"
+        if sa_path.exists():
+            sa = json.loads(sa_path.read_text(encoding="utf-8"))
+            n = sa.get("n_fills_today", 0)
+            details = (
+                f"{n} fills | slippage_bps mean={sa.get('slippage_bps_mean','?')} "
+                f"p50={sa.get('slippage_bps_p50','?')} p95={sa.get('slippage_bps_p95','?')} | "
+                f"buy-sell asymmetry={sa.get('asymmetry_buy_sell_bps','?')} bps | "
+                f"live-equivalent P&L delta Rs.{sa.get('live_equivalent_pnl_delta_rs',0):,.0f} | "
+                f"detected: {sa.get('fill_mode_detected','?')}"
+            )
+            if sa.get("issues"):
+                issues_str = "; ".join(i['issue'] for i in sa["issues"])
+                audits["slippage_model"] = {
+                    "status": sa.get("overall", "warn"),
+                    "details": details + f" | issues={issues_str}",
+                }
+            else:
+                audits["slippage_model"] = {"status": "ok", "details": details}
+        else:
+            # Audit hasn't run yet — invoke it to populate the file
+            try:
+                from scripts._slippage_audit import main as _sa_main
+                _sa_main()
+            except Exception as _sa_err:
+                pass
+            if sa_path.exists():
+                sa = json.loads(sa_path.read_text(encoding="utf-8"))
+                audits["slippage_model"] = {
+                    "status": sa.get("overall", "ok"),
+                    "details": f"{sa.get('n_fills_today',0)} fills, asymmetry={sa.get('asymmetry_buy_sell_bps','?')} bps, "
+                               f"detected={sa.get('fill_mode_detected','?')}",
+                }
+            else:
+                audits["slippage_model"] = {"status": "warn", "details": "audit script not found"}
+    except Exception as _sme:
+        audits["slippage_model"] = {"status": "warn", "details": f"audit integration failed: {_sme}"}
     # Overall status
     statuses = [a["status"] for a in audits.values()]
     if "error" in statuses:
