@@ -354,6 +354,47 @@ def main() -> int:
                 audits["slippage_model"] = {"status": "warn", "details": "audit script not found"}
     except Exception as _sme:
         audits["slippage_model"] = {"status": "warn", "details": f"audit integration failed: {_sme}"}
+    # FIX 2026-09-17 13:55: live-go policy tracker (8th subsystem).
+    # Reads data_cache/live_go_status.json (written by scripts/live_go_tracker.py
+    # at 15:30 IST daily). Reports progress toward the user's go-live policy
+    # ("5 consecutive green days + +5% return + all gates passing"). Status
+    # is OK if all conditions met, WARN if missing conditions. INFO if not yet
+    # evaluated today.
+    try:
+        lgs_path = Path("data_cache") / "live_go_status.json"
+        if lgs_path.exists():
+            lgs = json.loads(lgs_path.read_text(encoding="utf-8"))
+            ready = lgs.get("ready_for_live", False)
+            cur = lgs.get("current", {})
+            conds = lgs.get("conditions", {})
+            missing = lgs.get("missing_to_ready", [])
+            details = (
+                f"streak={cur.get('consecutive_green_days','?')} (need {conds.get('consecutive_green_days',{}).get('required','?')}), "
+                f"return={cur.get('cumulative_return_pct',0):+.2f}% (need {conds.get('cumulative_return',{}).get('required_pct','?')}), "
+                f"gates={cur.get('gates_status','?')}"
+            )
+            if ready:
+                audits["live_go_progress"] = {
+                    "status": "ok",
+                    "details": f"READY for live trading (Telegram alert sent). {details}",
+                }
+            elif missing:
+                audits["live_go_progress"] = {
+                    "status": "warn",
+                    "details": f"NOT READY — missing: {', '.join(missing)}. {details}",
+                }
+            else:
+                audits["live_go_progress"] = {
+                    "status": "ok",
+                    "details": f"tracking — {details}",
+                }
+        else:
+            audits["live_go_progress"] = {
+                "status": "warn",
+                "details": "live_go_status.json not yet generated — tracker runs at 15:30 IST",
+            }
+    except Exception as _lgs_err:
+        audits["live_go_progress"] = {"status": "warn", "details": f"audit integration failed: {_lgs_err}"}
     # Overall status
     statuses = [a["status"] for a in audits.values()]
     if "error" in statuses:

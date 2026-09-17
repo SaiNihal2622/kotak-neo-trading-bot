@@ -130,8 +130,39 @@ No chat-spam, full coverage.
    MPIN, and Telegram bot token. It's gitignored but force-pushes
    sometimes leak it. If you see it in a diff, abort.
 4. **NEVER set `KOTAK_LIVE_CONFIRMED=YES` without explicit user
-   authorization** — that's a real-money trade. The user has not given
-   that authorization yet.
+   authorization** — that's a real-money trade. The user has stated
+   (2026-09-17): "we do live after we see profits in paper trades for
+   some days". This means live mode stays OFF until paper shows
+   consistent profitability. The bot stays in paper mode until the
+   go-live policy passes — see "Go-Live Policy" section below.
+
+## Go-Live Policy (FIX 2026-09-17 13:55)
+
+The bot runs in **paper mode only** until ALL of the following hold simultaneously:
+
+1. **5 consecutive paper-trading days with positive net P&L** — proves the
+   edge isn't a one-shot lucky day. Streak resets on any losing day.
+2. **Cumulative paper return > +5%** from the last reset baseline
+   (currently Rs.100,000 → >Rs.105,000). Filters out small wins that don't
+   scale.
+3. **All non-env live-trading gates passing** — already met (10/10 = 100%
+   non-env readiness per `python scripts/live_trading_gates.py`).
+
+The system auto-evaluates these daily at 15:30 IST via
+`scripts/live_go_tracker.py` and sends a Telegram alert when ALL THREE
+conditions are met. The user is then expected to:
+
+1. Verify the policy result is genuine (not a phantom-driven spike)
+2. Set `KOTAK_LIVE_CONFIRMED=YES` and `KOTAK_ENV=prod` env vars
+3. Run `nssm restart KotakBotPaper`
+
+The tracker writes `data_cache/live_go_status.json` with current progress
+(consecutive green days, cumulative return, time-to-meet-criteria) and
+the system audit reads it as the 8th subsystem (`live_go_progress`).
+
+Override: the user can edit `data_cache/live_go_policy.json` to set
+different criteria. Default file is created on first run if missing.
+
 5. **NEVER change `Logs\` path config in code** — the NSSM service
    writes to `Logs\bot_stderr.log` and `Logs\bot_stdout.log` via
    `AppStdout`/`AppStderr` registry keys. Code that writes to

@@ -1878,6 +1878,7 @@ last_fii_dii_ts = 0                 # 1h 24/7: real FII/DII flows from Moneycont
 last_predictive_signals_ts = 0      # 5 min 24/7: 6 statistical predictive signals (momentum, vol regime, trend, RSI, etc)
 last_audit_ts = 0                   # 30 min 24/7: self-audit for 5 recurring issues (FIX 2026-09-09 14:20)
 last_slippage_audit_ts = 0          # 30 min 24/7: slippage audit for the 7th subsystem (FIX 2026-09-17 13:35)
+last_live_go_tracker_ts = 0         # FIX 2026-09-17 13:55: live-go policy check (daily 15:30 IST after EOD)
 
 # --- LLM call thread tracking (for non-blocking async LLM calls) ---
 _LLM_THREAD = None           # type: ignore  # the in-flight Thread object, or None
@@ -2453,6 +2454,7 @@ def watch_loop():
     global last_predictive_signals_ts
     global last_audit_ts
     global last_slippage_audit_ts
+    global last_live_go_tracker_ts
     # FIX 2026-09-04 23:48: missing global declaration for last_overnight_research_ts
     # caused UnboundLocalError on the use at line 2363 (NSE closed check). 6th
     # shadow-import-style bug — different variable each time, same root cause:
@@ -2730,6 +2732,23 @@ def watch_loop():
                         _scheduled_subprocess("scripts/_slippage_audit.py", "slippage-audit", timeout=30)
                 except Exception as _sa_err:
                     log(f"slippage-audit-sched-err: {_sa_err}")
+                # FIX 2026-09-17 13:55: live-go policy tracker. Runs daily at 15:30 IST
+                # (after market close) to evaluate whether the bot should be
+                # considered ready for live trading. Reads data_cache/live_go_policy.json,
+                # writes data_cache/live_go_status.json, and sends a one-time
+                # Telegram alert when all conditions flip to met. The bot stays in
+                # paper mode regardless — user must explicitly set KOTAK_LIVE_CONFIRMED=YES.
+                try:
+                    if datetime.now().timestamp() - last_live_go_tracker_ts > 3600 * 6:  # every 6h (so it definitely fires once after 15:30)
+                        last_live_go_tracker_ts = datetime.now().timestamp()
+                        # Only fire during/after market hours (15:30 IST = 10:00 UTC)
+                        # to avoid stale data evaluation. The check itself is
+                        # idempotent so multiple fires per day is fine.
+                        _now_ist = now_ist()
+                        if _now_ist.hour >= 15 and _now_ist.minute >= 30:
+                            _scheduled_subprocess("scripts/live_go_tracker.py", "live-go-tracker", timeout=30)
+                except Exception as _lgt_err:
+                    log(f"live-go-tracker-sched-err: {_lgt_err}")
                 # FIX 2026-09-08 16:35: GROK BOT DESK — 6-role LLM desk (parallel 2nd opinion).
                 # FIX 2026-09-08 22:35: now runs 24/7, not just market hours.
                 # During NSE hours (09:15-15:30 Mon-Fri): the desk provides a

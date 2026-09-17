@@ -1,0 +1,10 @@
+{
+  "_comment": "FIX 2026-09-17 13:55: go-live policy. The bot stays in paper mode until ALL three conditions are met simultaneously. Edit this file to override defaults.",
+  "min_consecutive_green_days": 5,
+  "min_cumulative_return_pct": 5.0,
+  "require_all_gates_passing": true,
+  "reset_on_any_losing_day": true,
+  "starting_capital_baseline": 100000,
+  "telegram_alert_on_ready": true,
+  "daily_check_time_ist": "15:30"
+}
