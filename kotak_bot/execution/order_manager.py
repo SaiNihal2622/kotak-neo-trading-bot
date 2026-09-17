@@ -354,6 +354,85 @@ class OrderManager:
         self._save_state()
         return trade
 
+    def register_orphan_positions(self, broker_positions: list) -> int:
+        """FIX 2026-09-17 11:50: register broker positions that exist as filled
+        qty but aren't tracked by any ManagedTrade.
+
+        The reconcile loop every 5 min flags these as `broker_only` because
+        order_mgr.open_trades() is empty while broker.get_positions() has
+        rows. Before this fix, the bot's only options were (a) leave them as
+        silent ghosts that the LLM brain can't manage, or (b) auto-force-close
+        them at startup. We now register them as managed trades with a
+        synthetic TradePlan so the LLM brain sees them and can decide whether
+        to hold, scale, or close. Each orphan gets its own trade; multi-leg
+        strategies are inferred later by the brain.
+
+        Returns the number of orphans registered.
+        """
+        from datetime import datetime, timezone
+        from kotak_bot.strategy.base import TradePlan, StrategyName
+
+        # Build the set of symbols already tracked
+        tracked_symbols = set(self._symbol_to_trade.keys())
+
+        registered = 0
+        for pos in broker_positions:
+            sym = getattr(pos, 'symbol', None)
+            if not sym or sym in tracked_symbols:
+                continue
+            qty = int(getattr(pos, 'qty', 0))
+            if qty == 0:
+                continue
+            side = 'BUY' if qty > 0 else 'SELL'
+            leg_qty = abs(qty)
+            underlying = getattr(pos, 'underlying', '') or ''
+            strike = float(getattr(pos, 'strike', 0) or 0)
+            opt_type = getattr(pos, 'option_type', '') or ''
+            avg_price = float(getattr(pos, 'avg_price', 0) or 0)
+            expiry = str(getattr(pos, 'expiry', '') or '')
+            # Build a synthetic Order — fills are already done, this just registers
+            # the trade so the LLM brain sees the position as managed.
+            try:
+                order = Order(
+                    symbol=sym,
+                    side=OrderSide(side),
+                    qty=leg_qty,
+                    filled_qty=leg_qty,
+                    avg_fill_price=avg_price,
+                    order_type=OrderType.MARKET,
+                    product=ProductType.MIS,
+                    status=OrderStatus.COMPLETE,
+                    filled_at=datetime.now(timezone.utc),
+                    placed_at=datetime.now(timezone.utc),
+                    tag='orphan_recovered_at_startup',
+                    exchange=getattr(pos, 'exchange', 'NFO'),
+                    strike=strike,
+                    option_type=opt_type,
+                    expiry=expiry,
+                    underlying=underlying,
+                )
+            except Exception as e:
+                logger.warning(f"[ORPHAN-RECOVER] could not build Order for {sym}: {e}")
+                continue
+            plan = TradePlan(
+                strategy=StrategyName.DIRECTIONAL_DEBIT,
+                underlying=underlying,
+                legs=[{"side": side, "qty": 1, "strike": strike, "opt_type": opt_type,
+                       "order_type": "MARKET", "price": avg_price, "tag": "orphan_recover"}],
+                target=None, stop=None, confidence=0.0,
+                reason=f"orphan_recovered_at_startup (qty={qty}, avg={avg_price})",
+                expiry=expiry, expected_hold_minutes=120,
+            )
+            try:
+                self.register_external_managed_trade(plan, [order])
+                registered += 1
+                logger.info(f"[ORPHAN-RECOVER] registered {sym} qty={qty} as managed trade")
+            except Exception as e:
+                logger.warning(f"[ORPHAN-RECOVER] failed to register {sym}: {e}")
+        if registered:
+            logger.info(f"[ORPHAN-RECOVER] {registered} orphan positions registered as managed trades")
+        return registered
+
     def close_trade(self, trade_id: str, reason: str = "manual") -> ManagedTrade:
         trade = self._trades.get(trade_id)
         if not trade:

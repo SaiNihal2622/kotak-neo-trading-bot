@@ -255,7 +255,11 @@ def main() -> int:
             sources.append({"source": "moneycontrol", "ok": False, "n": 0, "err": str(e)[:80]})
         time.sleep(0.5)
 
-    # 3. Fallback to NSE archives
+    # 3. Fallback to NSE archives — only if MC failed to give ANY rows.
+    # FIX 2026-09-17 11:35: MC sometimes returns 20 rows that are ALL stale
+    # (older than 7d). Previously we trusted MC and stopped here, leaving the
+    # LLM with no data. Now we still try NSE/Groww if MC's row count looks
+    # suspiciously stale (we'll re-check after the freshness filter below).
     if not rows:
         try:
             t_nse = time.time()
@@ -302,6 +306,35 @@ def main() -> int:
     if _stale_count:
         print(f"[fii_dii] dropped {_stale_count} stale rows (older than {_cutoff.isoformat()})")
     rows = _fresh
+
+    # FIX 2026-09-17 11:40: post-freshness fallback. If Moneycontrol gave us
+    # rows but ALL were stale (e.g., it returned a 2-year-old cached page),
+    # we now try Groww as a last resort. Without this the LLM gets no data
+    # and the audit flags fii_dii_freshness=warn indefinitely.
+    if not rows:
+        try:
+            t_gw = time.time()
+            gw_rows = _fetch_groww()
+            if gw_rows:
+                rows = gw_rows
+                sources.append({"source": "groww_post_stale_mc", "ok": True, "n": len(gw_rows), "ms": int((time.time() - t_gw) * 1000)})
+                print(f"[fii_dii] Groww fallback rescued us with {len(gw_rows)} fresh rows")
+                # Re-run freshness filter on Groww rows
+                _fresh = []
+                _stale_count = 0
+                for _r in rows:
+                    _ds = str(_r.get("date", "")).strip()
+                    _parsed = _parse_date_safe(_ds)
+                    if _parsed and _parsed < _cutoff:
+                        _stale_count += 1
+                        continue
+                    _r["date_parsed"] = _parsed.isoformat() if _parsed else None
+                    _fresh.append(_r)
+                if _stale_count:
+                    print(f"[fii_dii] dropped {_stale_count} stale Groww rows")
+                rows = _fresh
+        except Exception as e:
+            sources.append({"source": "groww_post_stale_mc", "ok": False, "n": 0, "err": str(e)[:80]})
 
     # Compute summary stats
     from datetime import date as _date2, timedelta as _td2

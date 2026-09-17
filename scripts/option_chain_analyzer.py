@@ -21,6 +21,7 @@ derived from those prices via Black-Scholes inversion.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import sys
@@ -30,6 +31,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, date, timedelta
 from pathlib import Path
+
+logger = logging.getLogger("option_chain_analyzer")
 
 
 # FIX 2026-09-16 12:35: when this script is run as a subprocess from the
@@ -226,6 +229,28 @@ def _get_kotak_chain(symbol: str, cfg: dict, feed) -> dict:
     time.sleep(2.5)
     spot = feed.get_ltp(symbol)
     spot_source = 'kotak_prod' if spot > 0 else 'unknown'
+    # FIX 2026-09-17 11:30: Kotak's FINNIFTY scrip master returns spot ~25394
+    # while the actual NIFTY FINANCIAL SERVICES index is ~29200 (14% off). The
+    # Kotak chain's strike ladder is internally consistent (25100-25700 strikes
+    # have valid bid/ask) but it's anchored to a 10-year-stale scrip master
+    # range. Always cross-check Kotak's spot against NSE allIndices for the
+    # same underlying — if the divergence exceeds 5%, override with NSE.
+    if spot > 0:
+        try:
+            from scripts.nse_spot import get_spot as _nse_get_spot
+            nse_spot = _nse_get_spot(symbol)
+            if nse_spot and nse_spot > 0:
+                pct_diff = abs(spot - nse_spot) / max(spot, nse_spot) * 100
+                if pct_diff > 5.0:
+                    logger.warning(
+                        f"[{symbol}] Kotak spot {spot:.2f} diverges from NSE {nse_spot:.2f} "
+                        f"by {pct_diff:.1f}% — overriding with NSE (Kotak scrip master "
+                        f"likely stale for this index)"
+                    )
+                    spot = nse_spot
+                    spot_source = 'nse_override_diverged_kotak'
+        except Exception:
+            pass
     if spot <= 0:
         # Try NSE allIndices first — verified Sep 17 2026 that NSE returns
         # FINNIFTY and MIDCPNIFTY directly (Kotak Developer tier doesn't).

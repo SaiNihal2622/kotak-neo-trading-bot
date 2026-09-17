@@ -725,6 +725,25 @@ def run_paper() -> None:
         n_phantoms = sum(1 for p in all_broker_pos if _is_phantom_0dte(p))
         n_expired_filtered = len(all_broker_pos) - len(broker_pos)
 
+        # FIX 2026-09-17 11:55: register orphan broker positions as managed trades.
+        # Before this, positions that existed as filled qty in paper_client but
+        # weren't tracked by any ManagedTrade were flagged as "broker_only" by
+        # the 5-min reconcile. The LLM brain couldn't see them to manage, and
+        # the only path forward was auto-force-close at startup. Now we register
+        # them so the brain sees them as live positions.
+        try:
+            _n_registered = order_mgr.register_orphan_positions(broker_pos)
+            if _n_registered:
+                logger.info(f"STARTUP RECONCILE: registered {_n_registered} orphan positions as managed trades")
+                # refresh the open-trade symbols set so cap check sees the new registrations
+                _open_trade_syms = set()
+                for _tr in order_mgr.open_trades():
+                    for _o in _tr.orders:
+                        if getattr(_o, 'avg_fill_price', 0) > 0 and getattr(_o, 'symbol', None):
+                            _open_trade_syms.add(_o.symbol)
+        except Exception as _orph_err:
+            logger.warning(f"STARTUP RECONCILE: orphan-registration failed: {_orph_err}")
+
         # FIX 2026-09-02 12:25: production-grade phantom-qty audit.
         # The 5625 qty (75 lots) phantom-position incident was caused by the bot
         # multiplying brain's qty (which it sent in shares not lots) by lot_size.
