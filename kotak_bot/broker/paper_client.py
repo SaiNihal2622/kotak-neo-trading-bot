@@ -36,6 +36,13 @@ from .base import (
 # `paper_client.DCACHE = tmp_path` (or use the helper `use_dcache()`) and the
 # fill logic reads from there.
 DCACHE = Path("data_cache")
+# FIX 2026-09-17 13:15: append-only rejection log. The LLM brain reads this
+# in its periodic context so it learns from realistic-mode rejections
+# (TIMEOUT_REJECT, OFF_TICK_REJECT, MARKET_REJECT etc.) and avoids repeating
+# the same patterns. The brain's _periodic_scan reads the most-recent
+# N entries and surfaces them to the LLM context as "realistic-mode feedback".
+# Format: jsonl, one record per rejection.
+REJECTIONS_LOG = DCACHE / "order_rejections.jsonl"
 
 
 class PaperClient(BrokerClient):
@@ -103,6 +110,10 @@ class PaperClient(BrokerClient):
         self._cash = starting_capital
         self._realized_pnl = 0.0
         self._connected = False
+        # FIX 2026-09-17 13:15: in-memory rejection counter for the LLM brain's
+        # recent-rejections view. Cleared on _load_state when state.json is read.
+        # The brain can read these via get_recent_rejections(n).
+        self._recent_rejections: list[dict] = []
 
         # load state if exists
         self._load_state()
@@ -294,6 +305,9 @@ class PaperClient(BrokerClient):
                 f"({order.qty} qty, limit={order.price}, "
                 f"lapsed {now - placed_ts:.1f}s)"
             )
+            # FIX 2026-09-17 13:15: feed the rejection to the persistent log so
+            # the LLM brain sees it next cycle.
+            self._log_rejection(order, order.rejection_reason)
             self._order_placed_ts.pop(oid, None)
         # Persist any rejections
         self._save_state()
@@ -1010,6 +1024,77 @@ class PaperClient(BrokerClient):
                 logger.exception(f"fill callback error: {e}")
 
     # ------- persistence -------
+    def _log_rejection(self, order: 'Order', reason: str) -> None:
+        """FIX 2026-09-17 13:15: append a rejection record to the persistent
+        feedback log. The LLM brain reads this in its periodic context so it
+        sees recent failures and avoids repeating them.
+
+        Format:
+            {"ts": ISO timestamp,
+             "order_id": order_id,
+             "symbol": symbol,
+             "side": BUY|SELL,
+             "qty": qty,
+             "order_type": MARKET|LIMIT,
+             "limit_price": limit_price_or_0,
+             "reason": str,
+             "ltp_at_reject": float,
+             "bid_at_reject": float,
+             "ask_at_reject": float}
+        """
+        import json as _jl
+        tick = self._ticks.get(order.symbol)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "side": order.side.value if hasattr(order.side, "value") else str(order.side),
+            "qty": int(order.qty or 0),
+            "order_type": order.order_type.value if hasattr(order.order_type, "value") else str(order.order_type),
+            "limit_price": float(order.price or 0),
+            "reason": reason,
+            "ltp_at_reject": tick.ltp if tick else 0,
+            "bid_at_reject": tick.bid if tick else 0,
+            "ask_at_reject": tick.ask if tick else 0,
+        }
+        try:
+            REJECTIONS_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with REJECTIONS_LOG.open("a", encoding="utf-8") as f:
+                f.write(_jl.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.debug(f"rejection log write failed: {e}")
+        # Keep last 50 in memory for the brain's recent-rejections view.
+        self._recent_rejections.append(record)
+        if len(self._recent_rejections) > 50:
+            self._recent_rejections = self._recent_rejections[-50:]
+
+    def get_recent_rejections(self, n: int = 10) -> list[dict]:
+        """FIX 2026-09-17 13:15: return the most-recent N rejection records
+        (newest first). Used by the LLM brain's _periodic_scan to surface
+        realistic-mode feedback into the decision context.
+        """
+        # First try in-memory (fast), fall back to file
+        if self._recent_rejections:
+            return list(reversed(self._recent_rejections[-n:]))
+        if not REJECTIONS_LOG.exists():
+            return []
+        try:
+            out: list[dict] = []
+            with REJECTIONS_LOG.open("r", encoding="utf-8") as f:
+                lines = f.readlines()[-n:]
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+            return list(reversed(out))
+        except Exception as e:
+            logger.debug(f"get_recent_rejections failed: {e}")
+            return []
+
     def _save_state(self) -> None:
         # FIX 2026-09-08 14:20: skip-save flag for clean resets. The pre-market
         # reset script (scripts/pre_market_reset_paper_state.py) creates this

@@ -510,6 +510,29 @@ MACRO CALENDAR + POSITION MANAGEMENT:
 - For each trade, the journal automatically records: setup, market context at
   entry, exit reason, P&L. The 23:00 nightly review reads the journal to self-improve.
 
+REALISTIC FILL MODE (FIX 2026-09-17 13:20 — read this carefully):
+The bot now uses bid/ask-aware fills in `realistic` paper mode (mirrors live Kotak Neo):
+  - BUY MARKET fills at `tick.ask`, SELL MARKET fills at `tick.bid` (half-spread crossing).
+    Cost: 5-50 bps per leg depending on liquidity. Liquid weekly = ~5bps,
+    deep-OTM 0DTE = ~50bps.
+  - LIMIT orders only fill when the limit crosses the actual book (BUY: limit >= ask;
+    SELL: limit <= bid). Below/above that, the order sits as maker and TIMES OUT
+    after 60s — it's REJECTED, not auto-filled at stale LTP.
+  - Limit prices must be on NSE tick (0.05 INR). Off-tick prices are snapped or rejected.
+  - Partial fills possible: fills below partial_fill_min_pct (default 0.7) reject.
+  - `recent_rejections` in your context shows the last 10 rejected orders with
+    the rejection reason (TIMEOUT_REJECT, OFF_TICK, etc.). If a LIMIT you proposed
+    was just rejected, EITHER tighten the limit price to cross the book, OR
+    send a MARKET order instead, OR skip the trade.
+  - The bot's P&L is now slippage-adjusted; paper no longer overestimates by 50-200bps.
+  - LIVE TRADING GATES 10 + 11 require this behavior. Gate 11 (slippage-adjusted
+    Sharpe > 0.5) will accumulate over the next 14 days. Your fills feed into it.
+  - When placing LIMIT orders: pre-check `intraday.chains_summary[symbol].ask` vs
+    `intraday.chains_summary[symbol].bid`. If your intended limit doesn't cross,
+    use MARKET or skip. If you see `recent_rejections` showing your last 3 attempts
+    on the same strike timed out, the spread is too wide — use a closer strike or
+    wait for better liquidity.
+
 BACKTEST ENGINE (regime-aware edge — USE IT to size conviction):
 - `backtest` block shows per-strategy P&L/win rate/sample size for the last 30 days
   plus the current VIX regime (low_vix <12, mid 12-16, high 16-22, panic 22+).
@@ -1854,6 +1877,7 @@ last_rss_news_date = None           # one-shot guard
 last_fii_dii_ts = 0                 # 1h 24/7: real FII/DII flows from Moneycontrol (NSE archives fallback)
 last_predictive_signals_ts = 0      # 5 min 24/7: 6 statistical predictive signals (momentum, vol regime, trend, RSI, etc)
 last_audit_ts = 0                   # 30 min 24/7: self-audit for 5 recurring issues (FIX 2026-09-09 14:20)
+last_slippage_audit_ts = 0          # 30 min 24/7: slippage audit for the 7th subsystem (FIX 2026-09-17 13:35)
 
 # --- LLM call thread tracking (for non-blocking async LLM calls) ---
 _LLM_THREAD = None           # type: ignore  # the in-flight Thread object, or None
@@ -2428,6 +2452,7 @@ def watch_loop():
     global last_fii_dii_ts
     global last_predictive_signals_ts
     global last_audit_ts
+    global last_slippage_audit_ts
     # FIX 2026-09-04 23:48: missing global declaration for last_overnight_research_ts
     # caused UnboundLocalError on the use at line 2363 (NSE closed check). 6th
     # shadow-import-style bug — different variable each time, same root cause:
@@ -2593,6 +2618,19 @@ def watch_loop():
                         "trigger": "periodic_15min" if is_market_hours() else "global_research_15min",
                         "nse_status": "OPEN" if is_market_hours() else "CLOSED",
                     }
+                    # FIX 2026-09-17 13:18: feed the LLM brain's recent-rejections
+                    # into the periodic-scan context so it learns from realistic-
+                    # mode failures (TIMEOUT_REJECT, off-tick, partial fills).
+                    # The brain sees the last 10 rejection records and the bot's
+                    # own broker surfaces them on every cycle. Without this the
+                    # LLM has no signal that a LIMIT order just timed out — it
+                    # would keep proposing the same off-market limits.
+                    try:
+                        _recent_rejects = broker.get_recent_rejections(n=10)
+                        if _recent_rejects:
+                            _scan_ctx["recent_rejections"] = _recent_rejects
+                    except Exception as _rj_err:
+                        log(f"recent-rejections: {_rj_err}")
                     try:
                         # Anti-template check runs FIRST — catches the
                         # "60+ identical HOLDs in a row" pattern that the
@@ -2679,6 +2717,19 @@ def watch_loop():
                         _scheduled_subprocess("scripts/_system_audit.py", "sys-audit", timeout=30)
                 except Exception as _audit_err:
                     log(f"sys-audit-sched-err: {_audit_err}")
+                # FIX 2026-09-17 13:35: slippage audit every 30 min during market hours.
+                # Runs scripts/_slippage_audit.py so the dashboard's slippage_model
+                # subsystem shows the latest BUY-SELL asymmetry + live-equivalent
+                # P&L delta. Without this, the audit only updates when _system_audit
+                # is triggered (which also calls slippage_audit, but only every 30
+                # min anyway — so this is more of an explicit guarantee that the
+                # slippage file is fresh).
+                try:
+                    if datetime.now().timestamp() - last_slippage_audit_ts > 1800:
+                        last_slippage_audit_ts = datetime.now().timestamp()
+                        _scheduled_subprocess("scripts/_slippage_audit.py", "slippage-audit", timeout=30)
+                except Exception as _sa_err:
+                    log(f"slippage-audit-sched-err: {_sa_err}")
                 # FIX 2026-09-08 16:35: GROK BOT DESK — 6-role LLM desk (parallel 2nd opinion).
                 # FIX 2026-09-08 22:35: now runs 24/7, not just market hours.
                 # During NSE hours (09:15-15:30 Mon-Fri): the desk provides a
