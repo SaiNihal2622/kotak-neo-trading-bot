@@ -145,6 +145,62 @@ def test_aggregator_uses_realized_delta_for_inline_fills(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Fix: cap budget = paper_realized + |losses|
+# ---------------------------------------------------------------------------
+
+def test_cap_budget_includes_losses(tmp_path, monkeypatch):
+    """The by_day cap must allocate `paper_realized + |sum_of_losses|` to
+    positive days, otherwise net cumulative is less than paper_realized.
+
+    Setup: 3 days, 1 loss (-200) and 2 gains (+1000 each = +2000 raw).
+    Paper state realized = +1800 (= +2000 - 200).
+    Without the fix (budget = paper_realized = 1800):
+      Sep 18: +1000 (full)
+      Sep 17: capped to min(1000, 800) = 800
+      Sep 16: -200 (kept)
+    Net = 1000 + 800 - 200 = 1600 — but paper_realized is +1800.
+
+    With FIX (budget = paper_realized + |losses| = 1800 + 200 = 2000):
+      Sep 18: +1000 (full)
+      Sep 17: min(1000, 1000) = 1000 (full)
+      Sep 16: -200 (kept)
+    Net = 1000 + 1000 - 200 = 1800 ✓ matches paper_realized.
+    """
+    dc = tmp_path / "data_cache"
+    perf = dc / "performance"
+    perf.mkdir(parents=True, exist_ok=True)
+
+    # Paper state: realized_pnl = +1800 (net of +2000 gains - 200 losses)
+    (dc / "paper_state.json").write_text(json.dumps({
+        "cash": 101800.0,
+        "realized_pnl": 1800.0,
+        "positions": {},
+    }), encoding="utf-8")
+
+    # Journal: 3 SELLs with realized_delta matching the daily PnL:
+    #   Sep 16 SELL: -200
+    #   Sep 17 SELL: +1000
+    #   Sep 18 SELL: +1000
+    # Sum = +1800 = paper_realized ✓
+    (dc / "trade_journal.jsonl").write_text(
+        '{"event":"FILL","ts":"2026-09-16T15:00:00","symbol":"NIFTY","side":"SELL","qty":10,"avg_fill_price":80,"realized_delta":-200,"status":"complete"}\n'
+        '{"event":"FILL","ts":"2026-09-17T15:00:00","symbol":"NIFTY","side":"SELL","qty":10,"avg_fill_price":110,"realized_delta":1000,"status":"complete"}\n'
+        '{"event":"FILL","ts":"2026-09-18T15:00:00","symbol":"NIFTY","side":"SELL","qty":10,"avg_fill_price":110,"realized_delta":1000,"status":"complete"}\n',
+        encoding="utf-8",
+    )
+
+    import strategy_performance as sp_mod
+    monkeypatch.setattr(sp_mod, "ROOT", tmp_path)
+    sp_mod.main()
+
+    out = json.loads((perf / "strategy_performance.json").read_text(encoding="utf-8"))
+    bd = out["by_day"]
+    # After fix, sum of by_day should equal paper_realized
+    s = sum((bd[k].get("pnl", 0) or 0) for k in bd.keys())
+    assert abs(s - 1800.0) < 1.0, f"by_day sum={s}, expected ~1800 (=paper_realized)"
+
+
+# ---------------------------------------------------------------------------
 # Fix: dashboard reconciliation panel reads both sources
 # ---------------------------------------------------------------------------
 

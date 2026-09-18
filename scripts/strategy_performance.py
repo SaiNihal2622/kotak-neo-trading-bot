@@ -230,9 +230,19 @@ def main():
         paper_realized = None
     cap_dropped_days: list[str] = []
     if paper_realized is not None and paper_realized > 0:
+        # FIX 2026-09-18 18:10: pre-pass to compute total losses so the cap
+        # budget = paper_realized + losses. paper_realized is NET (gains
+        # minus losses), so to reconstruct by_day we need to allocate
+        # enough gain budget to make net == paper_realized after losses.
+        loss_sum = 0.0
+        for _d in by_day.values():
+            _p = _d.get("pnl", 0) or 0
+            if _p < 0:
+                loss_sum += _p
+        gain_budget = paper_realized - loss_sum  # losses are negative, so this is paper_realized + |losses|
         # Walk newest to oldest, allocating paper_realized to each day
         sorted_days_desc = sorted(by_day.keys(), reverse=True)
-        remaining = paper_realized
+        remaining = gain_budget
         cap_cumulative = 0.0
         for d in sorted_days_desc:
             day_pnl = by_day[d].get("pnl", 0) or 0
