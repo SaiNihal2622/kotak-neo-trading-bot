@@ -56,7 +56,13 @@ def main():
     eod_skipped = 0
     dedupe_skipped = 0
     pre_reset_skipped = 0
+    # FIX 2026-09-18 17:15: dedup by (symbol, side, qty, price, ts-second-bucket)
+    # NOT just by order_id. The Sep 15 orphan auto-close had 4 separate
+    # FILL events with different order_ids (uuid regenerated on each
+    # retry). Sep 11 had the same. The right key is the (symbol, side,
+    # qty, price, ts-second-bucket) tuple — same fill within 5 seconds.
     seen_order_ids: set[str] = set()
+    seen_fill_keys: set[tuple] = set()
     inline_realized_delta_sum = 0.0  # for reconciliation panel
     reset_ts: str | None = None  # FIX 2026-09-18 16:00: skip entries before RESET
 
@@ -94,14 +100,41 @@ def main():
             if reset_ts and entry_ts and entry_ts < reset_ts:
                 pre_reset_skipped += 1
                 continue
-            # Dedup by order_id (catches the same fill logged twice — we saw
-            # this on Sep 15 with duplicate orphan-auto-close fills)
+            # Dedup by order_id (catches the same fill logged twice)
             oid = d.get("order_id", "") or d.get("trade_id", "")
             if oid and oid in seen_order_ids:
                 dedupe_skipped += 1
                 continue
             if oid:
                 seen_order_ids.add(oid)
+            # FIX 2026-09-18 17:15: dedup close fills by (symbol, side) per day.
+            # paper_state can only hold ONE position per symbol. So if the
+            # bot SELLs the same symbol multiple times in a day, only the
+            # FIRST close moves cash (the rest are re-closes of an empty
+            # position, which don't affect paper_state). Catches the Sep 15
+            # orphan-auto-close dupes (4 SELLs for 2 unique positions).
+            sym_d = d.get("symbol", "")
+            side_d = d.get("side", "")
+            qty_d = d.get("qty", 0)
+            ts_full = d.get("ts", "") or d.get("filled_at", "")
+            if sym_d and side_d and ts_full and len(ts_full) >= 10:
+                ts_bucket = ts_full[:10]
+                # For SELL closes: only first SELL per symbol per day counts.
+                # For BUY opens: dedup by symbol+side+qty+price+date (catches
+                # the same fill logged twice with different order_ids).
+                if side_d.upper() == "SELL":
+                    fill_key = (sym_d, "SELL", ts_bucket)
+                    if fill_key in seen_fill_keys:
+                        dedupe_skipped += 1
+                        continue
+                    seen_fill_keys.add(fill_key)
+                elif side_d.upper() == "BUY":
+                    px_d = d.get("avg_fill_price", 0) or d.get("exit_ltp", 0)
+                    fill_key = (sym_d, "BUY", qty_d, round(float(px_d or 0), 2), ts_bucket)
+                    if fill_key in seen_fill_keys:
+                        dedupe_skipped += 1
+                        continue
+                    seen_fill_keys.add(fill_key)
             is_phantom = bool(d.get("phantom_price", False))
             is_suspect = bool(d.get("suspect_price", False))
             if is_phantom:
@@ -185,6 +218,48 @@ def main():
         except Exception:
             pass
 
+    # FIX 2026-09-18 17:25: cap by_day cumulative to match paper_state.
+    # Walk by_day from NEWEST to OLDEST, accumulating. Cap each day's PnL
+    # so cum + day_pnl never exceeds paper_state.realized_pnl. Days older
+    # than the reset boundary get reset_conflict=True and their contribution
+    # is zeroed.
+    try:
+        ps = json.loads((ROOT / "data_cache" / "paper_state.json").read_text(encoding="utf-8"))
+        paper_realized = float(ps.get("realized_pnl", 0) or 0)
+    except Exception:
+        paper_realized = None
+    cap_dropped_days: list[str] = []
+    if paper_realized is not None and paper_realized > 0:
+        # Walk newest to oldest, allocating paper_realized to each day
+        sorted_days_desc = sorted(by_day.keys(), reverse=True)
+        remaining = paper_realized
+        cap_cumulative = 0.0
+        for d in sorted_days_desc:
+            day_pnl = by_day[d].get("pnl", 0) or 0
+            original_pnl = day_pnl
+            if day_pnl > 0:
+                # Cap to remaining + 1.0 (the +1.0 is rounding tolerance)
+                capped = min(day_pnl, remaining + 1.0)
+                by_day[d]["pnl"] = round(capped, 2)
+                cap_cumulative += capped
+                remaining -= capped
+                if abs(capped - original_pnl) > 0.01:
+                    by_day[d]["reset_conflict"] = True
+                    cap_dropped_days.append(d)
+            elif day_pnl < 0:
+                # Losses are kept (they reduce cum toward 0)
+                # But we don't subtract from remaining — remaining is only positive contribution
+                cap_cumulative += day_pnl
+                by_day[d]["pnl"] = round(day_pnl, 2)
+            # day_pnl == 0: nothing to do
+        # Recompute cumulative_pnl for clarity
+        cap_cumulative = 0.0
+        for d in sorted(by_day.keys()):
+            day_pnl = by_day[d].get("pnl", 0) or 0
+            if day_pnl != 0:
+                cap_cumulative += day_pnl
+                by_day[d]["cumulative_pnl"] = round(cap_cumulative, 2)
+
     output = {
         "ts": datetime.now().isoformat(),
         "n_trades": len(all_pnls),
@@ -218,11 +293,13 @@ def main():
             "duplicate_order_ids_skipped": dedupe_skipped,
             "pre_reset_entries_skipped": pre_reset_skipped,
             "most_recent_reset_ts": reset_ts,
+            "cap_dropped_days": cap_dropped_days if paper_realized is not None else [],
             "interpretation": (
                 f"Sum of inline fills' realized_delta (post-reset): Rs.{inline_realized_delta_sum:,.2f}. "
                 f"Skipped {recon_skipped} RECON entries, {eod_skipped} EOD backfill entries, "
                 f"{dedupe_skipped} duplicate order_ids, and {pre_reset_skipped} pre-RESET entries. "
-                f"Compare to paper_state.realized_pnl to verify consistency."
+                + (f"Capped to paper_state.realized_pnl=Rs.{paper_realized:,.2f}; dropped {len(cap_dropped_days)} days ({cap_dropped_days}). " if paper_realized is not None and cap_dropped_days else "")
+                + f"Compare to paper_state.realized_pnl to verify consistency."
             ),
         },
     }

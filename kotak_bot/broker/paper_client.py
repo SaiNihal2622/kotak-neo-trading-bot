@@ -1439,10 +1439,17 @@ class PaperClient(BrokerClient):
                                     "suspect_price": False,
                                 }
                                 _jf.write(json.dumps(_rec, ensure_ascii=False) + "\n")
-                            except Exception:
+                            # FIX 2026-09-18 17:45: log the exception instead of swallowing
+                            # silently. The inner loop used to swallow all errors with
+                            # `except Exception: continue` which meant a single bad
+                            # position would silently skip the journal write, leaving
+                            # paper_state.realized_pnl ahead of the journal. Now we
+                            # log so future failures are visible.
+                            except Exception as _je:
+                                logger.warning(f"[PAPER] settlement journal append failed for {_sym}: {_je}")
                                 continue
                 except Exception as _je:
-                    logger.debug(f"settlement journal append failed: {_je}")
+                    logger.warning(f"[PAPER] settlement journal open failed: {_je}")
         except Exception as _ss_err:
             logger.warning(f"[PAPER] 0DTE EXPIRY: settlement sweep failed: {_ss_err}")
 
