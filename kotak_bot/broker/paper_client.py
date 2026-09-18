@@ -45,6 +45,21 @@ DCACHE = Path("data_cache")
 REJECTIONS_LOG = DCACHE / "order_rejections.jsonl"
 
 
+def use_dcache(path) -> None:
+    """FIX 2026-09-18 14:50: redirect DCACHE / REJECTIONS_LOG to a temp dir.
+    Use this in tests so they don't write to the production data_cache.
+
+    Example:
+        from kotak_bot.broker.paper_client import use_dcache
+        with tempfile.TemporaryDirectory() as tmp:
+            use_dcache(tmp_path)
+            # ... test logic ...
+    """
+    global DCACHE, REJECTIONS_LOG
+    DCACHE = Path(path)
+    REJECTIONS_LOG = DCACHE / "order_rejections.jsonl"
+
+
 class PaperClient(BrokerClient):
     """In-process paper trading simulator.
 

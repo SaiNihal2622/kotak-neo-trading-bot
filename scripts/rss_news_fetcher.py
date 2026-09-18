@@ -36,19 +36,40 @@ META = DCACHE / "news_feed_meta.json"
 
 
 # RSS feeds — Indian financial news sources, no auth required.
-# Some feeds redirect via FeedBurner, some serve direct XML. We try the
-# main URL first and fall back to mirror if needed.
+# FIX 2026-09-18 15:00: each source now has 1-2 URLs; the fetcher tries them
+# in order until one returns content. This fixes the "5/10 sources dead"
+# issue where Moneycontrol/Reuters/BS were returning empty bodies (Cloudflare
+# UA-blocking). Fallbacks are Google News site-restricted searches, which
+# don't get blocked.
 RSS_SOURCES = [
-    ("moneycontrol_markets",  "https://www.moneycontrol.com/rss/markets.xml"),
-    ("moneycontrol_economy",  "https://www.moneycontrol.com/rss/economy.xml"),
-    ("moneycontrol_stocks",   "https://www.moneycontrol.com/rss/stocks.xml"),
-    ("et_markets",            "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
-    ("et_news",               "https://economictimes.indiatimes.com/news/rssfeeds/1715249553.cms"),
-    ("livemint_markets",      "https://www.livemint.com/rss/markets"),
-    ("livemint_news",         "https://www.livemint.com/rss/news"),
-    ("bs_markets",            "https://www.business-standard.com/rss/markets-106.rss"),
-    ("ndtv_profit",           "https://feeds.feedburner.com/ndtvprofit-latest"),
-    ("reuters_india",         "https://feeds.reuters.com/Reuters/IndiaBusinessNews"),
+    ("moneycontrol_markets",  [
+        "https://www.moneycontrol.com/rss/markets.xml",
+        "https://news.google.com/rss/search?q=site:moneycontrol.com+india+markets&hl=en-IN&gl=IN&ceid=IN:en",
+    ]),
+    ("moneycontrol_economy",  [
+        "https://www.moneycontrol.com/rss/economy.xml",
+        "https://news.google.com/rss/search?q=site:moneycontrol.com+india+economy&hl=en-IN&gl=IN&ceid=IN:en",
+    ]),
+    ("moneycontrol_stocks",   [
+        "https://www.moneycontrol.com/rss/stocks.xml",
+        "https://news.google.com/rss/search?q=site:moneycontrol.com+india+stocks&hl=en-IN&gl=IN&ceid=IN:en",
+    ]),
+    ("et_markets",            ["https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"]),
+    ("et_news",               ["https://economictimes.indiatimes.com/news/rssfeeds/1715249553.cms"]),
+    ("livemint_markets",      ["https://www.livemint.com/rss/markets"]),
+    ("livemint_news",         ["https://www.livemint.com/rss/news"]),
+    ("bs_markets",            [
+        "https://www.business-standard.com/rss/markets-106.rss",
+        "https://news.google.com/rss/search?q=site:business-standard.com+india+markets&hl=en-IN&gl=IN&ceid=IN:en",
+    ]),
+    ("ndtv_profit",           ["https://feeds.feedburner.com/ndtvprofit-latest"]),
+    ("reuters_india",         [
+        "https://feeds.reuters.com/Reuters/IndiaBusinessNews",
+        "https://news.google.com/rss/search?q=site:reuters.com+india+business&hl=en-IN&gl=IN&ceid=IN:en",
+    ]),
+    # FIX 2026-09-18 15:00: new sources added for diversity.
+    ("google_news_india",     ["https://news.google.com/rss/search?q=india+stock+market&hl=en-IN&gl=IN&ceid=IN:en"]),
+    ("toi_business",          ["https://timesofindia.indiatimes.com/rssfeeds/1898055.cms"]),
 ]
 
 
@@ -173,11 +194,24 @@ def main() -> int:
     all_entries: list[dict] = []
     source_stats: list[dict] = []
 
-    for name, url in RSS_SOURCES:
+    for name, urls in RSS_SOURCES:
+        # FIX 2026-09-18 15:00: support list of URLs per source. Try each in
+        # order until one returns a non-empty body. This is the fallback
+        # mechanism for sources that get Cloudflare-blocked (Moneycontrol,
+        # Reuters, BS). Each retry has its own timeout.
+        if isinstance(urls, str):
+            urls = [urls]
         t_src = time.time()
-        text = fetch_url(url)
+        text = ""
+        url_used = None
+        for url in urls:
+            text = fetch_url(url)
+            if text:
+                url_used = url
+                break
+            time.sleep(0.2)
         if not text:
-            source_stats.append({"source": name, "ok": False, "n": 0, "ms": int((time.time() - t_src) * 1000)})
+            source_stats.append({"source": name, "ok": False, "n": 0, "ms": int((time.time() - t_src) * 1000), "urls_tried": len(urls)})
             continue
         try:
             p = RSSParser(name)
@@ -186,7 +220,7 @@ def main() -> int:
             for e in p.entries:
                 e["pubdate_iso"] = _parse_pubdate_to_iso(e.get("pubdate", ""))
             all_entries.extend(p.entries)
-            source_stats.append({"source": name, "ok": True, "n": n, "ms": int((time.time() - t_src) * 1000)})
+            source_stats.append({"source": name, "ok": True, "n": n, "ms": int((time.time() - t_src) * 1000), "url": url_used})
         except Exception as ex:
             source_stats.append({"source": name, "ok": False, "n": 0, "ms": int((time.time() - t_src) * 1000), "err": str(ex)[:80]})
         # be polite — 200ms between requests

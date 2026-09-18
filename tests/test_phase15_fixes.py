@@ -2,11 +2,15 @@
 - paper_client chain-as-fallback for fills when no live tick
 - order_manager strike sanity check rejects deep-OTM lottery picks
   AND wrong-underlying picks (e.g., BANKNIFTY strike labeled as NIFTY)
+
+FIX 2026-09-18 14:50: tests use tmp_path + use_dcache() to avoid polluting
+production data_cache/option_chain_*.json.
 """
 import json
 import sys
 import os
 import re
+import shutil
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -18,13 +22,31 @@ ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(ROOT))
 
 
+@pytest.fixture(autouse=True)
+def isolate_dcache(tmp_path):
+    """Redirect paper_client DCACHE to a temp dir for the duration of each test.
+    Each test gets its own chain files written into tmp_path/data_cache/.
+    """
+    from kotak_bot.broker.paper_client import use_dcache
+    test_dc = tmp_path / "data_cache"
+    test_dc.mkdir(exist_ok=True)
+    # Pre-populate with production chains so tests have realistic data
+    for cf in (ROOT / "data_cache").glob("option_chain_*.json"):
+        shutil.copy2(cf, test_dc / cf.name)
+    use_dcache(test_dc)
+    yield test_dc
+    # Reset on teardown
+    use_dcache(ROOT / "data_cache")
+
+
 # ---------------------------------------------------------------------------
 # Fix 1: Chain-as-fallback for fills
 # ---------------------------------------------------------------------------
 
-def _make_chain(underlying: str, spot: float, strikes: dict) -> Path:
-    """Helper: write a temporary option_chain_{underlying}.json file."""
-    dc = ROOT / "data_cache"
+def _make_chain(underlying: str, spot: float, strikes: dict, dc) -> Path:
+    """Helper: write a test option_chain_{underlying}.json into the
+    fixture's tmp data_cache dir. Pass `dc` from the test signature.
+    """
     cf = dc / f"option_chain_{underlying}.json"
     cf.write_text(json.dumps({
         "symbol": underlying,
@@ -47,10 +69,12 @@ def test_chain_fallback_fills_market_order_without_live_tick(tmp_path):
     from kotak_bot.broker.paper_client import PaperClient
     from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType, Tick
 
+    test_dc = tmp_path / "data_cache"
+    test_dc.mkdir(exist_ok=True)
     # Write a chain with NIFTY 23300CE bid=108.20 ask=108.45
     _make_chain("NIFTY", 23308.35, {
         "23300_CE": {"strike": 23300, "opt_type": "CE", "bid": 108.20, "ask": 108.45, "price": 108.30},
-    })
+    }, test_dc)
 
     pc = PaperClient.__new__(PaperClient)
     pc.fill_mode = "realistic"
@@ -71,7 +95,7 @@ def test_chain_fallback_fills_market_order_without_live_tick(tmp_path):
     pc.limit_fill_spread_pct = 0.5
     pc.limit_fill_near_ltp_pct = 0.5
     pc.slippage_bps = 5
-    pc.persist_path = Path("data_cache/_test_chain_fill.json")
+    pc.persist_path = test_dc / "state_chain_fill.json"
 
     order = Order(
         symbol="NIFTY24SEP2623300CE",
@@ -101,9 +125,11 @@ def test_chain_fallback_fills_sell_at_bid(tmp_path):
     from kotak_bot.broker.paper_client import PaperClient
     from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
 
+    test_dc = tmp_path / "data_cache"
+    test_dc.mkdir(exist_ok=True)
     _make_chain("NIFTY", 23308.35, {
         "23300_CE": {"strike": 23300, "opt_type": "CE", "bid": 108.20, "ask": 108.45, "price": 108.30},
-    })
+    }, test_dc)
 
     pc = PaperClient.__new__(PaperClient)
     pc.fill_mode = "realistic"
@@ -124,7 +150,7 @@ def test_chain_fallback_fills_sell_at_bid(tmp_path):
     pc.limit_fill_spread_pct = 0.5
     pc.limit_fill_near_ltp_pct = 0.5
     pc.slippage_bps = 5
-    pc.persist_path = Path("data_cache/_test_chain_sell.json")
+    pc.persist_path = test_dc / "state_chain_sell.json"
 
     order = Order(
         symbol="NIFTY24SEP2623300CE",
@@ -169,7 +195,7 @@ def test_chain_fallback_handles_missing_chain_gracefully(tmp_path):
     pc.limit_fill_spread_pct = 0.5
     pc.limit_fill_near_ltp_pct = 0.5
     pc.slippage_bps = 5
-    pc.persist_path = Path("data_cache/_test_no_chain.json")
+    pc.persist_path = tmp_path / "state_no_chain.json"
 
     order = Order(
         symbol="XYZ24SEP2623300CE",  # unknown underlying → no chain

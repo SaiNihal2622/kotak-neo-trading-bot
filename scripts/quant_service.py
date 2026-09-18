@@ -111,6 +111,55 @@ def _safe_read_json(path, default=None):
         return default if default is not None else {}
 
 
+def _build_chain_availability_hint(data_dir) -> dict:
+    """FIX 2026-09-18 15:10: build the CHAIN_AVAILABILITY hint for the LLM.
+
+    Reads option_chains.json and extracts for each underlying:
+      - spot price
+      - ATM strike
+      - a sample of tradeable strikes (within ±250pt of ATM)
+      - total count of strikes in the chain
+
+    The LLM uses this to pick strikes that have bid/ask data available
+    (otherwise the order can't fill even with the chain fallback).
+    Returns empty dict if the chain file is missing or malformed.
+    """
+    try:
+        import json as _json
+        chain_path = data_dir / "option_chains.json"
+        if not chain_path.exists():
+            return {}
+        chains = _json.loads(chain_path.read_text(encoding="utf-8"))
+        chain_hints = {}
+        for underlying, cdata in (chains.get("chains") or {}).items():
+            try:
+                strikes_list = sorted(
+                    [int(k.split("_")[0]) for k in (cdata.get("strikes") or {}).keys()
+                     if "_" in k and k.split("_")[1] in ("CE", "PE")]
+                )
+            except Exception:
+                continue
+            if not strikes_list:
+                continue
+            spot = float(cdata.get("spot", 0) or 0)
+            atm = round(spot / 50) * 50 if spot else None
+            sane_strikes = [s for s in strikes_list if atm and abs(s - atm) <= 250]
+            chain_hints[underlying] = {
+                "spot": spot,
+                "atm_strike": atm,
+                "tradeable_strikes_sample": sane_strikes[:10] if sane_strikes else strikes_list[:10],
+                "n_strikes": len(strikes_list),
+                "interpretation": (
+                    f"ATM ~ {atm}. Pick strikes from the sample list (within "
+                    f"±250pt of ATM). Strikes outside ±500pt from ATM will be "
+                    f"auto-rejected by the strike sanity check."
+                ),
+            }
+        return chain_hints
+    except Exception:
+        return {}
+
+
 def send_telegram(msg: str) -> None:
     """Best-effort Telegram alert. No Mavis — direct API call."""
     token = ENV.get('TELEGRAM_BOT_TOKEN', '')
@@ -1579,6 +1628,13 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         }
     except Exception as _gt_err:
         log(f"GROUND-TRUTH-ERR: {_gt_err}")
+    # FIX 2026-09-18 15:10: chain availability hint. Tell the LLM which strikes
+    # have live bid/ask in option_chains.json (the chain snapshot). Strikes
+    # NOT in this list will be rejected by the bot's strike sanity check.
+    # Without this hint, the LLM was picking strikes 1000+pt from ATM that
+    # had no chain bid/ask and got rejected. Now the LLM sees a "menu" of
+    # tradeable strikes per underlying and can pick from them.
+    context["CHAIN_AVAILABILITY"] = _build_chain_availability_hint(DATA)
     # FIX 2026-09-18 11:05: state-sync guard. Compute the set of symbols
     # the brain THINKS it has open (from the last ~20 decisions with
     # type=OPEN that have NOT been followed by a matching CLOSE) and compare

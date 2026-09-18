@@ -3,9 +3,14 @@
 - order_manager converts zero-priced LIMITs to MARKET
 - state-sync drift detection in quant_service context
 - phantom-fill exclusion in strategy_performance aggregator
+
+FIX 2026-09-18 14:50: tests use tmp_path + use_dcache() to avoid polluting
+production data_cache/option_chain_*.json.
 """
 import json
 import sys
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -14,11 +19,33 @@ ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(ROOT))
 
 
+@pytest.fixture(autouse=True)
+def isolate_dcache():
+    """Redirect paper_client DCACHE to a temp dir with a copy of the
+    production chain files. This prevents tests from writing to production
+    data_cache/option_chain_*.json and accidentally polluting the live
+    bot's chain state.
+    """
+    from kotak_bot.broker.paper_client import use_dcache
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        # Copy chain files into tmp for realistic test data
+        for cf in (ROOT / "data_cache").glob("option_chain_*.json"):
+            shutil.copy2(cf, tmp_path / cf.name)
+        oc = ROOT / "data_cache" / "option_chains.json"
+        if oc.exists():
+            shutil.copy2(oc, tmp_path / "option_chains.json")
+        use_dcache(tmp_path)
+        yield tmp_path
+        # Reset to production on teardown
+        use_dcache(ROOT / "data_cache")
+
+
 # ---------------------------------------------------------------------------
 # Fix 1: Early-reject LIMIT @ price=0 in paper_client.place_order
 # ---------------------------------------------------------------------------
 
-def test_paper_client_rejects_limit_at_price_zero():
+def test_paper_client_rejects_limit_at_price_zero(tmp_path):
     """A LIMIT order with price=0 must be rejected at placement, not 60s later."""
     from kotak_bot.broker.paper_client import PaperClient
     from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType
@@ -43,7 +70,7 @@ def test_paper_client_rejects_limit_at_price_zero():
     pc.limit_fill_spread_pct = 0.5
     pc.limit_fill_near_ltp_pct = 0.5
     pc.slippage_bps = 5
-    pc.persist_path = Path("data_cache/_test_paper.json")
+    pc.persist_path = tmp_path / "state.json"
     from datetime import datetime, timezone
     pc._last_save = datetime.now(timezone.utc)
     import os
@@ -67,7 +94,7 @@ def test_paper_client_rejects_limit_at_price_zero():
     assert "price=0" in (order.rejection_reason or "").lower() or "must be > 0" in (order.rejection_reason or "").lower()
 
 
-def test_paper_client_rejects_limit_at_price_none():
+def test_paper_client_rejects_limit_at_price_none(tmp_path):
     """A LIMIT order with price=None must also be rejected."""
     from kotak_bot.broker.paper_client import PaperClient
     from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType, OrderStatus
@@ -92,7 +119,7 @@ def test_paper_client_rejects_limit_at_price_none():
     pc.limit_fill_spread_pct = 0.5
     pc.limit_fill_near_ltp_pct = 0.5
     pc.slippage_bps = 5
-    pc.persist_path = Path("data_cache/_test_paper2.json")
+    pc.persist_path = tmp_path / "state.json"
     from datetime import datetime, timezone
     pc._last_save = datetime.now(timezone.utc)
 
@@ -112,7 +139,7 @@ def test_paper_client_rejects_limit_at_price_none():
     assert order.status == OrderStatus.REJECTED
 
 
-def test_market_order_still_works():
+def test_market_order_still_works(tmp_path):
     """A MARKET order should not be affected by the price=0 fix.
     With the chain-as-fallback fix (Phase 15), the chain has bid/ask for
     ATM strikes, so MARKET orders fill from chain when no live tick is
@@ -142,7 +169,7 @@ def test_market_order_still_works():
     pc.limit_fill_spread_pct = 0.5
     pc.limit_fill_near_ltp_pct = 0.5
     pc.slippage_bps = 5
-    pc.persist_path = Path("data_cache/_test_paper3.json")
+    pc.persist_path = tmp_path / "state.json"
     from datetime import datetime, timezone
     pc._last_save = datetime.now(timezone.utc)
 
