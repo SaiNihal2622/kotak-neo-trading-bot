@@ -47,6 +47,16 @@ def _make_pc(tmpdir: str) -> PaperClient:
     return pc
 
 
+def _make_mgr(pc, tmpdir: str) -> "OrderManager":
+    """Build an OrderManager with strike sanity DISABLED. The tests use
+    synthetic historical strikes (e.g., NIFTY 25000 from when spot was
+    higher) that the production strike sanity check would reject.
+    """
+    import os
+    os.environ["KOTAK_DISABLE_STRIKE_SANITY"] = "1"
+    return OrderManager(pc, persist_path=str(Path(tmpdir) / "trades.json"))
+
+
 # ----------------------------------------------------------------------------
 # Test 1: Single-leg BUY — P&L = (exit - entry) * qty
 # ----------------------------------------------------------------------------
@@ -56,7 +66,7 @@ def test_single_leg_buy_profit():
         pc = _make_pc(tmp)
         sym = "NIFTY10AUG2625000CE"
         _inject_tick(pc, sym, 100.0)
-        mgr = OrderManager(pc, persist_path=str(Path(tmp) / "trades.json"))
+        mgr = _make_mgr(pc, tmp)
         plan = TradePlan(
             strategy=StrategyName.DIRECTIONAL_DEBIT, underlying="NIFTY",
             legs=[{"side": "BUY", "strike": 25000, "opt_type": "CE", "qty": 1,
@@ -75,7 +85,7 @@ def test_single_leg_buy_profit():
         assert trade.realized_pnl == 750.0, \
             f"expected 750.0, got {trade.realized_pnl}"
         # Reload from disk and verify persistence
-        mgr2 = OrderManager(pc, persist_path=str(Path(tmp) / "trades.json"))
+        mgr2 = _make_mgr(pc, tmp)
         loaded = list(mgr2._trades.values())[0]
         assert loaded.realized_pnl == 750.0, \
             f"persisted realized_pnl wrong: {loaded.realized_pnl}"
@@ -91,7 +101,7 @@ def test_single_leg_buy_loss():
         pc = _make_pc(tmp)
         sym = "NIFTY10AUG2625000CE"
         _inject_tick(pc, sym, 100.0)
-        mgr = OrderManager(pc, persist_path=str(Path(tmp) / "trades.json"))
+        mgr = _make_mgr(pc, tmp)
         plan = TradePlan(
             strategy=StrategyName.DIRECTIONAL_DEBIT, underlying="NIFTY",
             legs=[{"side": "BUY", "strike": 25000, "opt_type": "CE", "qty": 1,
@@ -130,7 +140,7 @@ def test_iron_condor_4leg():
             ("NIFTY10AUG2624300PE", 40.0),
         ]:
             _inject_tick(pc, sym, ltp)
-        mgr = OrderManager(pc, persist_path=str(Path(tmp) / "trades.json"))
+        mgr = _make_mgr(pc, tmp)
         plan = TradePlan(
             strategy=StrategyName.IRON_CONDOR, underlying="NIFTY",
             legs=[
@@ -174,7 +184,7 @@ def test_sell_leg_profit():
         pc = _make_pc(tmp)
         sym = "BANKNIFTY10AUG2657600CE"
         _inject_tick(pc, sym, 200.0)
-        mgr = OrderManager(pc, persist_path=str(Path(tmp) / "trades.json"))
+        mgr = _make_mgr(pc, tmp)
         plan = TradePlan(
             strategy=StrategyName.DIRECTIONAL_DEBIT, underlying="BANKNIFTY",
             legs=[{"side": "SELL", "strike": 57600, "opt_type": "CE", "qty": 1,
@@ -203,7 +213,7 @@ def test_backfill_repairs_zero_pnl():
         pc = _make_pc(tmp)
         sym = "NIFTY10AUG2625000CE"
         _inject_tick(pc, sym, 100.0)
-        mgr = OrderManager(pc, persist_path=str(Path(tmp) / "trades.json"))
+        mgr = _make_mgr(pc, tmp)
         plan = TradePlan(
             strategy=StrategyName.DIRECTIONAL_DEBIT, underlying="NIFTY",
             legs=[{"side": "BUY", "strike": 25000, "opt_type": "CE", "qty": 1,
@@ -222,7 +232,7 @@ def test_backfill_repairs_zero_pnl():
         mgr._save_state()
 
         # Reload — realized_pnl should be 0.0 (still broken from disk)
-        mgr2 = OrderManager(pc, persist_path=str(Path(tmp) / "trades.json"))
+        mgr2 = _make_mgr(pc, tmp)
         loaded = list(mgr2._trades.values())[0]
         assert loaded.realized_pnl == 0.0, "expected pre-fix 0.0"
 
@@ -250,7 +260,7 @@ def test_square_off_all_multi_trade():
         pc = _make_pc(tmp)
         _inject_tick(pc, "NIFTY10AUG2625000CE", 100.0)
         _inject_tick(pc, "BANKNIFTY10AUG2657600CE", 200.0)
-        mgr = OrderManager(pc, persist_path=str(Path(tmp) / "trades.json"))
+        mgr = _make_mgr(pc, tmp)
 
         plan_a = TradePlan(
             strategy=StrategyName.DIRECTIONAL_DEBIT, underlying="NIFTY",
@@ -276,7 +286,7 @@ def test_square_off_all_multi_trade():
         assert n_closed == 2
 
         # Reload from disk
-        mgr2 = OrderManager(pc, persist_path=str(Path(tmp) / "trades.json"))
+        mgr2 = _make_mgr(pc, tmp)
         loaded = {t.trade_id: t for t in mgr2._trades.values()}
         # Trade A: 75 * (110-100) = +750
         # Trade B: 30 * (180-200) = -600

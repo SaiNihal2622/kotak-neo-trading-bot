@@ -305,6 +305,41 @@ class OrderManager:
                 )
                 order.order_type = OrderType.MARKET
                 order.price = None
+            # FIX 2026-09-18 13:55: strike-vs-spot sanity check. The LLM has
+            # confused BANKNIFTY strikes with NIFTY labels (e.g., 56200CE
+            # for NIFTY when NIFTY spot is 23,328) and picked deep-OTM
+            # lottery strikes (e.g., 24500CE for NIFTY = 1172pt OTM).
+            # Reject legs where strike is way outside the underlying's
+            # spot range — the LLM gets the rejection feedback on the
+            # next cycle and self-corrects. Can be disabled by:
+            #   - tests:    self._strike_sanity_enabled = False
+            #   - env var:  KOTAK_DISABLE_STRIKE_SANITY=1 (e.g. for backtests
+            #               using historical strikes from past months)
+            _sanity_enabled = getattr(self, "_strike_sanity_enabled", True)
+            if _sanity_enabled and not os.environ.get("KOTAK_DISABLE_STRIKE_SANITY"):
+                _strike_ok, _strike_reason = self._check_strike_against_spot(
+                    underlying=plan.underlying,
+                    strike=strike,
+                    opt_type=opt_type,
+                )
+                if not _strike_ok:
+                    logger.warning(
+                        f"[ORDERS] STRIKE SANITY REJECT {symbol}: {_strike_reason} "
+                        f"(plan underlying={plan.underlying}). LLM will see this "
+                        f"in the next brain cycle."
+                    )
+                    # Mark the order rejected without placing it (the broker
+                    # never sees this — saving a wasted tick).
+                    order.status = OrderStatus.REJECTED
+                    order.rejection_reason = f"strike_sanity: {_strike_reason}"
+                    trade.orders.append(order)
+                    # Feed rejection to the persistent log so the LLM brain sees it.
+                    try:
+                        if hasattr(self.broker, '_log_rejection'):
+                            self.broker._log_rejection(order, order.rejection_reason)
+                    except Exception:
+                        pass
+                    continue
             # Pre-trade margin check (NeoClient only)
             bracket = None
             if use_bracket_for_this and leg["side"] == "BUY":
@@ -603,6 +638,73 @@ class OrderManager:
         if not tid:
             return None
         return self._trades.get(tid)
+
+    # FIX 2026-09-18 13:55: per-underlying sane strike distance. BANKNIFTY
+    # has 50pt strike step and ~56k spot, so ±1500pt catches a wide band of
+    # strikes; NIFTY has 50pt step and ~23k spot, so ±500pt. SENSEX is
+    # ~74k with 100pt step, so ±2000pt. Wider than this is almost certainly
+    # an LLM confused-underlying pick or a deep-OTM lottery.
+    _SANE_STRIKE_DISTANCE_PT = {
+        "NIFTY": 500,
+        "BANKNIFTY": 1500,
+        "FINNIFTY": 500,
+        "MIDCPNIFTY": 500,
+        "SENSEX": 2000,
+    }
+
+    def _spot_for_underlying(self, underlying: str) -> float:
+        """Read spot for an underlying from option_chains.json. Returns 0 if
+        chain is missing or stale."""
+        try:
+            import json as _j
+            cf = Path("data_cache") / f"option_chain_{underlying}.json"
+            if not cf.exists():
+                return 0.0
+            d = _j.loads(cf.read_text(encoding="utf-8"))
+            return float(d.get("spot", 0) or 0)
+        except Exception:
+            return 0.0
+
+    def _check_strike_against_spot(
+        self, underlying: str, strike: float, opt_type: str
+    ) -> tuple:
+        """FIX 2026-09-18 13:55: reject legs where strike is way outside
+        the underlying's spot. Returns (ok, reason). reason='' when ok.
+
+        Two cases caught:
+          1. Strike > sane_distance from underlying's spot (LLM picked a
+             lottery ticket or wrong underlying's strike).
+          2. Strike is in another underlying's sane range (catches the
+             case where LLM labeled BANKNIFTY's 56200CE as NIFTY).
+        """
+        try:
+            strike_f = float(strike)
+        except (TypeError, ValueError):
+            return False, f"strike={strike} is not numeric"
+        # Our underlying's sane range
+        spot = self._spot_for_underlying(underlying)
+        if spot <= 0:
+            # No spot data — don't reject (we can't be sure).
+            return True, ""
+        sane_pt = self._SANE_STRIKE_DISTANCE_PT.get(underlying, 500)
+        dist = abs(strike_f - spot)
+        if dist > sane_pt:
+            # Check if the strike is in another underlying's sane range
+            for other_u, other_sane in self._SANE_STRIKE_DISTANCE_PT.items():
+                if other_u == underlying:
+                    continue
+                other_spot = self._spot_for_underlying(other_u)
+                if other_spot > 0 and abs(strike_f - other_spot) <= other_sane:
+                    return False, (
+                        f"strike {strike_f} is {dist:.0f}pt from {underlying} spot "
+                        f"({spot:.0f}) — looks like a {other_u} strike "
+                        f"({other_u} spot={other_spot:.0f}). Confused underlying?"
+                    )
+            return False, (
+                f"strike {strike_f} is {dist:.0f}pt from {underlying} spot "
+                f"({spot:.0f}) — max sane is {sane_pt}pt. Deep OTM lottery?"
+            )
+        return True, ""
 
     def _format_symbol(self, underlying: str, expiry: str, strike: float, opt_type: str) -> str:
         if not expiry:

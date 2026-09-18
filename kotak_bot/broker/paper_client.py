@@ -317,6 +317,23 @@ class PaperClient(BrokerClient):
                 continue
             # Re-evaluate one more time before killing
             tick = self._ticks.get(order.symbol)
+            # FIX 2026-09-18 13:55: chain fallback for timeout re-eval too.
+            # If no live tick, try the chain snapshot before giving up.
+            if not tick or (tick.ltp <= 0 and tick.bid <= 0 and tick.ask <= 0):
+                cbid, cask, cltp, cfound = self._chain_bid_ask_for_symbol(order.symbol)
+                if cfound and cbid > 0 and cask > 0:
+                    if not tick:
+                        tick = Tick(
+                            symbol=order.symbol,
+                            ltp=cltp if cltp > 0 else (cbid + cask) / 2.0,
+                            bid=cbid,
+                            ask=cask,
+                        )
+                    else:
+                        tick.bid = cbid
+                        tick.ask = cask
+                        if tick.ltp <= 0:
+                            tick.ltp = cltp if cltp > 0 else (cbid + cask) / 2.0
             if tick:
                 _px, _status = self._compute_bid_ask_fill(order, tick)
                 if _status == 'filled':
@@ -905,10 +922,84 @@ class PaperClient(BrokerClient):
                 logger.exception(f"tick callback error: {e}")
 
     # ------- internals -------
+    def _chain_bid_ask_for_symbol(self, symbol: str) -> tuple:
+        """FIX 2026-09-18 13:50: look up bid/ask for an option symbol from
+        option_chains.json (the snapshot KotakProdFeed refreshes every 5 min).
+
+        Returns (bid, ask, ltp, found) where 'found' is True if the chain had
+        a non-zero bid or ask. Returns (0, 0, 0, False) if the chain is
+        missing the symbol (e.g., strike too far OTM for the snapshot).
+
+        Used as a fallback when the live tick stream doesn't have the strike.
+        Without this, even sensible strikes (within ±200pt of ATM) would
+        timeout-reject because the WebSocket feed only delivers a subset of
+        strikes in real-time.
+        """
+        import json as _j
+        import re as _re
+        # Parse the option symbol: NIFTY24SEP2624500CE → (NIFTY, 24500, CE)
+        m = _re.match(
+            r'^(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX)'
+            r'(\d{2})([A-Z]{3})(\d{2})(\d+)(CE|PE)$',
+            symbol.upper()
+        )
+        if not m:
+            return 0.0, 0.0, 0.0, False
+        underlying = m.group(1)
+        strike = int(m.group(5))
+        opt_type = m.group(6)
+        # Read the chain for this underlying (filename is option_chain_{UNDER}.json)
+        cf = DCACHE / f"option_chain_{underlying}.json"
+        if not cf.exists():
+            return 0.0, 0.0, 0.0, False
+        try:
+            cd = _j.loads(cf.read_text(encoding="utf-8"))
+        except Exception:
+            return 0.0, 0.0, 0.0, False
+        key = f"{strike}_{opt_type}"
+        rec = cd.get("strikes", {}).get(key)
+        if not rec:
+            return 0.0, 0.0, 0.0, False
+        bid = float(rec.get("bid", 0) or 0)
+        ask = float(rec.get("ask", 0) or 0)
+        ltp = float(rec.get("price", 0) or rec.get("ltp", 0) or 0)
+        if bid > 0 or ask > 0 or ltp > 0:
+            return bid, ask, ltp, True
+        return 0.0, 0.0, 0.0, False
+
     def _try_fill(self, order: Order) -> None:
         tick = self._ticks.get(order.symbol)
-        if not tick:
-            return  # no price yet, leave open
+        # FIX 2026-09-18 13:50: chain-as-fallback for realistic mode. If the
+        # live tick stream doesn't have this symbol (WebSocket only delivers
+        # a subset of strikes), use option_chains.json bid/ask instead. This
+        # was the main blocker for the 23/36 OPEN decisions today that had
+        # valid strikes (within 200pt of ATM) but couldn't fill because no
+        # live tick was being delivered.
+        if not tick or (tick.ltp <= 0 and tick.bid <= 0 and tick.ask <= 0):
+            cbid, cask, cltp, cfound = self._chain_bid_ask_for_symbol(order.symbol)
+            if cfound and cbid > 0 and cask > 0:
+                if not tick:
+                    # Build a synthetic tick from the chain snapshot.
+                    tick = Tick(
+                        symbol=order.symbol,
+                        ltp=cltp if cltp > 0 else (cbid + cask) / 2.0,
+                        bid=cbid,
+                        ask=cask,
+                    )
+                else:
+                    # Live tick exists but bid/ask are zero — patch from chain.
+                    tick.bid = cbid
+                    tick.ask = cask
+                    if tick.ltp <= 0:
+                        tick.ltp = cltp if cltp > 0 else (cbid + cask) / 2.0
+                logger.debug(
+                    f"[PAPER] FILL using chain snapshot for {order.symbol}: "
+                    f"bid={cbid} ask={cask} ltp={tick.ltp}"
+                )
+            else:
+                # No chain data either — strike too far OTM or chain stale.
+                if not tick:
+                    return  # leave open; 60s timeout will reject
         # FIX 2026-09-17 12:35: realistic mode uses live bid/ask for fills.
         # This honors half-spread crossing, partial fills, and unfilled LIMIT
         # rejection — the three things live trading surfaces that paper's

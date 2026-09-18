@@ -100,6 +100,7 @@ class TestOrderManagerAnyImport(unittest.TestCase):
             broker = PaperClient(starting_capital=100_000, persist_path=str(tmp))
             broker.connect()
             om = OrderManager(broker=broker, persist_path=str(tmp))
+            om._strike_sanity_enabled = False  # FIX 2026-09-18: tests use historical strikes
             self.assertIsNotNone(om)
         finally:
             if tmp.exists():
@@ -227,6 +228,7 @@ class TestOrderManagerPersistsCloseOrders(unittest.TestCase):
             broker.inject_tick(Tick(symbol="X", ltp=100.0, exchange="NFO"))
 
             om = OrderManager(broker=broker, persist_path=str(tmp))
+            om._strike_sanity_enabled = False  # FIX 2026-09-18: tests use historical strikes
             plan = TradePlan(
                 strategy=StrategyName.DIRECTIONAL_DEBIT,
                 underlying="NIFTY",

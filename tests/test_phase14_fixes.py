@@ -113,7 +113,12 @@ def test_paper_client_rejects_limit_at_price_none():
 
 
 def test_market_order_still_works():
-    """A MARKET order should not be affected by the price=0 fix."""
+    """A MARKET order should not be affected by the price=0 fix.
+    With the chain-as-fallback fix (Phase 15), the chain has bid/ask for
+    ATM strikes, so MARKET orders fill from chain when no live tick is
+    available. The important thing here is that the order is NOT rejected
+    for missing price (only LIMIT @ price=0 should be rejected for that).
+    """
     from kotak_bot.broker.paper_client import PaperClient
     from kotak_bot.broker.base import Order, OrderSide, OrderType, ProductType, OrderStatus
 
@@ -141,8 +146,10 @@ def test_market_order_still_works():
     from datetime import datetime, timezone
     pc._last_save = datetime.now(timezone.utc)
 
+    # Use a strike that ISN'T in the production chain so we can verify
+    # that without chain data, MARKET order sits OPEN (not rejected).
     order = Order(
-        symbol="NIFTY17SEP2623200CE",
+        symbol="XYZ24SEP2623200CE",  # unknown underlying → no chain → no fill
         side=OrderSide.BUY,
         qty=75,
         order_type=OrderType.MARKET,
@@ -150,12 +157,12 @@ def test_market_order_still_works():
         price=None,
         strike=23200,
         option_type="CE",
-        expiry="2026-09-17",
-        underlying="NIFTY",
+        expiry="2026-09-24",
+        underlying="XYZ",
     )
     pc.place_order(order)
-    # MARKET order with no tick available → stays OPEN (waiting for tick).
-    # The important thing is it's NOT rejected for missing price.
+    # No chain for XYZ → no tick → MARKET order sits OPEN (waiting for tick).
+    # Important: NOT rejected for missing price (that's only for LIMIT @ price=0).
     assert order.status == OrderStatus.OPEN
 
 
