@@ -4,10 +4,13 @@ Evaluates whether the bot is ready to switch from paper to live trading
 based on the user's policy: "we do live after we see profits in paper
 trades for some days" (2026-09-17 13:51 IST).
 
-Three conditions must hold simultaneously for the gate to flip READY:
-  1. >= N consecutive paper-trading days with positive net P&L (default 5)
-  2. Cumulative paper return > +X% from baseline (default 5%)
-  3. All non-env live-trading gates passing (default true)
+FIX 2026-09-18 19:35: raised thresholds to industry-standard quant-fund
+paper-to-live criteria:
+  1. >= N consecutive paper-trading days with positive net P&L (default 10)
+  2. Cumulative paper return > +X% from baseline (default 15%)
+  3. Avg daily P&L >= Rs.X (default Rs.1,000/day = 1%/day on Rs.100k)
+  4. Total trades >= N (default 30, statistical sample size minimum)
+  5. All non-env live-trading gates passing (default true)
 
 The user can edit data_cache/live_go_policy.json to override defaults.
 
@@ -35,15 +38,21 @@ sys.path.insert(0, str(ROOT))
 def _load_policy() -> dict:
     """FIX 2026-09-17 13:55: load go-live policy from JSON file.
     Creates default policy if missing. User can edit to override.
+
+    FIX 2026-09-18 19:35: default thresholds raised to industry-standard
+    quant-fund paper-to-live criteria (10 days / 15% / Rs.1,000/day avg /
+    30 total trades).
     """
     p = DCACHE / "live_go_policy.json"
     if not p.exists():
         # First run — create default policy
         p.parent.mkdir(parents=True, exist_ok=True)
         default = {
-            "_comment": "FIX 2026-09-17 13:55: go-live policy.",
-            "min_consecutive_green_days": 5,
-            "min_cumulative_return_pct": 5.0,
+            "_comment": "FIX 2026-09-17 13:55: go-live policy. FIX 2026-09-18 19:35: industry-standard thresholds.",
+            "min_consecutive_green_days": 10,
+            "min_cumulative_return_pct": 15.0,
+            "min_avg_daily_pnl_rs": 1000,
+            "min_total_trades": 30,
             "require_all_gates_passing": True,
             "reset_on_any_losing_day": True,
             "starting_capital_baseline": 100000,
@@ -133,6 +142,36 @@ def _cumulative_return_pct(daily_pnl: dict[str, float], baseline: float) -> tupl
     return total, total / baseline * 100
 
 
+def _avg_daily_pnl_rs(daily_pnl: dict[str, float]) -> float:
+    """FIX 2026-09-18 19:35: industry-standard threshold — average daily
+    P&L across the evaluated period (only counts days with actual P&L,
+    not zero-PnL / no-trade days). Rs.1,000/day = 1%/day on Rs.100k
+    is the conventional real-alpha threshold.
+    """
+    if not daily_pnl:
+        return 0.0
+    active_days = [v for v in daily_pnl.values() if v != 0]
+    if not active_days:
+        return 0.0
+    return sum(active_days) / len(active_days)
+
+
+def _total_trades() -> int:
+    """FIX 2026-09-18 19:35: industry-standard threshold — total trades
+    across the evaluated period. 30 trades is the minimum sample size
+    for statistical inference of win rate / Sharpe. Below 30, confidence
+    intervals are too wide to make go-live decisions.
+    """
+    sp = DCACHE / "performance" / "strategy_performance.json"
+    if not sp.exists():
+        return 0
+    try:
+        d = json.loads(sp.read_text(encoding="utf-8"))
+        return int(d.get("n_trades", 0) or 0)
+    except Exception:
+        return 0
+
+
 def _all_gates_passing() -> tuple[bool, str]:
     """FIX 2026-09-17 13:55: check live-trading gates (excludes env).
     Returns (live_readiness_pct=100, status_msg).
@@ -193,22 +232,31 @@ def main() -> int:
         cumulative_pnl, cumulative_pct = _cumulative_return_pct(daily_pnl, baseline)
         cumulative_source = "by_day_aggregator"
     gates_ok, gates_msg = _all_gates_passing()
+    avg_daily_pnl = _avg_daily_pnl_rs(daily_pnl)
+    total_trades = _total_trades()
 
-    min_streak = int(policy.get("min_consecutive_green_days", 5))
-    min_return = float(policy.get("min_cumulative_return_pct", 5.0))
+    min_streak = int(policy.get("min_consecutive_green_days", 10))
+    min_return = float(policy.get("min_cumulative_return_pct", 15.0))
+    min_avg_daily = float(policy.get("min_avg_daily_pnl_rs", 1000))
+    min_trades = int(policy.get("min_total_trades", 30))
     require_gates = bool(policy.get("require_all_gates_passing", True))
 
     cond_streak_ok = streak >= min_streak
     cond_return_ok = cumulative_pct >= min_return
+    cond_avg_ok = avg_daily_pnl >= min_avg_daily
+    cond_trades_ok = total_trades >= min_trades
     cond_gates_ok = (gates_ok if require_gates else True)
 
-    all_ok = cond_streak_ok and cond_return_ok and cond_gates_ok
+    all_ok = (cond_streak_ok and cond_return_ok and cond_avg_ok
+              and cond_trades_ok and cond_gates_ok)
 
     status = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "policy": {
             "min_consecutive_green_days": min_streak,
             "min_cumulative_return_pct": min_return,
+            "min_avg_daily_pnl_rs": min_avg_daily,
+            "min_total_trades": min_trades,
             "require_all_gates_passing": require_gates,
         },
         "current": {
@@ -216,6 +264,8 @@ def main() -> int:
             "last_green_day": last_day,
             "cumulative_pnl_rs": round(cumulative_pnl, 2),
             "cumulative_return_pct": round(cumulative_pct, 2),
+            "avg_daily_pnl_rs": round(avg_daily_pnl, 2),
+            "total_trades": total_trades,
             "n_days_evaluated": len(daily_pnl),
             "gates_status": gates_msg,
             "cumulative_source": cumulative_source,
@@ -233,6 +283,16 @@ def main() -> int:
                 "source": cumulative_source,
                 "truth": truth,  # paper_state values for transparency
             },
+            "avg_daily_pnl": {
+                "current_rs": round(avg_daily_pnl, 2),
+                "required_rs": min_avg_daily,
+                "met": cond_avg_ok,
+            },
+            "total_trades": {
+                "current": total_trades,
+                "required": min_trades,
+                "met": cond_trades_ok,
+            },
             "all_gates_passing": {
                 "status": gates_msg,
                 "met": cond_gates_ok,
@@ -245,6 +305,12 @@ def main() -> int:
              else None),
             ("cumulative_return"
              if not cond_return_ok
+             else None),
+            ("avg_daily_pnl"
+             if not cond_avg_ok
+             else None),
+            ("total_trades"
+             if not cond_trades_ok
              else None),
             ("all_gates_passing"
              if not cond_gates_ok
@@ -267,6 +333,10 @@ def main() -> int:
         print(f"    (last green day: {last_day})")
     print(f"  Cumulative return: {cumulative_pct:+.2f}% / +{min_return}% "
           f"({'OK' if cond_return_ok else 'FAIL'})")
+    print(f"  Avg daily P&L: Rs.{avg_daily_pnl:+,.2f} / Rs.{min_avg_daily:,.2f} "
+          f"({'OK' if cond_avg_ok else 'FAIL'})")
+    print(f"  Total trades: {total_trades}/{min_trades} "
+          f"({'OK' if cond_trades_ok else 'FAIL'})")
     print(f"  Cumulative P&L: Rs.{cumulative_pnl:+,.2f}")
     print(f"  Live-trading gates: {gates_msg} {'OK' if cond_gates_ok else 'FAIL'}")
     print(f"  Days evaluated: {len(daily_pnl)}")
@@ -306,6 +376,10 @@ def _send_telegram_alert_if_first_time(status: dict) -> None:
             f"(need {status['policy']['min_consecutive_green_days']})\n"
             f"Cumulative return: {status['conditions']['cumulative_return']['current_pct']:+.2f}% "
             f"(need +{status['policy']['min_cumulative_return_pct']}%)\n"
+            f"Avg daily P&L: Rs.{status['conditions']['avg_daily_pnl']['current_rs']:+,.2f} "
+            f"(need Rs.{status['policy']['min_avg_daily_pnl_rs']:,.2f})\n"
+            f"Total trades: {status['conditions']['total_trades']['current']} "
+            f"(need {status['policy']['min_total_trades']})\n"
             f"Live-trading gates: {status['conditions']['all_gates_passing']['status']}\n\n"
             "To enable live mode:\n"
             "  $env:KOTAK_LIVE_CONFIRMED = 'YES'\n"

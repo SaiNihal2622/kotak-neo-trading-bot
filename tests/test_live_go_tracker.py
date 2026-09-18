@@ -86,8 +86,10 @@ def test_load_policy_creates_default_when_missing():
         try:
             _lgt.DCACHE = Path(tmp)
             policy = _lgt._load_policy()
-            assert policy["min_consecutive_green_days"] == 5
-            assert policy["min_cumulative_return_pct"] == 5.0
+            assert policy["min_consecutive_green_days"] == 10
+            assert policy["min_cumulative_return_pct"] == 15.0
+            assert policy["min_avg_daily_pnl_rs"] == 1000
+            assert policy["min_total_trades"] == 30
             # File should have been written
             assert (Path(tmp) / "live_go_policy.json").exists()
         finally:
@@ -144,12 +146,14 @@ def test_main_writes_status_json():
 
 
 def test_all_conditions_must_hold():
-    """FIX 2026-09-17: ready_for_live is TRUE only if ALL three conditions
-    are met. If even one fails, the gate is NOT READY.
+    """FIX 2026-09-17: ready_for_live is TRUE only if ALL conditions are
+    met. If even one fails, the gate is NOT READY.
     """
     # Use a mock to control each condition individually
-    with patch("scripts.live_go_tracker._consecutive_green_days", return_value=(5, "2026-09-16")), \
-         patch("scripts.live_go_tracker._cumulative_return_pct", return_value=(10000.0, 10.0)), \
+    with patch("scripts.live_go_tracker._consecutive_green_days", return_value=(10, "2026-09-16")), \
+         patch("scripts.live_go_tracker._cumulative_return_pct", return_value=(15000.0, 15.0)), \
+         patch("scripts.live_go_tracker._avg_daily_pnl_rs", return_value=1500.0), \
+         patch("scripts.live_go_tracker._total_trades", return_value=35), \
          patch("scripts.live_go_tracker._all_gates_passing", return_value=(True, "100%")):
         import scripts.live_go_tracker as _lgt
         with tempfile.TemporaryDirectory() as tmp:
@@ -161,9 +165,11 @@ def test_all_conditions_must_hold():
                 assert status["ready_for_live"] is True
             finally:
                 _lgt.DCACHE = orig_dcache
-    # Now break one condition
+    # Now break one condition (streak too short)
     with patch("scripts.live_go_tracker._consecutive_green_days", return_value=(3, "2026-09-16")), \
-         patch("scripts.live_go_tracker._cumulative_return_pct", return_value=(10000.0, 10.0)), \
+         patch("scripts.live_go_tracker._cumulative_return_pct", return_value=(15000.0, 15.0)), \
+         patch("scripts.live_go_tracker._avg_daily_pnl_rs", return_value=1500.0), \
+         patch("scripts.live_go_tracker._total_trades", return_value=35), \
          patch("scripts.live_go_tracker._all_gates_passing", return_value=(True, "100%")):
         import scripts.live_go_tracker as _lgt
         with tempfile.TemporaryDirectory() as tmp:
@@ -176,3 +182,63 @@ def test_all_conditions_must_hold():
                 assert "consecutive_green_days" in status["missing_to_ready"]
             finally:
                 _lgt.DCACHE = orig_dcache
+
+
+def test_avg_daily_pnl_excludes_zero_days():
+    """FIX 2026-09-18 19:35: avg daily P&L excludes zero-PnL days (no-trade
+    days should not lower the average).
+    """
+    from scripts.live_go_tracker import _avg_daily_pnl_rs
+    daily_pnl = {
+        "2026-09-15": 2000.0,
+        "2026-09-16": 0.0,    # zero (no trade)
+        "2026-09-17": 3000.0,
+        "2026-09-18": 0.0,    # zero (no trade)
+    }
+    avg = _avg_daily_pnl_rs(daily_pnl)
+    # Active days: [2000, 3000] → avg = 2500 (NOT 1250, which would include zeros)
+    assert avg == 2500.0
+
+
+def test_avg_daily_pnl_handles_all_zero():
+    """FIX 2026-09-18 19:35: when no active (non-zero) days, avg = 0."""
+    from scripts.live_go_tracker import _avg_daily_pnl_rs
+    assert _avg_daily_pnl_rs({}) == 0.0
+    assert _avg_daily_pnl_rs({"2026-09-15": 0.0}) == 0.0
+
+
+def test_industry_standard_defaults():
+    """FIX 2026-09-18 19:35: default policy thresholds are industry-standard
+    (10 days / 15% / Rs.1,000/day avg / 30 trades).
+    """
+    from scripts.live_go_tracker import _load_policy
+    # Read the production policy file (which has been updated)
+    prod_policy = ROOT / "data_cache" / "live_go_policy.json"
+    if prod_policy.exists():
+        policy = json.loads(prod_policy.read_text(encoding="utf-8"))
+    else:
+        policy = _load_policy()
+    assert policy.get("min_consecutive_green_days") == 10
+    assert policy.get("min_cumulative_return_pct") == 15.0
+    assert policy.get("min_avg_daily_pnl_rs") == 1000
+    assert policy.get("min_total_trades") == 30
+
+
+def test_total_trades_reads_strategy_perf():
+    """FIX 2026-09-18 19:35: total_trades helper reads n_trades from
+    strategy_performance.json (the aggregator's authoritative count).
+    """
+    from scripts.live_go_tracker import _total_trades
+    with tempfile.TemporaryDirectory() as tmp:
+        import scripts.live_go_tracker as _lgt
+        orig_dcache = _lgt.DCACHE
+        try:
+            _lgt.DCACHE = Path(tmp)
+            perf_dir = Path(tmp) / "performance"
+            perf_dir.mkdir(parents=True, exist_ok=True)
+            (perf_dir / "strategy_performance.json").write_text(
+                json.dumps({"n_trades": 42}), encoding="utf-8"
+            )
+            assert _total_trades() == 42
+        finally:
+            _lgt.DCACHE = orig_dcache

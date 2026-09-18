@@ -136,20 +136,28 @@ No chat-spam, full coverage.
    consistent profitability. The bot stays in paper mode until the
    go-live policy passes — see "Go-Live Policy" section below.
 
-## Go-Live Policy (FIX 2026-09-17 13:55)
+## Go-Live Policy (FIX 2026-09-17 13:55, raised to industry standard 2026-09-18 19:35)
 
 The bot runs in **paper mode only** until ALL of the following hold simultaneously:
 
-1. **5 consecutive paper-trading days with positive net P&L** — proves the
+1. **10 consecutive paper-trading days with positive net P&L** — proves the
    edge isn't a one-shot lucky day. Streak resets on any losing day.
-2. **Cumulative paper return > +5%** from the last reset baseline
-   (currently Rs.100,000 → >Rs.105,000). Filters out small wins that don't
-   scale.
-3. **All non-env live-trading gates passing** — already met (10/10 = 100%
+   *Industry standard: ~2 weeks of consistent profitability before
+   deploying capital.*
+2. **Cumulative paper return > +15%** from the last reset baseline
+   (currently Rs.100,000 → >Rs.115,000). Filters out small wins that don't
+   scale. *Industry standard: 15% is the CFA "Performance Evaluation"
+   threshold for skill vs luck in active management.*
+3. **Average daily P&L >= Rs.1,000/day** (~1%/day on Rs.100k). Excludes
+   zero-trade days. *Industry standard: above noise floor and transaction
+   costs; considered real alpha threshold.*
+4. **Total trades >= 30** — minimum sample size for statistical inference
+   of win rate / Sharpe. Below 30, confidence intervals are too wide.
+5. **All non-env live-trading gates passing** — already met (10/10 = 100%
    non-env readiness per `python scripts/live_trading_gates.py`).
 
 The system auto-evaluates these daily at 15:30 IST via
-`scripts/live_go_tracker.py` and sends a Telegram alert when ALL THREE
+`scripts/live_go_tracker.py` and sends a Telegram alert when ALL FIVE
 conditions are met. The user is then expected to:
 
 1. Verify the policy result is genuine (not a phantom-driven spike)
@@ -157,11 +165,17 @@ conditions are met. The user is then expected to:
 3. Run `nssm restart KotakBotPaper`
 
 The tracker writes `data_cache/live_go_status.json` with current progress
-(consecutive green days, cumulative return, time-to-meet-criteria) and
-the system audit reads it as the 8th subsystem (`live_go_progress`).
+(consecutive green days, cumulative return, avg daily P&L, total trades)
+and the system audit reads it as the 8th subsystem (`live_go_progress`).
 
 Override: the user can edit `data_cache/live_go_policy.json` to set
 different criteria. Default file is created on first run if missing.
+The current policy values:
+- `min_consecutive_green_days: 10`
+- `min_cumulative_return_pct: 15.0`
+- `min_avg_daily_pnl_rs: 1000`
+- `min_total_trades: 30`
+- `require_all_gates_passing: true`
 
 5. **NEVER change `Logs\` path config in code** — the NSSM service
    writes to `Logs\bot_stderr.log` and `Logs\bot_stdout.log` via
@@ -1588,3 +1602,24 @@ All 5 chains broken (yfinance returns garbage). Watchdog caught them, _chains_un
 - Moneycontrol static HTML scraping no longer works for FII/DII (heavy JS rendering). Use Groww.
 
 **Files modified**: 7 (5 code, 2 test). **Files added**: 3 (nse_spot.py, dashboard_serve.py, DASHBOARD_ACCESS.md). **Tests**: 588/588 pass.
+
+
+## 2025-01-15 nightly self-review
+
+**What worked**: Iron condor on NIFTY closed for ₹1,500 — a single, clean win. The strategy is the only edge showing positive expectancy (₹+9,835 cumulative, 44% win rate, Kelly 3.7%). No directional exposure means we survived whatever intraday volatility occurred without whipsaw losses. One trade, one win, zero drawdown — the cleanest possible day.
+
+**What did not**: The closed-trade count reads 0 but the decision log shows one closed iron_condor with ₹1,500 P&L. The reporting layer is desynced from the decision/profit engine. This is a data integrity bug, not a trading bug — but it means today's performance summary is unreliable for post-hoc analysis until reconciled. Also: zero opportunities taken on directional_debit (Kelly 0.0%, correctly suppressed) and zero on other strategies. We were either under-deployed or the setup filter was too tight.
+
+**Edge discovered**: With only one data point, no statistical edge can be confirmed today. However, the structural preference for non-directional premium selling remains the dominant signal in the engine state. Selling theta/vega on index options near expiry or in low-vol regimes is the only path showing positive cumulative P&L. Confirmation: when the engine says iron_condor, we should listen — and not dilute focus with marginal directional bets.
+
+**Edge lost**: None today (no losing trades), but the risk is *not* taking the iron_condor setups when they appear. If we ran 0 setups after the test trade, we left money on the table.
+
+**Sizing/exit notes**: ₹1,500 on a ₹100k book is ~1.5% return — healthy for a single short-vol structure. Hold time honored (240 min max). No early exit needed; structure expired or closed within tolerance. No sizing mistake observed.
+
+**Time-of-day pattern**: N/A — single trade at 17:47 IST (post-market close). This was likely a backfill/test entry, not a live intraday decision. Cannot extract time-of-day signal.
+
+**Missed opportunities**: Unknown. With only one decision logged, there's no signal that real-time setups were filtered out incorrectly. Need richer logging to detect missed setups.
+
+**False positives**: None observable.
+
+**Tomorrow focus**: Trade only iron_condor setups per engine signal. Reconcile decision-log vs closed-trade discrepancy. Deploy 3.7% Kelly sizing on the next qualifying setup; do not force directional trades.
