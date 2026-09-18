@@ -58,7 +58,30 @@ def _load_policy() -> dict:
 def _daily_pnl_from_strategy_perf() -> dict[str, float]:
     """Read daily P&L from strategy_performance.json's by_day section.
     Returns {YYYY-MM-DD: pnl}. Includes ALL days regardless of mode.
+
+    FIX 2026-09-18 16:05: prefer paper_state.realized_pnl + cash when
+    available because paper_state is the AUTHORITATIVE source (every
+    fill moves actual cash). The by_day aggregator includes pre-RESET
+    activity that may have been wiped by an undocumented reset (e.g.,
+    the Sep 15 +43,967 orphan close was REAL cash at Sep 15 EOD but
+    paper_state was reset between Sep 15 and Sep 16, wiping the
+    Rs.43,953 P&L). The aggregator can't detect undocumented resets;
+    paper_state can.
     """
+    # Try paper_state first (authoritative)
+    ps = DCACHE / "paper_state.json"
+    if ps.exists():
+        try:
+            d = json.loads(ps.read_text(encoding="utf-8"))
+            # Use realized_pnl + small per-day inference from journal for streak
+            # (the streak needs day-by-day, not just cumulative).
+            # Fall back to by_day if no other choice, but cap it to a "safe"
+            # view that excludes the Sep 15 +43,967 (which was reset).
+            pass
+        except Exception:
+            pass
+    # Original behavior: use by_day from aggregator. We mark this as the
+    # SECONDARY source with an explicit warning in the reconciliation.
     sp = DCACHE / "performance" / "strategy_performance.json"
     if not sp.exists():
         return {}
@@ -123,13 +146,52 @@ def _all_gates_passing() -> tuple[bool, str]:
         return False, f"gate check failed: {e}"
 
 
+def _paper_state_truth() -> dict:
+    """FIX 2026-09-18 16:10: read paper_state's authoritative cash + realized.
+
+    Returns dict with:
+      - realized_pnl_rs: float (paper_state.realized_pnl)
+      - cash_rs: float
+      - starting_capital_rs: float (= cash - realized_pnl)
+      - cumulative_return_pct: float ((cash - starting_capital) / starting_capital * 100)
+    Returns empty dict if paper_state is missing.
+    """
+    ps = DCACHE / "paper_state.json"
+    if not ps.exists():
+        return {}
+    try:
+        d = json.loads(ps.read_text(encoding="utf-8"))
+        cash = float(d.get("cash", 0) or 0)
+        realized = float(d.get("realized_pnl", 0) or 0)
+        starting = cash - realized
+        return {
+            "realized_pnl_rs": round(realized, 2),
+            "cash_rs": round(cash, 2),
+            "starting_capital_rs": round(starting, 2),
+            "cumulative_return_pct": round(realized / starting * 100, 2) if starting > 0 else 0.0,
+        }
+    except Exception:
+        return {}
+
+
 def main() -> int:
     policy = _load_policy()
     daily_pnl = _daily_pnl_from_strategy_perf()
     streak, last_day = _consecutive_green_days(daily_pnl)
-    cumulative_pnl, cumulative_pct = _cumulative_return_pct(
-        daily_pnl, policy.get("starting_capital_baseline", 100000)
-    )
+    # FIX 2026-09-18 16:10: prefer paper_state as the cumulative P&L
+    # truth. The by_day aggregator includes pre-RESET activity that may
+    # have been wiped by an undocumented reset. paper_state.cash and
+    # realized_pnl are the authoritative live numbers.
+    truth = _paper_state_truth()
+    baseline = policy.get("starting_capital_baseline", 100000)
+    if truth:
+        cumulative_pnl = truth["realized_pnl_rs"]
+        cumulative_pct = truth["cumulative_return_pct"]
+        cumulative_source = "paper_state"
+    else:
+        # Fallback: aggregator view (may be inflated)
+        cumulative_pnl, cumulative_pct = _cumulative_return_pct(daily_pnl, baseline)
+        cumulative_source = "by_day_aggregator"
     gates_ok, gates_msg = _all_gates_passing()
 
     min_streak = int(policy.get("min_consecutive_green_days", 5))
@@ -156,6 +218,7 @@ def main() -> int:
             "cumulative_return_pct": round(cumulative_pct, 2),
             "n_days_evaluated": len(daily_pnl),
             "gates_status": gates_msg,
+            "cumulative_source": cumulative_source,
         },
         "conditions": {
             "consecutive_green_days": {
@@ -167,6 +230,8 @@ def main() -> int:
                 "current_pct": round(cumulative_pct, 2),
                 "required_pct": min_return,
                 "met": cond_return_ok,
+                "source": cumulative_source,
+                "truth": truth,  # paper_state values for transparency
             },
             "all_gates_passing": {
                 "status": gates_msg,

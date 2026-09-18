@@ -1,0 +1,44 @@
+{
+  "ts": "2026-09-18T11:00:44+00:00",
+  "policy": {
+    "min_consecutive_green_days": 5,
+    "min_cumulative_return_pct": 5.0,
+    "require_all_gates_passing": true
+  },
+  "current": {
+    "consecutive_green_days": 5,
+    "last_green_day": "2026-09-18",
+    "cumulative_pnl_rs": 9994.5,
+    "cumulative_return_pct": 9.99,
+    "n_days_evaluated": 8,
+    "gates_status": "live-readiness 90.0%",
+    "cumulative_source": "paper_state"
+  },
+  "conditions": {
+    "consecutive_green_days": {
+      "current": 5,
+      "required": 5,
+      "met": true
+    },
+    "cumulative_return": {
+      "current_pct": 9.99,
+      "required_pct": 5.0,
+      "met": true,
+      "source": "paper_state",
+      "truth": {
+        "realized_pnl_rs": 9994.5,
+        "cash_rs": 109994.5,
+        "starting_capital_rs": 100000.0,
+        "cumulative_return_pct": 9.99
+      }
+    },
+    "all_gates_passing": {
+      "status": "live-readiness 90.0%",
+      "met": false
+    }
+  },
+  "ready_for_live": false,
+  "missing_to_ready": [
+    "all_gates_passing"
+  ]
+}

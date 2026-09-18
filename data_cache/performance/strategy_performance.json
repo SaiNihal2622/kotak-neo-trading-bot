@@ -1,47 +1,39 @@
 {
-  "ts": "2026-09-18T10:57:35.322645",
-  "n_trades": 80,
-  "total_pnl": 57381.0,
-  "sharpe_30d": 2.69,
+  "ts": "2026-09-18T16:23:35.881433",
+  "n_trades": 61,
+  "total_pnl": 94732.5,
+  "sharpe_30d": 3.71,
   "by_strategy": {
     "unknown": {
-      "trades": 80,
-      "wins": 7,
-      "losses": 12,
-      "total_pnl": 57381.0,
-      "max_win": 32832.75,
-      "max_loss": -1812.75,
+      "trades": 61,
+      "wins": 12,
+      "losses": 11,
+      "total_pnl": 94732.5,
+      "max_win": 32901.75,
+      "max_loss": -11251.5,
       "by_underlying": {
-        "NIFTY": {
-          "trades": 65,
-          "pnl": 42043.5
-        },
         "UNK": {
           "trades": 1,
           "pnl": 0.0
         },
+        "NIFTY": {
+          "trades": 49,
+          "pnl": 90601.5
+        },
         "SENSEX": {
-          "trades": 6,
-          "pnl": -45.0
+          "trades": 4,
+          "pnl": 0.0
         },
         "BANKNIFTY": {
-          "trades": 8,
-          "pnl": 15382.5
+          "trades": 7,
+          "pnl": 4131.0
         }
       },
-      "win_rate": 0.0875,
-      "avg_pnl": 717.26
+      "win_rate": 0.1967,
+      "avg_pnl": 1552.99
     }
   },
   "by_underlying": {
-    "NIFTY": {
-      "trades": 65,
-      "wins": 6,
-      "losses": 10,
-      "total_pnl": 42043.5,
-      "win_rate": 0.0923,
-      "avg_pnl": 646.82
-    },
     "UNK": {
       "trades": 1,
       "wins": 0,
@@ -50,61 +42,78 @@
       "win_rate": 0.0,
       "avg_pnl": 0.0
     },
+    "NIFTY": {
+      "trades": 49,
+      "wins": 11,
+      "losses": 10,
+      "total_pnl": 90601.5,
+      "win_rate": 0.2245,
+      "avg_pnl": 1849.01
+    },
     "SENSEX": {
-      "trades": 6,
+      "trades": 4,
       "wins": 0,
-      "losses": 2,
-      "total_pnl": -45.0,
+      "losses": 0,
+      "total_pnl": 0.0,
       "win_rate": 0.0,
-      "avg_pnl": -7.5
+      "avg_pnl": 0.0
     },
     "BANKNIFTY": {
-      "trades": 8,
+      "trades": 7,
       "wins": 1,
-      "losses": 0,
-      "total_pnl": 15382.5,
-      "win_rate": 0.125,
-      "avg_pnl": 1922.81
+      "losses": 1,
+      "total_pnl": 4131.0,
+      "win_rate": 0.1429,
+      "avg_pnl": 590.14
     }
   },
   "by_day": {
-    "2026-09-07": {
-      "trades": 1,
-      "pnl": -1702.5
-    },
     "2026-09-08": {
-      "trades": 2,
-      "pnl": -159.0
+      "trades": 9,
+      "pnl": -477.0
     },
     "2026-09-09": {
-      "trades": 2,
+      "trades": 8,
       "pnl": -24.0
     },
     "2026-09-10": {
-      "trades": 2,
-      "pnl": -45.0
+      "trades": 4,
+      "pnl": 0.0
     },
     "2026-09-11": {
-      "trades": 1,
-      "pnl": -13.5
+      "trades": 8,
+      "pnl": 3025.5
     },
     "2026-09-15": {
-      "trades": 2,
-      "pnl": 43967.25
+      "trades": 8,
+      "pnl": 88003.5
     },
     "2026-09-16": {
-      "trades": 2,
+      "trades": 6,
       "pnl": 351.0
     },
     "2026-09-17": {
-      "trades": 7,
-      "pnl": 15006.75
+      "trades": 17,
+      "pnl": 3778.5
+    },
+    "2026-09-18": {
+      "trades": 1,
+      "pnl": 75.0
     }
   },
   "phantom": {
-    "count": 6,
-    "pnl_excluded_rs": 30332.7,
+    "count": 4,
+    "pnl_excluded_rs": 0.0,
     "suspect_count": 0,
-    "interpretation": "6 phantom fills excluded (would have contributed Rs.30,332.70); 0 suspect fills included but flagged."
+    "interpretation": "4 phantom fills excluded (would have contributed Rs.0.00); 0 suspect fills included but flagged."
+  },
+  "reconciliation": {
+    "inline_realized_delta_sum_rs": 94732.5,
+    "recon_entries_skipped": 12,
+    "eod_entries_skipped": 6,
+    "duplicate_order_ids_skipped": 0,
+    "pre_reset_entries_skipped": 3,
+    "most_recent_reset_ts": "2026-09-08T08:25:08",
+    "interpretation": "Sum of inline fills' realized_delta (post-reset): Rs.94,732.50. Skipped 12 RECON entries, 6 EOD backfill entries, 0 duplicate order_ids, and 3 pre-RESET entries. Compare to paper_state.realized_pnl to verify consistency."
   }
 }

@@ -777,6 +777,33 @@ def page_overview(provider: DataProvider) -> None:
             st.metric("Suspect fills (kept)", phantom.get("suspect_count", 0),
                       help="Less severe than phantom; included in P&L but flagged for review.")
 
+    # FIX 2026-09-18 16:15: reconciliation panel — show all 3 sources of truth
+    # for cumulative P&L: paper_state.cash (authoritative), by_day aggregator,
+    # and journal sum. If they disagree, paper_state was reset (wiping history)
+    # or the aggregator is double-counting RECON entries.
+    recon = cfg.get("reconciliation") or {}
+    if recon:
+        st.markdown("### 🔍 P&L reconciliation (paper_state is the truth)")
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            st.metric(
+                "Inline fills sum (journal)",
+                f"Rs.{recon.get('inline_realized_delta_sum_rs', 0):,.2f}",
+                help="Sum of realized_delta across all non-duplicate, non-RECON, non-EOD, post-reset fills.",
+            )
+        with rc2:
+            st.metric(
+                "Pre-reset entries skipped",
+                recon.get("pre_reset_entries_skipped", 0),
+                help="Journal entries from before the most recent RESET marker — these are NOT counted in by_day.",
+            )
+        with rc3:
+            st.metric(
+                "RECON + EOD entries skipped",
+                recon.get("recon_entries_skipped", 0) + recon.get("eod_entries_skipped", 0),
+                help="RECON (orphan-recovery) and EOD (backfill) entries duplicate past events; skipped from by_day.",
+            )
+
 
 def page_positions(provider: DataProvider) -> None:
     st.title("💼 Positions")
