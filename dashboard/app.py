@@ -756,6 +756,27 @@ def page_overview(provider: DataProvider) -> None:
             st.metric("Live-eq P&L delta", f"Rs.{delta:,.0f}",
                       delta=f"{sa.get('fill_mode_detected', '?')}")
 
+    # FIX 2026-09-18 11:20: phantom-fill transparency. Show how many phantom
+    # fills the aggregator excluded and how much P&L they would have
+    # contributed. This is the "honest" view of paper performance — the
+    # +Rs.30,332.70 phantom-fill window (Sep 7/11/15) is no longer counted
+    # in by_day, but the user can see it here as audit context.
+    phantom = (cfg.get("phantom") or {})
+    if phantom:
+        st.markdown("### 👻 Phantom-fill transparency")
+        ph1, ph2, ph3 = st.columns(3)
+        with ph1:
+            st.metric("Phantom fills excluded", phantom.get("count", 0),
+                      help="Fills where avg_fill_price fell through to the Rs.1.00 fallback. Excluded from cumulative P&L.")
+        with ph2:
+            excl = phantom.get("pnl_excluded_rs", 0)
+            st.metric("P&L excluded", f"Rs.{excl:,.2f}",
+                      delta="would-have-contributed" if excl else "zero",
+                      delta_color="off")
+        with ph3:
+            st.metric("Suspect fills (kept)", phantom.get("suspect_count", 0),
+                      help="Less severe than phantom; included in P&L but flagged for review.")
+
 
 def page_positions(provider: DataProvider) -> None:
     st.title("💼 Positions")

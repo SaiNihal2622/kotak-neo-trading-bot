@@ -350,6 +350,15 @@ def run_paper() -> None:
     # in case any fills are missed (e.g. bot crash, or PaperClient reloaded
     # from disk without the callback registered).
     _JOURNAL_PATH = Path("data_cache/trade_journal.jsonl")
+    # FIX 2026-09-18 10:55: in-memory dedup of recently-written trade_ids.
+    # Cheap insurance against a double-fire of the same fill callback (e.g.
+    # if on_fill() is called twice for the same order). Audit confirmed that
+    # the 9 "duplicates" the user flagged are actually 9 pairs of distinct
+    # order_ids placed 3ms apart (LLM rapid re-entry), not a logging bug.
+    # This set prevents the rare case where a callback DOES double-fire from
+    # polluting the journal with exact-duplicate rows.
+    _WRITTEN_JOURNAL_IDS: set[str] = set()
+    _WRITTEN_JOURNAL_MAX = 5000  # bounded memory
 
     def _append_trade_journal(order, realized_delta):
         """Inline trade_journal.jsonl writer. Fires on every paper fill.
@@ -360,7 +369,36 @@ def run_paper() -> None:
         suspect_price=true. This was the bug today: orphan-auto-close fell
         through to the Rs.1.00 last-resort path. Future fills at exactly
         Rs.1.00 will be tagged so the audit report can exclude them.
+
+        FIX 2026-09-18 10:55: in-memory dedup by trade_id. If the same
+        trade_id (order_id) has been written in this session, skip. Keeps
+        the journal clean if any code path accidentally double-fires the
+        callback. The 5000-entry ring buffer is bounded so the set never
+        grows without limit.
         """
+        trade_id = f"FILL-{order.order_id}"
+        if trade_id in _WRITTEN_JOURNAL_IDS:
+            logger.debug(f"inline trade_journal: dedup skip {trade_id}")
+            return
+        _WRITTEN_JOURNAL_IDS.add(trade_id)
+        # Bound the set: if we hit the cap, drop the oldest quarter
+        if len(_WRITTEN_JOURNAL_IDS) > _WRITTEN_JOURNAL_MAX:
+            # Cheap approach: rebuild from a snapshot of trade_journal.jsonl
+            try:
+                _ids = set()
+                with _JOURNAL_PATH.open(encoding="utf-8") as _f:
+                    for _ln in _f:
+                        try:
+                            _r = json.loads(_ln)
+                            if _r.get("trade_id", "").startswith("FILL-"):
+                                _ids.add(_r["trade_id"])
+                        except Exception:
+                            pass
+                _WRITTEN_JOURNAL_IDS.clear()
+                _WRITTEN_JOURNAL_IDS.update(_ids)
+            except Exception:
+                # If rebuild fails, just truncate
+                _WRITTEN_JOURNAL_IDS.clear()
         try:
             fill_px = round(order.avg_fill_price, 2)
             expected_px = round(order.expected_fill_price, 2) if order.expected_fill_price else 0

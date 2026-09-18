@@ -1,0 +1,110 @@
+{
+  "ts": "2026-09-18T10:57:35.322645",
+  "n_trades": 80,
+  "total_pnl": 57381.0,
+  "sharpe_30d": 2.69,
+  "by_strategy": {
+    "unknown": {
+      "trades": 80,
+      "wins": 7,
+      "losses": 12,
+      "total_pnl": 57381.0,
+      "max_win": 32832.75,
+      "max_loss": -1812.75,
+      "by_underlying": {
+        "NIFTY": {
+          "trades": 65,
+          "pnl": 42043.5
+        },
+        "UNK": {
+          "trades": 1,
+          "pnl": 0.0
+        },
+        "SENSEX": {
+          "trades": 6,
+          "pnl": -45.0
+        },
+        "BANKNIFTY": {
+          "trades": 8,
+          "pnl": 15382.5
+        }
+      },
+      "win_rate": 0.0875,
+      "avg_pnl": 717.26
+    }
+  },
+  "by_underlying": {
+    "NIFTY": {
+      "trades": 65,
+      "wins": 6,
+      "losses": 10,
+      "total_pnl": 42043.5,
+      "win_rate": 0.0923,
+      "avg_pnl": 646.82
+    },
+    "UNK": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 0,
+      "total_pnl": 0.0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0
+    },
+    "SENSEX": {
+      "trades": 6,
+      "wins": 0,
+      "losses": 2,
+      "total_pnl": -45.0,
+      "win_rate": 0.0,
+      "avg_pnl": -7.5
+    },
+    "BANKNIFTY": {
+      "trades": 8,
+      "wins": 1,
+      "losses": 0,
+      "total_pnl": 15382.5,
+      "win_rate": 0.125,
+      "avg_pnl": 1922.81
+    }
+  },
+  "by_day": {
+    "2026-09-07": {
+      "trades": 1,
+      "pnl": -1702.5
+    },
+    "2026-09-08": {
+      "trades": 2,
+      "pnl": -159.0
+    },
+    "2026-09-09": {
+      "trades": 2,
+      "pnl": -24.0
+    },
+    "2026-09-10": {
+      "trades": 2,
+      "pnl": -45.0
+    },
+    "2026-09-11": {
+      "trades": 1,
+      "pnl": -13.5
+    },
+    "2026-09-15": {
+      "trades": 2,
+      "pnl": 43967.25
+    },
+    "2026-09-16": {
+      "trades": 2,
+      "pnl": 351.0
+    },
+    "2026-09-17": {
+      "trades": 7,
+      "pnl": 15006.75
+    }
+  },
+  "phantom": {
+    "count": 6,
+    "pnl_excluded_rs": 30332.7,
+    "suspect_count": 0,
+    "interpretation": "6 phantom fills excluded (would have contributed Rs.30,332.70); 0 suspect fills included but flagged."
+  }
+}

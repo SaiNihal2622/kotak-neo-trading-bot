@@ -33,6 +33,15 @@ def main():
     })
     by_day = defaultdict(lambda: {"trades": 0, "pnl": 0.0})
     all_pnls = []
+    # FIX 2026-09-18 11:15: phantom-fill exclusion + counter. Phantom fills
+    # happen when paper_client falls through to the Rs.1.00 fallback (chain
+    # lookups failed, no live tick). These pollute the by_day / cumulative
+    # return calculation. We now exclude phantom_price entries from the
+    # P&L aggregations and track a phantom_count separately so the dashboard
+    # can show how much was excluded.
+    phantom_count = 0
+    phantom_pnl_excluded = 0.0
+    suspect_count = 0
 
     with open(journal, "r", encoding="utf-8") as f:
         for line in f:
@@ -41,6 +50,16 @@ def main():
             except Exception:
                 continue
             pnl = d.get("realized_pnl", 0) or 0
+            is_phantom = bool(d.get("phantom_price", False))
+            is_suspect = bool(d.get("suspect_price", False))
+            if is_phantom:
+                phantom_count += 1
+                phantom_pnl_excluded += pnl
+                # Skip phantom fills from all aggregates
+                continue
+            if is_suspect:
+                suspect_count += 1
+                # Suspect fills ARE included (less severe than phantom) but counted
             strategy = d.get("strategy") or d.get("legs", [{}])[0].get("tag", "unknown") or "unknown"
             underlying = d.get("underlying", "UNK")
             day = (d.get("closed_at", "") or "")[:10]
@@ -96,6 +115,19 @@ def main():
         "by_strategy": dict(by_strategy),
         "by_underlying": dict(by_underlying),
         "by_day": dict(by_day),
+        # FIX 2026-09-18 11:15: phantom-aware metadata. Shows how many phantom
+        # fills were excluded from the aggregates so the user can see the
+        # "honest" P&L vs the raw journal total.
+        "phantom": {
+            "count": phantom_count,
+            "pnl_excluded_rs": round(phantom_pnl_excluded, 2),
+            "suspect_count": suspect_count,
+            "interpretation": (
+                f"{phantom_count} phantom fills excluded "
+                f"(would have contributed Rs.{phantom_pnl_excluded:,.2f}); "
+                f"{suspect_count} suspect fills included but flagged."
+            ),
+        },
     }
 
     out_path = ROOT / "data_cache" / "performance" / "strategy_performance.json"

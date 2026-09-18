@@ -150,16 +150,48 @@ class PaperClient(BrokerClient):
     # ------- order management -------
     def place_order(self, order: Order, bracket=None, cover_sl: float = None) -> Order:
         """Place an order. bracket/cover_sl are accepted for API parity with NeoClient
-        but ignored in paper mode (no server-side SL/target simulation)."""
+        but ignored in paper mode (no server-side SL/target simulation).
+
+        FIX 2026-09-18 10:45: in realistic mode, a LIMIT order with price <= 0
+        (or None) is now rejected IMMEDIATELY rather than sitting as OPEN until
+        the 60-second timeout. This was 82% of all rejections (266 of 324):
+        the LLM proposed limit=0 orders that were never going to fill, wasting
+        a full timeout cycle per attempt. Now we catch them at placement time
+        and the LLM gets the rejection feedback in the next brain cycle.
+        """
         with self._lock:
             if not self._connected:
                 raise RuntimeError("PaperClient not connected — call connect() first")
             order.order_id = f"PAPER-{uuid.uuid4().hex[:10].upper()}"
             order.placed_at = datetime.now(timezone.utc)
-            order.status = OrderStatus.OPEN
             self._orders[order.order_id] = order
             # FIX 2026-09-17 12:30: track placed_at for unfilled-order timeout (realistic mode).
             import time as _t
+            # FIX 2026-09-18 10:45: early-reject LIMITS with price <= 0 (or None).
+            # LIVE NSE RMS rejects limit orders without a price; paper should too.
+            # Without this check, the order sits OPEN for 60s, gets unfilled-timeout
+            # rejected, and the LLM sees the rejection on the NEXT cycle (60s late).
+            # Catching it here means the LLM sees the rejection on THIS cycle.
+            if (self.fill_mode in ('realistic', 'realistic_limit')
+                    and order.order_type == OrderType.LIMIT
+                    and not (order.price and order.price > 0)):
+                order.status = OrderStatus.REJECTED
+                order.rejection_reason = (
+                    f"LIMIT order rejected at placement: price={order.price} "
+                    f"(must be > 0; LLM likely proposed 0.0 instead of live LTP)"
+                )
+                logger.warning(
+                    f"[PAPER] EARLY REJECT {order.order_id} {order.symbol} "
+                    f"LIMIT @ price={order.price} — must be > 0"
+                )
+                # Feed rejection to the brain (FIX 2026-09-17 13:15).
+                try:
+                    self._log_rejection(order, order.rejection_reason)
+                except Exception:
+                    pass
+                self._save_state()
+                return order
+            order.status = OrderStatus.OPEN
             self._order_placed_ts[order.order_id] = _t.time()
             # FIX 2026-09-17 12:25: in realistic mode, validate limit price is on NSE tick.
             # NSE RMS rejects limit prices not on 0.05 tick, so paper should too.

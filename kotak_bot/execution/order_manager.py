@@ -288,6 +288,23 @@ class OrderManager:
                 expiry=expiry,
                 underlying=plan.underlying,
             )
+            # FIX 2026-09-18 10:50: defense-in-depth — convert LIMITS with
+            # price <= 0 to MARKET orders so the LLM doesn't propose un-fillable
+            # limits. This catches the LLM proposing limit=0 (or None) BEFORE
+            # the order reaches paper_client.place_order. The conversion to
+            # MARKET keeps the trade viable: the LLM's intent is "open this
+            # trade", so we let it open at live LTP. The LLM still gets
+            # rejection feedback via the rejections log if the order can't
+            # fill at the live price either.
+            if (order.order_type == OrderType.LIMIT
+                    and not (order.price and order.price > 0)):
+                logger.warning(
+                    f"[ORDERS] LLM proposed LIMIT @ price={order.price} for "
+                    f"{symbol} — converting to MARKET (live LTP). "
+                    f"Pattern matches the 266 off-market-limit rejections."
+                )
+                order.order_type = OrderType.MARKET
+                order.price = None
             # Pre-trade margin check (NeoClient only)
             bracket = None
             if use_bracket_for_this and leg["side"] == "BUY":

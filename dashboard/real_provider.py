@@ -121,9 +121,7 @@ class RealDataProvider(DataProvider):
         realized = float(state.get("realized_pnl", 0.0))
         # Total equity = cash + realized + unrealized (mark-to-market)
         equity = capital  # realized is already in cash via _apply_fill
-        open_positions = len(state.get("positions", {}))
-
-        # Compute today's P&L. Three sources, in priority order:
+        open_positions = len(state.get("positions", {}))        # Compute today's P&L. Three sources, in priority order:
         # 1) strategy_performance.by_day[today] — canonical daily aggregator
         #    (used by live_go_tracker and the trade journal's reconciliation).
         # 2) trade_journal.jsonl scan — fallback. Different event writers use

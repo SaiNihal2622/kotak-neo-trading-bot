@@ -1579,6 +1579,52 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         }
     except Exception as _gt_err:
         log(f"GROUND-TRUTH-ERR: {_gt_err}")
+    # FIX 2026-09-18 11:05: state-sync guard. Compute the set of symbols
+    # the brain THINKS it has open (from the last ~20 decisions with
+    # type=OPEN that have NOT been followed by a matching CLOSE) and compare
+    # to paper.positions. If they disagree, log a warn line so the LLM
+    # context (next call) sees the discrepancy and self-corrects. This was
+    # the root cause of the 10:33 confusion: brain saw "NIFTY bull_call"
+    # in decision log but paper_state was empty.
+    try:
+        from pathlib import Path as _P
+        _qp = _P("data_cache/quant_service_decisions.jsonl")
+        if _qp.exists():
+            _recent_lines = _qp.read_text(encoding="utf-8").strip().split("\n")[-40:]
+            _brain_thinks_open = {}  # symbol -> last OPEN or CLOSE ts
+            for _ln in _recent_lines:
+                try:
+                    _r = json.loads(_ln)
+                    _d = _r.get("decision", {})
+                    _t = _d.get("type", "")
+                    _ts = _r.get("ts", "")
+                    if _t in ("OPEN", "CLOSE"):
+                        for _leg in _d.get("legs", []) or []:
+                            _sym = _leg.get("symbol", "")
+                            if _sym:
+                                _brain_thinks_open[_sym] = (_t, _ts)
+                except Exception:
+                    pass
+            _brain_open_symbols = {s for s, (t, _) in _brain_thinks_open.items() if t == "OPEN"}
+            _paper_open_symbols = set(_truth_symbols)
+            _drift = _brain_open_symbols.symmetric_difference(_paper_open_symbols)
+            if _drift:
+                context["STATE_SYNC_DRIFT"] = {
+                    "brain_thinks_open": sorted(_brain_open_symbols),
+                    "paper_state_open": sorted(_paper_open_symbols),
+                    "drift_symbols": sorted(_drift),
+                    "interpretation": (
+                        "BRAIN/DISK MISMATCH. Symbols in the brain's recent "
+                        "OPEN decisions that aren't in paper_state: "
+                        f"{sorted(_brain_open_symbols - _paper_open_symbols)}. "
+                        "These were likely rejected, filled-and-closed, or "
+                        "never actually executed. Trust paper_state, not "
+                        "decision log."
+                    ),
+                }
+                log(f"STATE-SYNC-DRIFT: brain={sorted(_brain_open_symbols)} paper={sorted(_paper_open_symbols)} drift={sorted(_drift)}")
+    except Exception as _ss_err:
+        log(f"STATE-SYNC-ERR: {_ss_err}")
     # Macro calendar: upcoming events + FII/DII flows
     try:
         from macro_calendar import get_macro_state
@@ -1647,7 +1693,17 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         "  - If paper.positions is empty, you have ZERO live positions. Entering fresh is fine.\n"
         "  - If you propose an OPEN, the bot will place it within 1-3s if pre-09:15, within 1% risk\n"
         "    cap, and not EOD. Then `quant_actions.json` will show `placed_legs: 2` and the symbol\n"
-        "    will appear in paper.positions.\n\n"
+        "    will appear in paper.positions.\n"
+        # FIX 2026-09-18 11:00: stronger source-of-truth guard. The LLM has
+        # confused RECENT PERFORMANCE / decision-log entries with live
+        # positions (e.g. "decision log shows a NIFTY bull_call but
+        # paper.positions is EMPTY"). Emphasize that RECENT PERFORMANCE
+        # records what the BRAIN DECIDED, not what is currently held.
+        "  - SOURCE OF TRUTH HIERARCHY (read top to bottom, last wins on conflict):\n"
+        "      1. RECENT PERFORMANCE / decision log = WHAT I DECIDED (historical, may have been rejected or filled-and-closed)\n"
+        "      2. trade_journal.jsonl = WHAT WAS FILLED (filled entries only; reconstruction entries may be stale)\n"
+        "      3. paper.positions in FULL STATE = WHAT I HOLD RIGHT NOW (authoritative, the only thing that matters for risk/exposure)\n"
+        "    If (3) is empty or doesn't list a symbol, you do NOT have that symbol, regardless of what (1) or (2) say.\n\n"
         "Decide now. Output ONE JSON object only. Pay attention to delta (directional risk) and gamma (convexity). Iron condors should be delta-neutral (delta < 5). Long options should have positive delta for CE, negative for PE."
     )
     result = call_llm_direct(
