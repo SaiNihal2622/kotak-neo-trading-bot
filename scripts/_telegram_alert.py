@@ -32,8 +32,52 @@ def get_creds():
     return os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", "")
 
 
+def _settings_telegram_enabled() -> bool:
+    """FIX 2026-09-21 03:25: respect settings.yaml alerts.telegram.enabled.
+
+    Returns True only if Telegram is explicitly enabled in the YAML. Default
+    is False (user wants dashboard, not Telegram). Avoids 401/timeout retries
+    that pollute logs and waste cycles.
+    """
+    try:
+        cfg_path = ROOT / "config" / "settings.yaml"
+        if not cfg_path.exists():
+            return False
+        in_alerts = False
+        in_telegram = False
+        for raw in cfg_path.read_text(encoding="utf-8").splitlines():
+            stripped = raw.strip()
+            if not in_alerts:
+                if stripped == "alerts:":
+                    in_alerts = True
+                continue
+            if in_alerts and not in_telegram:
+                if stripped.startswith("telegram:"):
+                    in_telegram = True
+                elif stripped and not raw.startswith(" ") and not raw.startswith("\t"):
+                    return False
+                continue
+            if in_telegram:
+                if stripped.startswith("enabled:"):
+                    val = stripped.split(":", 1)[1].strip().lower()
+                    return val in ("true", "yes", "on", "1")
+                if stripped and not raw.startswith(" ") and not raw.startswith("\t"):
+                    return False
+        return False
+    except Exception:
+        return False
+
+
 def send_telegram(text: str, max_len: int = 4000) -> bool:
-    """Send a Telegram message. Truncates if too long."""
+    """Send a Telegram message. Truncates if too long.
+
+    FIX 2026-09-21 03:25: gate on settings.yaml alerts.telegram.enabled. If
+    the user has disabled Telegram, log a one-line note and return False
+    instead of attempting to send.
+    """
+    if not _settings_telegram_enabled():
+        print("telegram disabled in settings.yaml (alerts.telegram.enabled=false)", file=sys.stderr)
+        return False
     token, chat_id = get_creds()
     if not token or not chat_id:
         print("no Telegram creds", file=sys.stderr)

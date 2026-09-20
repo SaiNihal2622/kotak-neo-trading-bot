@@ -518,7 +518,15 @@ def run_paper() -> None:
         logger.debug(f"yfinance fallback not registered: {e}")
     logger.success(f"Resilient executor wired (retry={resilient_cfg.retry_enabled}, "
                    f"cr={resilient_cfg.cr_enabled}, fallback={resilient_cfg.fallback_enabled})")
-    alerter = TelegramAlerter(voice_enabled=cfg.get("alerts", {}).get("voice", {}).get("enabled", True))
+    # FIX 2026-09-21 03:18: honour settings.yaml alerts.telegram.enabled (user wants
+    # dashboard, not Telegram). Without this, the alerter self-enables on token presence
+    # and burns cycles on 401/timeout retries. Dashboard is the single source of truth.
+    _tg_cfg = cfg.get("alerts", {}).get("telegram", {}) or {}
+    _tg_enabled = bool(_tg_cfg.get("enabled", False))
+    alerter = TelegramAlerter(
+        voice_enabled=cfg.get("alerts", {}).get("voice", {}).get("enabled", True),
+        enabled=_tg_enabled,
+    )
     # Phase 1.4: real margin tracking
     from kotak_bot.risk.margin import MarginTracker, MarginAlertConfig
     margin_cfg = MarginAlertConfig.from_dict(cfg.get("risk", {}).get("margin", {}))
@@ -596,7 +604,12 @@ def run_paper() -> None:
         logger.debug(f"dhan init: {e}")
 
     # ------- telegram command handler -------
-    cmd_handler = TelegramCommandHandler()
+    # FIX 2026-09-21 03:18: skip TelegramCommandHandler when settings.yaml has
+    # alerts.telegram.enabled=false (user wants dashboard, not Telegram). Without this
+    # gate the handler still polls Telegram's getUpdates endpoint and may 401-loop.
+    cmd_handler = None
+    if _tg_enabled:
+        cmd_handler = TelegramCommandHandler()
     # wire status hook
     def _get_status() -> dict:
         try:
@@ -934,16 +947,19 @@ def run_paper() -> None:
     except Exception as e:
         logger.warning(f"startup reconcile failed: {e}")
 
-    cmd_handler.get_status = _get_status
-    cmd_handler.pause = _pause
-    cmd_handler.resume = _resume
-    cmd_handler.force_close = _force_close
-    # Phase 1.4: expose margin tracker to telegram commands
-    cmd_handler.margin_tracker = margin_tracker
-    cmd_handler.force_trade = _force_trade
-    cmd_handler.live_feed = feed
-    cmd_handler.perf_tracker = perf_tracker
-    cmd_handler.start()
+    if cmd_handler is not None:
+        cmd_handler.get_status = _get_status
+        cmd_handler.pause = _pause
+        cmd_handler.resume = _resume
+        cmd_handler.force_close = _force_close
+        # Phase 1.4: expose margin tracker to telegram commands
+        cmd_handler.margin_tracker = margin_tracker
+        cmd_handler.force_trade = _force_trade
+        cmd_handler.live_feed = feed
+        cmd_handler.perf_tracker = perf_tracker
+        cmd_handler.start()
+    else:
+        logger.info("TelegramCommandHandler SKIPPED (alerts.telegram.enabled=false)")
 
     # ------- Liveness state provider -------
     # Now that everything is wired, replace the noop state provider with a real
@@ -3136,7 +3152,8 @@ def run_paper() -> None:
             if _LIVE:
                 _LIVE.register_exit("KeyboardInterrupt")
                 _LIVE.stop(reason="KeyboardInterrupt")
-            cmd_handler.stop()
+            if cmd_handler is not None:
+                cmd_handler.stop()
             break
         except Exception as e:
             logger.exception(f"main loop error: {e}")
@@ -3144,7 +3161,8 @@ def run_paper() -> None:
 
     broker.disconnect()
     feed.stop()
-    cmd_handler.stop()
+    if cmd_handler is not None:
+        cmd_handler.stop()
     # Final liveness shutdown (also covered by atexit, but be explicit)
     _LIVE = get_liveness()
     if _LIVE:

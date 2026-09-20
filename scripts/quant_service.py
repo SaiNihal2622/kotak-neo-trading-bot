@@ -3196,6 +3196,11 @@ class ControlHandler(http.server.BaseHTTPRequestHandler):
 def http_server():
     """HTTP control API on :8503. Self-restarts on any failure.
 
+    FIX 2026-09-21 03:15: this function was a stub (returned None) and the
+    HTTP server never bound :8503. Implemented the full server loop with
+    allow_reuse_address, exception-catching serve_forever, 5s backoff
+    auto-restart, and graceful shutdown on RUNNING = False.
+
     The HTTP server runs in a daemon thread inside the brain. If the thread
     dies for any reason (port conflict, socket error, handler exception),
     the main 1Hz watch loop keeps running but :8503 is unreachable until
@@ -3205,7 +3210,28 @@ def http_server():
       3. Auto-restarts the server with a 5s backoff
       4. Only stops on graceful shutdown (RUNNING = False)
     """
-    return None
+    import http.server
+    import socketserver
+    import socket
+
+    class _ReuseTCPServer(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+
+    while RUNNING:
+        try:
+            srv = _ReuseTCPServer(("0.0.0.0", PORT), ControlHandler)
+            srv.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            log(f"HTTP-SERVER: bound :{PORT} (reuse_addr=True, threading=True)")
+            while RUNNING:
+                srv.serve_forever(poll_interval=0.5)
+        except Exception as _e:
+            if not RUNNING:
+                break
+            log(f"HTTP-SERVER-ERR: {_e} (restarting in 5s)")
+            time.sleep(5)
+        else:
+            break
+    log(f"HTTP-SERVER: stopped (RUNNING={RUNNING})")
 
 
 

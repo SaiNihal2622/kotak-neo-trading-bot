@@ -26,11 +26,19 @@ from loguru import logger
 
 
 class TelegramAlerter:
-    def __init__(self, bot_token: str = "", chat_id: str = "", voice_enabled: bool = True):
+    def __init__(self, bot_token: str = "", chat_id: str = "", voice_enabled: bool = True,
+                 enabled: bool = None):
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
         self._initial_chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
         self._env_path = "config/credentials.env"
-        self.enabled = bool(self.bot_token)
+        # FIX 2026-09-21 03:18: respect settings.yaml alerts.telegram.enabled (user wants
+        # dashboard, not Telegram). If the caller passes enabled=False explicitly, honour it
+        # even if a bot token is present. If enabled=None (default), fall back to "token
+        # present" semantics for backwards compatibility.
+        if enabled is False:
+            self.enabled = False
+        else:
+            self.enabled = bool(self.bot_token)
         self.voice_enabled = voice_enabled
         # FIX 2026-09-07 00:55: backoff state for DNS / network outages.
         # Without backoff, the bot's main loop gets monopolized by 20s

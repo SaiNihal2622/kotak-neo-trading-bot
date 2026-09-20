@@ -71,18 +71,75 @@ def _safe_float(x, default=0.0) -> float:
 
 
 def get_alerter():
-    """Lazy-init the TelegramAlerter. Returns None if disabled."""
+    """Lazy-init the TelegramAlerter. Returns None if disabled.
+
+    FIX 2026-09-21 03:20: respect settings.yaml alerts.telegram.enabled (user wants
+    dashboard, not Telegram). Without this gate the alerter self-enables on token
+    presence and burns cycles on 401/timeout retries. We read the YAML directly
+    here because the brain process is a separate Python interpreter and doesn't
+    share the bot's in-memory cfg.
+    """
     global _alerter, _enabled
     if _alerter is not None:
         return _alerter
     try:
+        # Honour settings.yaml alerts.telegram.enabled FIRST. If the user has
+        # disabled Telegram in config, do not even try to instantiate the alerter.
+        _cfg_enabled = _read_settings_yaml_enabled()
+        if _cfg_enabled is False:
+            _enabled = False
+            return None
+
         from kotak_bot.alerts.telegram import TelegramAlerter
-        _alerter = TelegramAlerter()  # reads env vars
+        _alerter = TelegramAlerter(enabled=_cfg_enabled if _cfg_enabled is not None else True)
         _enabled = _alerter.enabled
     except Exception as e:
         _alerter = None
         _enabled = False
     return _alerter
+
+
+def _read_settings_yaml_enabled() -> Optional[bool]:
+    """Read alerts.telegram.enabled from config/settings.yaml without full YAML parse.
+
+    Returns True/False if the key is found, None if the file is missing or the
+    key is absent (caller decides the default).
+    """
+    try:
+        from pathlib import Path
+        cfg_path = Path(__file__).parent.parent / "config" / "settings.yaml"
+        if not cfg_path.exists():
+            return None
+        text = cfg_path.read_text(encoding="utf-8")
+        # Walk the alerts.telegram block; if "enabled: true|false" appears before
+        # the next sibling key, return that. Cheap and avoids pulling in PyYAML.
+        lines = text.splitlines()
+        in_alerts = False
+        in_telegram = False
+        for raw in lines:
+            stripped = raw.strip()
+            if not in_alerts:
+                if stripped == "alerts:":
+                    in_alerts = True
+                continue
+            if in_alerts and not in_telegram:
+                if stripped.startswith("telegram:"):
+                    in_telegram = True
+                elif stripped and not raw.startswith(" ") and not raw.startswith("\t"):
+                    # Sibling key under alerts — bail out
+                    return None
+                continue
+            # In telegram block; look for enabled:
+            if in_telegram:
+                if stripped.startswith("enabled:"):
+                    val = stripped.split(":", 1)[1].strip().lower()
+                    return val in ("true", "yes", "on", "1")
+                if stripped and not raw.startswith(" ") and not raw.startswith("\t"):
+                    # Sibling key — bailed out
+                    return None
+        return None
+    except Exception:
+        return None
 
 
 def _is_throttled(category: str, min_interval: Optional[int] = None) -> bool:

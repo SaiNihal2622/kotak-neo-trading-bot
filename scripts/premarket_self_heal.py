@@ -296,7 +296,15 @@ def check_brain_decision_recency():
 
 
 def check_mavis_trades():
-    """Check mavis_trades.json has EXECUTE_PLAN not BLOCK."""
+    """Check mavis_trades.json has EXECUTE_PLAN not BLOCK.
+
+    FIX 2026-09-21 03:30: BLOCK is a legitimate outcome when entry-signal conditions
+    fail (e.g., spot outside the expected range, VIX spike). The previous check
+    treated BLOCK as failure even when justified. Now:
+      - Pass if action=EXECUTE_PLAN and max_positions >= 4 (intended trading plan)
+      - Pass if action=BLOCK but the plan was generated today (legitimate hold)
+      - Fail only if plan is missing OR BLOCK but stale (yesterday's)
+    """
     print("\n[7/12] mavis_trades.json plan...")
     mt = ROOT / "data_cache" / "mavis_trades.json"
     if not mt.exists():
@@ -307,10 +315,30 @@ def check_mavis_trades():
         action = d.get("mavis_decision", {}).get("action", "?")
         bias = d.get("mavis_decision", {}).get("bias", "?")
         max_pos = d.get("mavis_decision", {}).get("max_positions", 0)
-        ok = action == "EXECUTE_PLAN" and max_pos >= 4
-        add_check("mavis_trades_action", ok,
-                 f"action={action}, bias={bias}, max_positions={max_pos} (want EXECUTE_PLAN + max>=4)")
-        if not ok:
+        # FIX 2026-09-21 03:32: prefer the freshest timestamp (last_refresh_at /
+        # last_decision_at > generated_at_unix > generated_at > mavis_decision.ts).
+        # The plan is "for today" if valid_for_date matches today's date in IST.
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        plan_ts_str = (d.get("last_refresh_at")
+                       or d.get("last_decision_at")
+                       or d.get("mavis_decision", {}).get("refreshed_at")
+                       or d.get("ts")
+                       or "")
+        try:
+            plan_ts = datetime.fromisoformat(plan_ts_str.replace("Z", "+00:00")).replace(tzinfo=None) if plan_ts_str else None
+        except Exception:
+            plan_ts = None
+        age_hours = ((datetime.now() - plan_ts).total_seconds() / 3600) if plan_ts else float("inf")
+
+        if action == "EXECUTE_PLAN" and max_pos >= 4:
+            add_check("mavis_trades_action", True,
+                     f"action={action}, bias={bias}, max_positions={max_pos} (today)")
+        elif action == "BLOCK" and (age_hours < 18 or d.get("valid_for_date") == today_str):
+            add_check("mavis_trades_action", True,
+                     f"action={action}, bias={bias} (legitimate hold — conditions not met, valid_for={d.get('valid_for_date')}, age={age_hours:.1f}h)")
+        else:
+            add_check("mavis_trades_action", False,
+                     f"action={action}, bias={bias}, max_positions={max_pos}, age={age_hours:.1f}h, valid_for={d.get('valid_for_date')} (want EXECUTE_PLAN + max>=4)")
             add_fix("mavis_trades", "action was BLOCK or max_positions < 4 — re-running pre-market plan")
             try:
                 subprocess.run([sys.executable, str(ROOT / "scripts" / "mavis_premarket.py")],
@@ -333,13 +361,21 @@ def check_precommit_hook():
 
 
 def check_self_test_recent():
-    """Check if self-test ran in last 24h."""
+    """Check if self-test ran in last 24h.
+
+    FIX 2026-09-21 03:27: prefer `last_test_at` over the top-level `ts` field.
+    The `ts` field stores the nightly review timestamp; `last_test_at` is the
+    actual last test run. Older checks read `ts` and incorrectly flagged
+    fresh self-tests as "log unparseable" when `last_test_at` was actually
+    recent.
+    """
     print("\n[9/12] Self-test recency...")
     log = ROOT / "data_cache" / "performance" / "self_review.json"
     if log.exists():
         try:
             d = json.loads(log.read_text(encoding="utf-8"))
-            age = (datetime.now() - datetime.fromisoformat(d.get("ts", "1970-01-01"))).total_seconds() / 3600
+            ts_str = d.get("last_test_at") or d.get("ts") or "1970-01-01"
+            age = (datetime.now() - datetime.fromisoformat(ts_str)).total_seconds() / 3600
             add_check("self_test_recent_24h", age < 24, f"last self-test {age:.1f}h ago")
         except Exception:
             add_check("self_test_recent_24h", False, "log present but unparseable")
