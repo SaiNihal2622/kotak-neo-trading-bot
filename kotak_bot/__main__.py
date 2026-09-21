@@ -1113,6 +1113,17 @@ def run_paper() -> None:
         logger.debug(f"signal handler setup skipped: {e}")
     # ------- end crash forensics -------
 
+    # FIX 2026-09-21 17:58: refresh intraday_levels.json once at startup so the
+    # pre-market self-heal (08:25) sees fresh data even though the candle-watchdog
+    # only runs during market hours. Without this, the file is 17h+ old at 08:25
+    # (last refresh was 15:30 yesterday) and the check FAILS.
+    try:
+        from scripts.intraday_levels import main as _intra_main_startup
+        _intra_main_startup()
+        logger.info("[STARTUP] intraday_levels.json refreshed (pre-market readiness)")
+    except Exception as _intra_startup_err:
+        logger.warning(f"[STARTUP] intraday_levels refresh failed: {_intra_startup_err}")
+
     while True:
         try:
             now = now_ist()
@@ -2575,7 +2586,13 @@ def run_paper() -> None:
             # market hours. The CLI script was broken (yfinance snapshot returned single
             # value → LLM saw flat 0.00% range → dismissed setups). Now main() reads
             # per-minute bars JSONL, so we just need to call it more often.
-            if cycle_counter % 60 == 0 and is_market_open(now):  # every 30 min (30s * 60)
+            # FIX 2026-09-21 17:55: extend window to pre_open + market_open. Otherwise
+            # the file goes stale post-15:30 close, and the 08:25 pre-market self-heal
+            # sees age=17h and FAILs. Pre-open (09:00-09:15) refresh ensures freshness
+            # before the open.
+            from kotak_bot.utils.clock import market_session as _ms_check
+            _ms = _ms_check(now)
+            if cycle_counter % 60 == 0 and _ms in ("pre_open", "regular", "closing"):  # every 30 min (30s * 60)
                 try:
                     from pathlib import Path as _PathWatch
                     import time as _time_w
