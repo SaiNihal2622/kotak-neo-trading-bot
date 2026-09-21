@@ -541,8 +541,10 @@ wants ACTION, not excuses. Override the HOLD-default:
   - If you have ZERO positions and see a high-conviction setup, TAKE IT with
     size 5-10 lots. Don't wait for "confirmation" — by then the move is over.
   - A 100% HOLD day is a FAILURE day. The LLM must trade when edge is real.
-  - Output `conviction: 70+` for setups you believe in, even if there's
-    already an open position. The bot will scale your qty accordingly.
+  - FIX 2026-09-21 14:22: lower conviction threshold. User wants profits, not
+    safety. Output `conviction: 60+` for setups you believe in (was 70+).
+    Conviction 50-60 = 1-2 lots (small starter). 60-75 = 2-4 lots. 75-90 = 4-8
+    lots. 90+ = 8+ lots. Don't be afraid to size up on clear setups.
   - SKIP_DAY is for when NOTHING looks good. If something looks good, trade it.
 
 STRATEGY LIBRARY — USE THIS, DON'T INVENT YOUR OWN:
@@ -671,12 +673,20 @@ WHY 24/7:
   against actual NSE moves for the 16h/day the bot isn't running.
 
 NSE INTRADAY TRADING RULES — KNOW BEFORE YOU ACT:
-- Market hours: 09:15-15:30 IST. New entries only 09:15-13:30 IST (no_new_trades_after: 13:30).
-- Force-square-off at 14:30 IST (intraday only — no overnight).
-- After 13:30 IST: do NOT open new positions. Any setup is "too late" for intraday. HOLD.
+- Market hours: 09:15-15:30 IST. New entries allowed 09:15-14:30 IST
+  (no_new_trades_after: 14:30 IST, set in config/intraday.no_new_trades_after).
+- Force-square-off at 15:15 IST (intraday default; SOFT gate — LLM can override
+  via ai_override_intraday=true on the action). HARD force-square at 15:25.
+- After 14:30 IST: NEW entries are SUPPRESSED by default — but you CAN override by
+  setting `ai_override_intraday: true` on the OPEN action when:
+    a) VIX > 18 (you see a vol expansion you want to capture),
+    b) index has moved >1% from session open (trend continuation), or
+    c) it's a closing-auction straddle/strangle for 15:00-15:15 vol capture.
+  Use sparingly — overrides are logged and audited.
 - After 15:00 IST: only CLOSE actions are valid.
-- Outside 09:15-15:30 IST: only CLOSE actions are valid (in case brain somehow issues). HOLD otherwise.
-- If you see a "perfect setup" at 13:45, you missed it. Tomorrow is a new day.
+- Outside 09:15-15:30 IST: only CLOSE actions are valid. HOLD otherwise.
+- Ai can hold overnight if it has a clear edge (allow_overnight=true). Don't be
+  afraid to carry a winner into tomorrow. Force-square is a SUGGESTION, not a rule.
 
 GLOBAL MARKETS (use this 24/7 context, polled every 5 min):
 - `global_markets` includes US (S&P, NASDAQ, DOW, VIX), Asia (Nikkei, Hang Seng),
@@ -747,11 +757,16 @@ SENSEX AS ENTRY TARGET (not just confirmation):
 
 2. **CLOSING-AUCTION STRADDLE** (14:50 IST trigger — separate LLM call, you decide):
    - You will be called at 14:50 with state (NIFTY LTP, intraday range, VIX, open positions)
-   - If intraday range < 0.6% NIFTY AND VIX dropped > 3% today AND no existing straddle:
-     - Deploy 1 lot long straddle (ATM call + ATM put, same expiry)
-     - If intraday range < 0.3%: use strangle (slightly OTM both sides) — cheaper, captures bigger moves
+   - FIX 2026-09-21 14:20: user wants profits, not safety. Loosened deployment criteria:
+     - DEPLOY if intraday range < 0.8% (was 0.6%) OR VIX < 14 (cheap premium)
+     - DEPLOY if any 1 of: (a) tight day < 0.8% range, (b) VIX dropped today, (c) implied
+       vol > realized vol (you can sense this from option chain), (d) it's been a quiet
+       day and you expect closing-auction price discovery
+     - Skip if capital locked or already 2+ positions
+   - If intraday range < 0.4%: use ATM straddle. If 0.4-0.8%: use strangle 50-delta (cheaper).
    - Set max_hold_minutes = 25 (close at 15:15, captures 15:00-15:15 closing-auction vol)
-   - Skip if already 2+ open positions or capital is locked
+   - This is one of the highest EV setups in the day. Don't skip it just because the
+     day was quiet — quiet days mean cheap premium AND mean reversion risk at close.
 
 3. **PORTFOLIO HEDGE** (delta-aware, applies to EVERY decision):
    - Context includes `portfolio_delta` (net delta across all open positions)
@@ -1036,14 +1051,14 @@ def get_prompt_addition() -> str:
 
 
 def get_min_activity_reminder() -> str:
-    """FIX 2026-09-09 13:30: enforce min activity rule.
+    """FIX 2026-09-09 13:30 (and tightened 2026-09-21 14:18): enforce min-activity rule.
 
     The LLM was in a 4+ hour HOLD loop saying "trend_captured" while the market was
-    actually -0.82% bearish. The brain must be more aggressive: if we've had 0 trades
-    in the last 90 min during NSE market hours AND the market has clear directional
-    bias (any index >0.3% from session open), the LLM MUST consider entering.
-
-    Returns a dynamic prompt addition that pushes the LLM to act.
+    actually -0.82% bearish. FIX 2026-09-21 14:18: user said "do whats best, not
+    safest — we need profits too". Lowered thresholds:
+      - 0.2% drift (was 0.3%) triggers strong_bias
+      - 45 min no-trade (was 90 min) with strong bias = take action
+      - 30 min no-trade (was 60 min) without bias = consider action
     """
     if not is_market_hours():
         return ""
@@ -1084,29 +1099,30 @@ def get_min_activity_reminder() -> str:
                     session_moves[sym] = round((ltp - so) / so * 100, 2)
         except Exception:
             session_moves = {}
-        # Build reminder
-        strong_bias = [s for s, p in session_moves.items() if abs(p) >= 0.3]
+        # FIX 2026-09-21 14:18: lower bar — 0.2% drift is enough (was 0.3%).
+        strong_bias = [s for s, p in session_moves.items() if abs(p) >= 0.2]
         reminder = ""
-        if mins_since_trade > 90 and strong_bias:
-            # > 90 min since last trade + strong directional bias = take action
+        if mins_since_trade > 45 and strong_bias:
+            # FIX 2026-09-21 14:18: 45 min no-trade + clear bias = MUST act (was 90 min).
             bias_dir = "BULLISH" if session_moves.get(strong_bias[0], 0) > 0 else "BEARISH"
             reminder = (
-                f"\n\n*** MIN-ACTIVITY OVERRIDE (FIX 2026-09-09 13:30) ***\n"
+                f"\n\n*** MIN-ACTIVITY OVERRIDE (FIX 2026-09-21 14:18 — tighter) ***\n"
                 f"You have NOT traded in {mins_since_trade:.0f} minutes. The market has "
-                f"clear {bias_dir} bias (session moves: {session_moves}). The user wants "
-                f"ACTION. If you have 0 positions and the market has moved >0.3% from "
-                f"open, TAKE A TRADE. Don't wait. A small loss on a wrong call is cheap. "
-                f"Missing a 5x winner is expensive. Open a {bias_dir.lower()} position "
-                f"now with conviction 60+ and 1-3 lots NIFTY. ***"
+                f"clear {bias_dir} bias (moves: {session_moves}). User wants PROFITS, "
+                f"not safety. With 0 positions and >=0.2% session drift, TAKE A TRADE. "
+                f"A small loss on a wrong call is cheap (Rs.500-1500). Missing a 5x winner "
+                f"is expensive. Open a {bias_dir.lower()} position NOW with conviction "
+                f"60-80 and 1-3 lots NIFTY/BANKNIFTY. Set tight stop. ***"
             )
-        elif mins_since_trade > 60 and not strong_bias:
-            # > 60 min, no clear bias — but still remind to consider
+        elif mins_since_trade > 30 and not strong_bias:
+            # FIX 2026-09-21 14:18: 30 min no-trade even without bias = consider action.
             reminder = (
-                f"\n\n*** MIN-ACTIVITY CHECK (FIX 2026-09-09 13:30) ***\n"
+                f"\n\n*** MIN-ACTIVITY CHECK (FIX 2026-09-21 14:18) ***\n"
                 f"You have NOT traded in {mins_since_trade:.0f} minutes. The market is "
-                f"FLAT (session moves < 0.3%). Either:\n"
+                f"FLAT (moves: {session_moves}). Either:\n"
                 f"  (a) Open a small directional position if you see edge, OR\n"
-                f"  (b) Output SKIP_DAY with concrete justification for staying flat.\n"
+                f"  (b) Open an IRON_CONDOR to harvest theta in this flat regime, OR\n"
+                f"  (c) Output SKIP_DAY with CONCRETE justification for staying flat.\n"
                 f"Do NOT just HOLD with vague 'trend_captured' reasoning. ***"
             )
         return reminder
@@ -1811,8 +1827,13 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     result = call_llm_direct(
         PROFESSIONAL_QUANT_SYSTEM + get_prompt_addition() + get_min_activity_reminder(),
         user_content,
-        max_tokens=2000,
+        # FIX 2026-09-21 14:25: bumped 2000 -> 4000. M2.7's <think> block can
+        # be 1.5-3k tokens for complex prompts; with 2000 we hit finish_reason=length.
+        max_tokens=4000,
     )
+    _initial_max = 4000  # FIX 2026-09-21 14:25: local copy so the retry block below
+                         # can check the budget we asked for (NameError-prone if
+                         # we referenced a parameter that doesn't exist on this fn).
     SERVICE_STATE["llm_calls"] += 1
     # Track LLM cost (per Anthropic Sonnet pricing)
     if result.get("ok") and result.get("usage"):
@@ -1834,6 +1855,14 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     # remaining text is the actual JSON response.
     import re as _re_think
     text = _re_think.sub(r"<think>.*?</think>", "", text, flags=_re_think.DOTALL).strip()
+    # FIX 2026-09-21 14:25: if strip ate everything (think block consumed all
+    # max_tokens), retry with a bigger budget. Without this, the LLM with
+    # verbose reasoning leaves no room for the actual JSON answer.
+    # Use local `_initial_max` (set just before this block) so we know what
+    # budget we originally asked for.
+    if not text and _initial_max < 4000:
+        log(f"LLM-RETRY: think block ate all {_initial_max} tokens, retrying with 6000")
+        return call_llm_direct(system, user, max_tokens=6000)
     try:
         raw = json.loads(text)
     except Exception as e:
@@ -1969,18 +1998,16 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
         if not _in_trading_window:
             log(f"ACTION-SUPPRESSED: OPEN outside trading window (IST {_h:02d}:{_m:02d}); dropping action to file. Decision logged only.")
             action_doc["actions"] = []  # strip the OPEN
-        # FIX 2026-09-02 14:02: also suppress OPENs after no_new_trades_after (13:30 IST default).
-        # Bot's intraday mode rejects new entries after 13:30 — brain should know this too.
-        # Use 13:30 as the brain-side cutoff; bot's settings.yaml may have a different value,
-        # but for safety the brain enforces 13:30 hard.
-        # FIX 2026-09-08 22:50: but the no_new_trades_after is now SOFT (LLM can override).
-        # The brain's "AI_OVERRIDE" type bypasses this 13:30 cutoff — bot checks
-        # data_cache/_ai_skip_force_square.json (similar pattern).
-        elif _h > 13 or (_h == 13 and _m >= 30):
+        # FIX 2026-09-21 14:15: aligned cutoff with config (was hardcoded 13:30, now
+        # 14:30 to match settings.yaml `intraday.no_new_trades_after`). The LLM can
+        # still override via `ai_override_intraday: true` on the action.
+        # The bot-side settings.yaml has `intraday.no_new_trades_after: "15:00"` so
+        # this is the brain's OWN gate, kept slightly tighter for safety.
+        elif _h > 14 or (_h == 14 and _m >= 30):
             if decision.get("type") == "OPEN" and decision.get("ai_override_intraday"):
-                log(f"ACTION-ALLOWED: OPEN after 13:30 with ai_override_intraday=true; LLM takes responsibility")
+                log(f"ACTION-ALLOWED: OPEN after 14:30 with ai_override_intraday=true; rationale={decision.get('rationale','')[:80]}")
             else:
-                log(f"ACTION-SUPPRESSED: OPEN after 13:30 IST (intraday no_new_trades_after); dropping to log only.")
+                log(f"ACTION-SUPPRESSED: OPEN after 14:30 IST (intraday no_new_trades_after); dropping to log only. rationale={decision.get('rationale','')[:80]}")
                 action_doc["actions"] = []  # strip the OPEN
     if action_doc["actions"]:
         ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
