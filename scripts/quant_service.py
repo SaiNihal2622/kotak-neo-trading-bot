@@ -206,10 +206,25 @@ LLM_KEY = ENV.get('MINIMAX_LLM_API_KEY', '')
 # ---------- LLM direct call (Anthropic Messages API format) ----------
 
 def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) -> dict:
-    """Call the LLM directly via Anthropic-style /messages endpoint. No
-    Mavis session, no cron. Returns the assistant text."""
-    url = f"{LLM_BASE}/messages"
+    """Call the LLM directly. No Mavis session, no cron. Returns the assistant text.
+
+    FIX 2026-09-21 13:30: the user provided a fresh OpenAI-format API key
+    (`sk-cp-...`) that requires the OpenAI-compatible endpoint
+    `https://api.minimax.io/v1/chat/completions`. The previous Anthropic-format
+    endpoint (`/messages`) was paired with an expired JWT (exp 2026-09-18
+    17:54 IST). Migration:
+      - LLM_BASE is now the FULL URL (e.g. .../chat/completions), no path append
+      - Request body uses OpenAI format: messages array with system+user roles
+      - Response body parses `choices[0].message.content`
+    """
+    url = LLM_BASE  # full URL, not append /messages
     try:
+        # OpenAI-compatible format: system message goes inside the messages array
+        # as the first entry, not as a top-level field.
+        messages = []
+        if system:
+            messages.append({'role': 'system', 'content': system})
+        messages.append({'role': 'user', 'content': user})
         r = httpx.post(
             url,
             headers={
@@ -219,8 +234,7 @@ def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) ->
             json={
                 'model': LLM_MODEL,
                 'max_tokens': max_tokens,
-                'system': system,
-                'messages': [{'role': 'user', 'content': user}],
+                'messages': messages,
             },
             timeout=60.0,
         )
@@ -228,9 +242,10 @@ def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) ->
             return {"ok": False, "error": f"http {r.status_code}: {r.text[:300]}"}
         body = r.json()
         text = ''
-        for c in body.get('content', []):
-            if c.get('type') == 'text':
-                text += c.get('text', '')
+        for c in body.get('choices', []):
+            msg = c.get('message', {})
+            if isinstance(msg, dict):
+                text += msg.get('content', '') or ''
         return {"ok": True, "text": text, "usage": body.get('usage', {}), "id": body.get('id')}
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
@@ -1782,6 +1797,12 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     # Strip code fences
     if text.startswith("```"):
         text = "\n".join(text.split("\n")[1:]).rstrip("`").strip()
+    # FIX 2026-09-21 13:38: strip <think>...</think> reasoning blocks that the new
+    # OpenAI-compatible key exposes. The previous JWT through the Mavis gateway
+    # suppressed reasoning; the direct API does not. After stripping, the
+    # remaining text is the actual JSON response.
+    import re as _re_think
+    text = _re_think.sub(r"<think>.*?</think>", "", text, flags=_re_think.DOTALL).strip()
     try:
         raw = json.loads(text)
     except Exception as e:
@@ -2380,6 +2401,9 @@ def run_closing_straddle() -> dict:
         text = result.get("text", "").strip()
         if text.startswith("```"):
             text = "\n".join(text.split("\n")[1:]).rstrip("`").strip()
+        # FIX 2026-09-21 13:38: strip <think>...</think> blocks (new OpenAI key exposes reasoning)
+        import re as _re_think_cs
+        text = _re_think_cs.sub(r"<think>.*?</think>", "", text, flags=_re_think_cs.DOTALL).strip()
         try:
             raw = json.loads(text)
         except Exception as e:
@@ -2492,6 +2516,9 @@ def run_nightly_improvement() -> dict:
         text = result.get("text", "").strip()
         if text.startswith("```"):
             text = "\n".join(text.split("\n")[1:]).rstrip("`").strip()
+        # FIX 2026-09-21 13:38: strip <think>...</think> blocks (new OpenAI key exposes reasoning)
+        import re as _re_think_ni
+        text = _re_think_ni.sub(r"<think>.*?</think>", "", text, flags=_re_think_ni.DOTALL).strip()
         try:
             update = json.loads(text)
         except Exception as e:
@@ -3245,7 +3272,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     log(f"QUANT-SERVICE: starting (pid={os.getpid()})")
-    log(f"  LLM endpoint: {LLM_BASE}/messages")
+    log(f"  LLM endpoint: {LLM_BASE}")
     log(f"  HTTP control: http://127.0.0.1:{PORT}")
 
     # Notify Telegram on service start
@@ -3253,7 +3280,7 @@ def main() -> int:
         from telegram_alerter import session_event as tg_session_event
         tg_session_event("Quant service starting", details={
             "pid": os.getpid(),
-            "endpoint": f"{LLM_BASE}/messages",
+            "endpoint": LLM_BASE,
             "http": f"http://127.0.0.1:{PORT}",
             "ts": now_iso(),
         })
