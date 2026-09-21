@@ -38,6 +38,23 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 
 def send_telegram(text: str, silent: bool = False) -> bool:
+    """Send to Telegram. Returns True on success.
+
+    FIX 2026-09-22 03:25: gate on settings.yaml `alerts.telegram.enabled`.
+    This script previously sent even when the user had explicitly disabled
+    Telegram (the "settings-not-honoured" pattern documented in AGENTS.md).
+    Fail-closed: if settings can't be read, default to NOT sending.
+    """
+    try:
+        import yaml as _yaml
+        _cfg_path = ROOT / "config" / "settings.yaml"
+        if _cfg_path.exists():
+            with open(_cfg_path, encoding="utf-8") as _f:
+                _cfg = _yaml.safe_load(_f) or {}
+            if not _cfg.get("alerts", {}).get("telegram", {}).get("enabled", False):
+                return False
+    except Exception:
+        return False
     if silent or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
     try:

@@ -31,14 +31,36 @@ class TelegramAlerter:
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
         self._initial_chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
         self._env_path = "config/credentials.env"
-        # FIX 2026-09-21 03:18: respect settings.yaml alerts.telegram.enabled (user wants
-        # dashboard, not Telegram). If the caller passes enabled=False explicitly, honour it
-        # even if a bot token is present. If enabled=None (default), fall back to "token
-        # present" semantics for backwards compatibility.
-        if enabled is False:
+        # FIX 2026-09-22 03:28: enabled=None (default) now reads settings.yaml
+        # alerts.telegram.enabled instead of falling back to "token present".
+        # The old "token present" fallback contradicted the user's preference
+        # (dashboard only, no Telegram -- see config/settings.yaml alerts.telegram.enabled).
+        # Explicit enabled=True/False still wins over settings.yaml.
+        if enabled is True:
+            self.enabled = True
+            self._enabled_source = "explicit"
+        elif enabled is False:
             self.enabled = False
+            self._enabled_source = "explicit"
         else:
-            self.enabled = bool(self.bot_token)
+            # enabled is None -- read settings.yaml
+            try:
+                import yaml as _yaml
+                _cfg_path = Path(__file__).parent.parent.parent / "config" / "settings.yaml"
+                if _cfg_path.exists():
+                    with open(_cfg_path, encoding="utf-8") as _f:
+                        _cfg = _yaml.safe_load(_f) or {}
+                    self.enabled = bool(
+                        _cfg.get("alerts", {}).get("telegram", {}).get("enabled", False)
+                    )
+                    self._enabled_source = "settings.yaml"
+                else:
+                    self.enabled = bool(self.bot_token)
+                    self._enabled_source = "fallback_no_settings"
+            except Exception:
+                # fail-open on settings read error (preserve pre-fix behavior)
+                self.enabled = bool(self.bot_token)
+                self._enabled_source = "fallback_read_error"
         self.voice_enabled = voice_enabled
         # FIX 2026-09-07 00:55: backoff state for DNS / network outages.
         # Without backoff, the bot's main loop gets monopolized by 20s
