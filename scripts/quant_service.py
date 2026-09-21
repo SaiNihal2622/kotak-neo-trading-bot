@@ -202,6 +202,17 @@ ENV = load_env()
 LLM_BASE = ENV.get('MINIMAX_LLM_BASE_URL', '').rstrip('/')
 LLM_KEY = ENV.get('MINIMAX_LLM_API_KEY', '')
 
+# FIX 2026-09-21 13:50: import now_ist from kotak_bot.utils.clock. The
+# live-go-tracker scheduler at line ~2886 referenced `now_ist()` without
+# importing it; the NameError fired every 6h, masked by the try/except
+# that just logs "live-go-tracker-sched-err".
+try:
+    sys.path.insert(0, str(ROOT))
+    from kotak_bot.utils.clock import now_ist as _now_ist_fn
+except Exception as _now_ist_imp_err:
+    _now_ist_fn = None
+    log(f"now_ist-import-warn: {_now_ist_imp_err}")
+
 
 # ---------- LLM direct call (Anthropic Messages API format) ----------
 
@@ -1547,6 +1558,23 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     # as the strategies with real edge. The LLM was opening vague "bear
     # put verticals" with no strategy attribution. Now the library tells
     # the brain WHICH strategy to run based on current market conditions.
+
+    # FIX 2026-09-21 13:50: helper that converts the per-symbol candle-context
+    # dict ({"NIFTY": {"bar_1m": {o,h,l,c}, ...}}) into the list-of-OHLCV
+    # dicts that select_strategy iterates with .get("c"). Without this,
+    # iterating a string-keyed dict raised AttributeError on each periodic
+    # scan.
+    def _build_candles_list_for_strategy(candle_ctx) -> list:
+        if not candle_ctx or not isinstance(candle_ctx, dict):
+            return []
+        out = []
+        for sym, payload in candle_ctx.items():
+            if not isinstance(payload, dict):
+                continue
+            bar = payload.get("bar_1m") or {}
+            if bar and all(k in bar for k in ("o", "h", "l", "c")):
+                out.append({"o": bar["o"], "h": bar["h"], "l": bar["l"], "c": bar["c"], "v": bar.get("n_ticks", 0)})
+        return out
     try:
         from strategy_library import (
             select_strategy, generate_trade_plan, load_performance, save_performance,
@@ -1574,7 +1602,10 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             "spot": _spot,
             "vix": _vix,
             "session_open": _session_open,
-            "candles": context.get("candles", []),
+            # FIX 2026-09-21 13:50: convert candle context dict (per-symbol → indicators)
+            # into the list-of-OHLCV-dicts shape that select_strategy expects.
+            # Without this, select_strategy iterates a dict and hits 'str' has no .get.
+            "candles": _build_candles_list_for_strategy(context.get("candles")),
             "now": datetime.now(),
             "vwap": float(_nifty.get("vwap") or 0),
         }
@@ -2883,9 +2914,12 @@ def watch_loop():
                         # Only fire during/after market hours (15:30 IST = 10:00 UTC)
                         # to avoid stale data evaluation. The check itself is
                         # idempotent so multiple fires per day is fine.
-                        _now_ist = now_ist()
-                        if _now_ist.hour >= 15 and _now_ist.minute >= 30:
-                            _scheduled_subprocess("scripts/live_go_tracker.py", "live-go-tracker", timeout=30)
+                        if _now_ist_fn is None:
+                            log("live-go-tracker-sched-skip: now_ist unavailable")
+                        else:
+                            _now_ist = _now_ist_fn()
+                            if _now_ist.hour >= 15 and _now_ist.minute >= 30:
+                                _scheduled_subprocess("scripts/live_go_tracker.py", "live-go-tracker", timeout=30)
                 except Exception as _lgt_err:
                     log(f"live-go-tracker-sched-err: {_lgt_err}")
                 # FIX 2026-09-08 16:35: GROK BOT DESK — 6-role LLM desk (parallel 2nd opinion).

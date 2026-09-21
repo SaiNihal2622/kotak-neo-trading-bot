@@ -1,4 +1,4 @@
-"""grok_desk.py — 6-role LLM trading desk for Indian NIFTY/BNF options.
+﻿"""grok_desk.py â€” 6-role LLM trading desk for Indian NIFTY/BNF options.
 
 DESIGN (2026-09-08): inspired by @MSBIntel's GROK BOT Desk (PDF guide shared
 by the user, 4 pages, 6 role prompts). The Grok Bot uses Grok-4-fast (xAI).
@@ -11,12 +11,12 @@ The 6 roles, adapted for Indian weekly options:
   03 NEWS     : Filter relevant news (RBI, FII/DII, US, INR, crude, earnings)
   04 WHALES   : Track FII/DII flows, OI build-up, large block deals
   05 RISK     : Apply risk rules (5% per trade, 6 max positions, etc.)
-  06 HEAD     : Confluence filter — speak only if 2+ roles agree on
+  06 HEAD     : Confluence filter â€” speak only if 2+ roles agree on
                something material that the human needs to act on.
                Default output: QUIET DAY. Speak rarely.
 
 Each role is a focused LLM call (~300-500 tokens). Total cost per cycle
-is roughly 6 calls × 400 tokens = 2,400 tokens. At our current rate
+is roughly 6 calls Ã— 400 tokens = 2,400 tokens. At our current rate
 limit (30/min), we can run the desk every 15 minutes as designed.
 
 DATA SOURCES (all already collected by the bot):
@@ -33,7 +33,7 @@ OUTPUT CHANNELS:
   - data_cache/grok_desk_history.jsonl : append-only log
   - Telegram alert ONLY when head-of-desk speaks (no QUIET DAY spam)
 
-This is a PARALLEL module — it does not replace the existing LLM brain
+This is a PARALLEL module â€” it does not replace the existing LLM brain
 in scripts/quant_service.py. It runs alongside and provides an
 independent second opinion. The head-of-desk alert shows the user a
 focused brief, separate from the brain's full reasoning.
@@ -93,7 +93,7 @@ LLM_MODEL = "MiniMax-M2.7-highspeed"
 
 
 # ----- role system prompts (6 roles) -----
-# Each role is intentionally short and focused — same philosophy as the
+# Each role is intentionally short and focused â€” same philosophy as the
 # Grok Bot guide. The system prompt is the "personality", the user message
 # is the data + instruction.
 
@@ -165,7 +165,7 @@ def _opt_chain_summary(symbol: str) -> str:
     # find top OI build-up / unwind
     if not strikes:
         return f"{symbol}: spot={spot:.2f} atm={atm}, no strikes cached"
-    # take ATM ± 5 strikes for the summary
+    # take ATM Â± 5 strikes for the summary
     try:
         atm_int = int(atm)
         keys = [k for k in strikes.keys() if abs(int(k.split("_")[0]) - atm_int) <= 250]
@@ -195,7 +195,7 @@ def _levels_summary() -> str:
 
 
 def _oi_summary() -> str:
-    """Get latest OI snapshots for NIFTY/BNF — top build-up / unwind."""
+    """Get latest OI snapshots for NIFTY/BNF â€” top build-up / unwind."""
     oi_dir = DCACHE / "oi_snapshots"
     if not oi_dir.exists():
         return "OI snapshots not available"
@@ -226,7 +226,7 @@ def _oi_summary() -> str:
 
 
 def _fii_dii_summary() -> str:
-    """Get latest FII/DII flow data — the 'whales' feed.
+    """Get latest FII/DII flow data â€” the 'whales' feed.
     Returns a short summary suitable for the WHALES role's LLM context.
     """
     d = _load_json(DCACHE / "fii_dii.json")
@@ -262,7 +262,7 @@ def _news_summary() -> str:
         return "news not available"
     lines = [f"NEWS (score={d.get('score', 0):.2f}, n={d.get('n', 0)}):"]
     for h in d.get("headlines", [])[:8]:
-        if h and not h.startswith("│") and not h.startswith(" "):
+        if h and not h.startswith("â”‚") and not h.startswith(" "):
             lines.append(f"  - {h[:200]}")
     return "\n".join(lines) if len(lines) > 1 else "no clean headlines"
 
@@ -332,25 +332,41 @@ def _predictive_signals_summary() -> str:
 
 
 # ----- LLM call -----
-def _call_minimax(system: str, user: str, max_tokens: int = 400, timeout: int = 30) -> str:
-    """Call minimax M2.7-highspeed via Anthropic-compatible Messages API.
-    Matches the calling convention in kotak_bot/signals/llm_judge.py.
+def _call_minimax(system: str, user: str, max_tokens: int = 2000, timeout: int = 30) -> str:
+    """Call minimax M2.7-highspeed via OpenAI-compatible Chat Completions API.
+
+    FIX 2026-09-21 13:50: migrated from Anthropic /messages format to OpenAI
+    /chat/completions. The Mavis gateway (agent.minimax.io/mavis/api/v1/llm/v1)
+    used an expired JWT; the new key works only at api.minimax.io/v1/chat/completions.
+    The old code appended /messages to the URL, which gave 404 against the OpenAI endpoint.
+
+    FIX 2026-09-21 14:00: bumped default max_tokens from 400 to 2000. M2.7's
+    reasoning block consumes 300-600 tokens even for tiny prompts; with
+    max_tokens=2000 the response was truncated to just the <think> and
+    finish_reason='length', leaving no actual content. 2000 fits the
+    reasoning + a real answer.
     """
     if not LLM_API_KEY:
         raise RuntimeError("MINIMAX_LLM_API_KEY not set in env")
-    url = f"{LLM_BASE_URL.rstrip('/')}/messages"
+    # FIX 2026-09-21 13:50: also strip any trailing /chat/completions so we don't
+    # double it if the env already has the full path.
+    base = LLM_BASE_URL.rstrip('/')
+    if base.endswith('/chat/completions'):
+        url = base
+    else:
+        url = f"{base}/chat/completions"
     headers = {
         "Content-Type": "application/json",
-        "x-api-key": LLM_API_KEY,
         "Authorization": f"Bearer {LLM_API_KEY}",
-        "anthropic-version": "2023-06-01",
     }
+    # OpenAI format: system goes inside the messages array, not as a top-level field.
     body = {
         "model": LLM_MODEL,
         "max_tokens": max_tokens,
         "temperature": 0.1,
-        "system": system,
-        "messages": [{"role": "user", "content": user}],
+        "messages": (
+            [{"role": "system", "content": system}] if system else []
+        ) + [{"role": "user", "content": user}],
     }
     with httpx.Client(timeout=timeout) as c:
         resp = c.post(url, headers=headers, json=body)
@@ -358,14 +374,15 @@ def _call_minimax(system: str, user: str, max_tokens: int = 400, timeout: int = 
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
     data = resp.json()
     out = ""
-    for block in data.get("content", []):
-        if block.get("type") == "text":
-            out += block.get("text", "")
-        elif block.get("type") == "thinking" and not out:
-            out += block.get("thinking", "")
+    for choice in data.get("choices", []):
+        msg = choice.get("message", {}) or {}
+        out += msg.get("content", "") or ""
+    # FIX 2026-09-21 13:50: strip reasoning blocks (new key exposes M2.7 thinking)
+    import re as _re_grok
+    out = _re_grok.sub(r"<think>.*?</think>", "", out, flags=_re_grok.DOTALL).strip()
     if not out:
         raise RuntimeError(f"no text in response: {str(data)[:200]}")
-    return out.strip()
+    return out
 
 
 # ----- role runners -----
@@ -389,7 +406,7 @@ def run_scanner() -> str:
         + _opt_chain_summary("BANKNIFTY") + "\n\n"
         + "Output 5 most unusual observations, one line each, or NOTHING UNUSUAL."
     )
-    return _call_minimax(SYSTEM_SCANNER, user, max_tokens=350)
+    return _call_minimax(SYSTEM_SCANNER, user, max_tokens=2000)
 
 
 def run_hunter() -> str:
@@ -400,10 +417,10 @@ def run_hunter() -> str:
         + _opt_chain_summary("NIFTY")[:600] + "\n\n"
         + "For each underlying: is there a defined setup? State the level that "
         + "makes it valid and the level that kills it. If no setup, say NO SETUP. "
-        + "Factor in the predictive signals — a BULLISH signal with 0.7+ confidence "
+        + "Factor in the predictive signals â€” a BULLISH signal with 0.7+ confidence "
         + "is a stronger setup than a NEUTRAL signal."
     )
-    return _call_minimax(SYSTEM_HUNTER, user, max_tokens=400)
+    return _call_minimax(SYSTEM_HUNTER, user, max_tokens=2000)
 
 
 def run_news() -> str:
@@ -413,19 +430,19 @@ def run_news() -> str:
         + "Output only items that could move NIFTY/BANKNIFTY positions within "
         + "4 hours. Tag PRIMARY or SECONDARY. One line each. No opinions."
     )
-    return _call_minimax(SYSTEM_NEWS, user, max_tokens=400)
+    return _call_minimax(SYSTEM_NEWS, user, max_tokens=2000)
 
 
 def run_whales() -> str:
     user = (
-        "Flow data — institutional FII/DII + OI build-up / unwind:\n\n"
+        "Flow data â€” institutional FII/DII + OI build-up / unwind:\n\n"
         + _fii_dii_summary() + "\n\n"
         + _oi_summary() + "\n\n"
         + "Net institutional flow direction (FII vs DII, 3d/5d sums). Top OI "
         + "build-up strikes. Any cluster of 2+ whales in the same direction "
         + "inside an hour. If no signal, say QUIET ON FLOW."
     )
-    return _call_minimax(SYSTEM_WHALES, user, max_tokens=400)
+    return _call_minimax(SYSTEM_WHALES, user, max_tokens=2000)
 
 
 def run_risk(scanner: str, hunter: str, news: str, whales: str) -> str:
@@ -439,10 +456,10 @@ def run_risk(scanner: str, hunter: str, news: str, whales: str) -> str:
         f"WHALES: {whales}\n\n"
         "Output: APPROVED or REJECTED with the rule that decided it. "
         "If multiple ideas, list each as APPROVED/REJECTED. No compromise. "
-        "Factor in the predictive signals — a high-confidence BULLISH signal "
+        "Factor in the predictive signals â€” a high-confidence BULLISH signal "
         "reduces risk; a high-vol regime increases risk."
     )
-    return _call_minimax(SYSTEM_RISK, user, max_tokens=300)
+    return _call_minimax(SYSTEM_RISK, user, max_tokens=2000)
 
 
 def run_head(scanner: str, hunter: str, news: str, whales: str, risk: str) -> str:
@@ -459,7 +476,7 @@ def run_head(scanner: str, hunter: str, news: str, whales: str, risk: str) -> st
         "If something clears it, ONE message under 100 words: what, why now, "
         "what would invalidate it."
     )
-    return _call_minimax(SYSTEM_HEAD, user, max_tokens=300)
+    return _call_minimax(SYSTEM_HEAD, user, max_tokens=2000)
 
 
 # ----- main run -----
@@ -540,15 +557,15 @@ def send_telegram_alert(out: DeskOutput) -> bool:
         if not (a and a.enabled):
             return False
         msg = (
-            f"🧠 [GROK DESK — head-of-desk]\n\n"
+            f"ðŸ§  [GROK DESK â€” head-of-desk]\n\n"
             f"{out.head}\n\n"
-            f"— — —\n"
+            f"â€” â€” â€”\n"
             f"scanner: {out.scanner[:120]}\n"
             f"hunter:  {out.hunter[:120]}\n"
             f"news:    {out.news[:120]}\n"
             f"whales:  {out.whales[:120]}\n"
             f"risk:    {out.risk[:120]}\n"
-            f"\n({out.duration_sec}s · {out.cycle_ts})"
+            f"\n({out.duration_sec}s Â· {out.cycle_ts})"
         )
         return a.send(msg)
     except Exception as e:
