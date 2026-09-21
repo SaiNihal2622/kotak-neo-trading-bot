@@ -53,12 +53,13 @@ Set-Content -Path $HeartbeatFile -Value $startupInfo -Encoding UTF8
 # the service "Running". The service manager considers the service stopped
 # only when this script process exits.
 #
-# We use the `cmd /c` indirection with merged stdout+stderr so that
-# python output lands in both files correctly on Windows (Python's
-# unbuffered mode + a real file handle avoids the IOExceptions that
-# happen when NSSM tries to redirect a process that writes to its
-# parent's pipes).
-$logArg = "1>>`"$OutFile`" 2>>`"$ErrFile`""
+# FIX 2026-09-22 02:50: removed the `cmd /c` wrapper. Previously the cmd /
+# c indirection worked around a stdout/pipe issue, but as of Python 3.12
+# the wrap causes StartService FAILED 1053 ("did not respond in a timely
+# fashion") because cmd.exe spawns and exits, leaving the python child
+# orphaned and the Service Control Manager unsure when the service is
+# really ready. Direct invocation works fine in Python 3.12 with
+# PYTHONUNBUFFERED=1 and proper log redirection.
 Write-Host "[http-server] starting python on :$Port, logging to $OutFile / $ErrFile"
-& cmd.exe /c "`"$PythonExe`" -u -m kotak_bot.http_server --port $Port $logArg"
+& "$PythonExe" -u -m kotak_bot.http_server --port $Port 1>>"$OutFile" 2>>"$ErrFile"
 exit $LASTEXITCODE
