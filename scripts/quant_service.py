@@ -76,7 +76,12 @@ DEDUP_SEC = 5             # Same event-type+symbol won't re-fire within 5s (was 
 SESSION_MOVE_DEDUP_SEC = 300  # Session-wide moves per symbol re-evaluate every 5 min (was 30 min)
 MIN_DATA_POINTS = 5
 LLM_MODEL = "MiniMax-M3"
-LLM_MAX_TOKENS = 4000
+# FIX 2026-09-21 15:35: bumped 4000 -> 6000 for the periodic-scan path. M2.7's
+# <think> block alone eats 1.5-3k tokens for complex prompts. With 4000 we
+# kept hitting finish_reason=length on verbose scenarios (especially
+# when there's a lot of intraday data to process). 6000 fits the
+# thinking + a real answer for the largest prompts we generate.
+LLM_MAX_TOKENS = 6000
 
 # Persistent state
 TICKS: dict[str, deque] = {}
@@ -1827,13 +1832,12 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     result = call_llm_direct(
         PROFESSIONAL_QUANT_SYSTEM + get_prompt_addition() + get_min_activity_reminder(),
         user_content,
-        # FIX 2026-09-21 14:25: bumped 2000 -> 4000. M2.7's <think> block can
-        # be 1.5-3k tokens for complex prompts; with 2000 we hit finish_reason=length.
-        max_tokens=4000,
+        # FIX 2026-09-21 15:35: uses LLM_MAX_TOKENS (now 6000). Was 4000; M2.7's
+        # think block alone eats 1.5-3k tokens for complex prompts.
+        max_tokens=LLM_MAX_TOKENS,
     )
-    _initial_max = 4000  # FIX 2026-09-21 14:25: local copy so the retry block below
-                         # can check the budget we asked for (NameError-prone if
-                         # we referenced a parameter that doesn't exist on this fn).
+    _initial_max = LLM_MAX_TOKENS  # FIX 2026-09-21 14:25: local copy so the retry block
+                                   # can check the budget we asked for.
     SERVICE_STATE["llm_calls"] += 1
     # Track LLM cost (per Anthropic Sonnet pricing)
     if result.get("ok") and result.get("usage"):

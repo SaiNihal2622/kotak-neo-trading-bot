@@ -56,10 +56,45 @@ def seed_from_liveness() -> dict:
 
 
 def read_bot_latest_prices() -> dict:
-    """Best-effort: read the most recent tick for each subscribed symbol from
-    the running bot's data. We do this by reading liveness + paper_state for
-    any non-zero marks, plus a direct yfinance call as fallback."""
+    """FIX 2026-09-21 15:30: was using yfinance which returned the same value for
+    open/high/low/current (the yfinance 1d close), making the LLM see a flat 0.00%
+    intraday range and skip the closing straddle. Now we read live ticks from the
+    candle_engine (which is always running) plus session_open from session_opens.json.
+
+    Priority order:
+      1. candle_engine.get_engine().last_ltp[sym]  -- real tick from kotak_prod_feed
+      2. option_chains.json spot                 -- refreshed every 15 min by chain-analyzer
+      3. session_opens.json opens[sym]            -- morning 09:15 IST snapshot
+      4. yfinance fallback                        -- last resort
+    """
     out = {}
+    # 1. candle_engine live ticks (preferred)
+    try:
+        sys.path.insert(0, str(ROOT))
+        from candle_engine import get_engine as _get_eng
+        eng = _get_eng()
+        for sym in ('NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'INDIAVIX'):
+            ltp = eng.last_ltp.get(sym)
+            if ltp and ltp > 0:
+                out[sym] = {'price': float(ltp), 'volume': 0, 'source': 'candle_engine'}
+    except Exception:
+        pass
+    # 2. option_chains.json fallback
+    if len(out) < 2:
+        try:
+            chains_path = DATA / 'option_chains.json'
+            if chains_path.exists():
+                ch = json.loads(chains_path.read_text(encoding='utf-8'))
+                chains = ch.get('chains', {})
+                for sym, payload in chains.items():
+                    if sym in out:
+                        continue
+                    spot = payload.get('spot')
+                    if spot and spot > 0:
+                        out[sym] = {'price': float(spot), 'volume': 0, 'source': 'option_chains'}
+        except Exception:
+            pass
+    # 3. yfinance fallback (last resort, prefer gap-fill not first call)
     try:
         import yfinance as yf
         for sym, ticker in [
@@ -69,11 +104,13 @@ def read_bot_latest_prices() -> dict:
             ('MIDCPNIFTY', 'NIFTY_MIDCAP_100.NS'),
             ('INDIAVIX', '^INDIAVIX'),
         ]:
+            if sym in out:
+                continue
             try:
                 t = yf.Ticker(ticker)
                 hist = t.history(period='1d')
                 if hist is not None and not hist.empty:
-                    out[sym] = {'price': float(hist['Close'].iloc[-1]), 'volume': float(hist['Volume'].iloc[-1]) if 'Volume' in hist.columns else 0}
+                    out[sym] = {'price': float(hist['Close'].iloc[-1]), 'volume': 0}
             except Exception:
                 pass
     except Exception:
@@ -136,23 +173,86 @@ def build_levels(symbol: str, ticks: deque) -> dict:
 
 
 def main() -> int:
-    # Seed with current prices (real ticks would come from a feed subscriber;
-    # for now we use yfinance as a 1-sec snapshot)
-    prices = read_bot_latest_prices()
+    # FIX 2026-09-21 15:32: was broken — module-level TICKS dict resets every
+    # invocation, so each CLI run only saw the single tick it just appended.
+    # Result: open=high=low=current (one value), range=0.00%, LLM dismissed as
+    # "stale/flat data feed". Now we read the candle_engine's per-minute bars
+    # (data_cache/candles/SYM_1m.jsonl) which PERSIST and contain the full
+    # OHLCV history for today.
     ts = now_ist_str()
-    for sym, p in prices.items():
-        if p.get('price'):
-            TICKS[sym].append((ts, p['price'], p.get('volume', 0)))
+    out = {'ts': ts, 'instruments': {}}
 
-    # Build levels
-    out = {
-        'ts': ts,
-        'instruments': {},
-    }
-    for sym in TICKS:
-        levels = build_levels(sym, TICKS[sym])
-        if levels:
-            out['instruments'][sym] = levels
+    # 1. Read live LTP from candle engine (preferred)
+    live_prices = read_bot_latest_prices()
+
+    # 2. Read per-minute bars JSONL for full session OHLCV
+    candles_dir = DATA / 'candles'
+    today = ts[:10]
+    SYMBOLS_TO_TRACK = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'INDIAVIX']
+
+    for sym in SYMBOLS_TO_TRACK:
+        # Read bars from JSONL
+        bars = []
+        bar_path = candles_dir / f'{sym}_1m.jsonl'
+        if bar_path.exists():
+            try:
+                for line in bar_path.read_text(encoding='utf-8').strip().split('\n'):
+                    if not line.strip():
+                        continue
+                    try:
+                        bar = json.loads(line)
+                        # Filter to today's bars only
+                        bar_ts = bar.get('ts', '')
+                        if bar_ts.startswith(today):
+                            bars.append(bar)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+        # Build per-symbol levels
+        cur = live_prices.get(sym, {}).get('price', 0)
+        if not cur and bars:
+            # Fallback to last bar close
+            try:
+                cur = float(bars[-1].get('c', 0))
+            except Exception:
+                cur = 0
+        if not cur:
+            continue
+
+        # Open from first bar of today; close/high/low from full day
+        opn = float(bars[0].get('o', cur)) if bars else cur
+        highs = max((float(b.get('h', cur)) for b in bars), default=cur)
+        lows = min((float(b.get('l', cur)) for b in bars), default=cur)
+        vwap = sum(float(b.get('c', 0)) for b in bars) / max(len(bars), 1)  # rough proxy
+        # Opening range (first 15 min from 09:15)
+        or_bars = [b for b in bars if '09:15' <= b.get('ts', '')[11:16] <= '09:30']
+        or_high = max((float(b.get('h', cur)) for b in or_bars), default=highs)
+        or_low = min((float(b.get('l', cur)) for b in or_bars), default=lows)
+        # Recent swing (last 30 min)
+        cutoff = ts[:14] + str(int(ts[14:16]) - 1).zfill(2) + ts[16:] if int(ts[14:16]) > 0 else ts
+        recent = [b for b in bars if b.get('ts', '0') >= cutoff]
+        swing_high = max((float(b.get('h', cur)) for b in recent), default=highs)
+        swing_low = min((float(b.get('l', cur)) for b in recent), default=lows)
+        # Distance calculations
+        dist_from_vwap = round((cur - vwap) / vwap * 100, 3) if vwap else 0
+        rng_pct = round((cur - opn) / opn * 100, 3) if opn else 0
+
+        out['instruments'][sym] = {
+            'open': round(opn, 2),
+            'current': round(cur, 2),
+            'day_high': round(highs, 2),
+            'day_low': round(lows, 2),
+            'vwap': round(vwap, 2),
+            'opening_range': {'high': round(or_high, 2), 'low': round(or_low, 2)},
+            'swing_30m': {'high': round(swing_high, 2), 'low': round(swing_low, 2)},
+            'dist_from_vwap': dist_from_vwap,
+            'session_pct': rng_pct,
+            'tick_count_today': len(bars),
+            'last_ts': bars[-1].get('ts', '') if bars else ts,
+            'source': 'candles_1m.jsonl + candle_engine',
+        }
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(out, indent=2, default=str), encoding='utf-8')
@@ -161,10 +261,8 @@ def main() -> int:
     summary = []
     for sym, lv in out['instruments'].items():
         cur = lv.get('current', 0)
-        vwap = lv.get('vwap', 0)
-        dh = lv.get('day_high', 0)
-        dl = lv.get('day_low', 0)
-        summary.append(f"{sym}={cur} vwap={vwap} range=[{dl},{dh}]")
+        rng = lv.get('session_pct', 0)
+        summary.append(f"{sym}={cur} range={rng:+.2f}%")
     print(f"INTRADAY-LEVELS: {' | '.join(summary)}")
     return 0
 

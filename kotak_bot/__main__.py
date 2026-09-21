@@ -2571,7 +2571,11 @@ def run_paper() -> None:
             # mismatch caused the watchdog to fire every hour reporting a 12-day-stale file even
             # though the engine was actively backfilling `session_opens.json` every cycle.
             # Now it reads from the right file.
-            if cycle_counter % 120 == 0 and is_market_open(now):  # every 1 hour (30s * 120)
+            # FIX 2026-09-21 15:32: ALSO refresh intraday_levels.json every 30 min during
+            # market hours. The CLI script was broken (yfinance snapshot returned single
+            # value → LLM saw flat 0.00% range → dismissed setups). Now main() reads
+            # per-minute bars JSONL, so we just need to call it more often.
+            if cycle_counter % 60 == 0 and is_market_open(now):  # every 30 min (30s * 60)
                 try:
                     from pathlib import Path as _PathWatch
                     import time as _time_w
@@ -2594,6 +2598,18 @@ def run_paper() -> None:
                                 logger.info(f"[CANDLE-WATCHDOG] backfilled {_bf} symbols")
                             except Exception as _cw_err:
                                 logger.warning(f"[CANDLE-WATCHDOG] backfill failed: {_cw_err}")
+                    # FIX 2026-09-21 15:32: refresh intraday_levels.json with real OHLCV
+                    # (was going stale because no periodic refresh; LLM saw flat 0.00%
+                    # range and skipped the closing straddle today).
+                    if _intraday_path.exists():
+                        _intra_age_h = (_time_w.time() - _intraday_path.stat().st_mtime) / 3600
+                        if _intra_age_h > 0.5:  # refresh every 30 min
+                            try:
+                                from scripts.intraday_levels import main as _intra_main
+                                _intra_main()
+                                logger.info(f"[INTRADAY-LEVELS] refreshed (was {_intra_age_h:.1f}h stale)")
+                            except Exception as _intra_err:
+                                logger.warning(f"[INTRADAY-LEVELS] refresh failed: {_intra_err}")
                 except Exception as _wd_err:
                     logger.debug(f"candle-watchdog failed: {_wd_err}")
             # FIX 2026-09-16 00:25: chain health watchdog. Every 5 min, check option
