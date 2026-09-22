@@ -230,6 +230,31 @@ are VISIBLE in the dashboard before they cause damage.
 - New recurring issue: add an `audit_<issue>()` function to `scripts/_system_audit.py`, then add it to the `main()` dict.
 - Brain's LLM keeps HOLDing in a way that survives all prompt hints: the system enforcement will fire on the next 15-min cycle and force a trade. The LLM can override on its next call.
 
+## SixJudgments (Jev pattern) metrics â€” added 2026-09-23 00:42
+
+`data_cache/atomic_judgments_metrics.jsonl` (gitignored) records every
+SixJudgments LLM call:
+- `ts, parse_ok, action (APPROVE|DOWNSIZE|VETO), tier (1-4), fired (list),
+  state_size_chars, latency_ms, err_kind (none|import|llm_call|parse|exception)`
+
+**Compact state is 21 fields** (was 10): SPOT, VIX, ADX, SIGMA5m, INTRADAY_RNG,
+VIX_PCTL, BIAS, VWAP_DEV, EMA_SPREAD, RSI14, MAXPAIN_DIST, NEWS, FII, DII,
+DOW, LAST3, SPREADbps, OIdelta5m, OI_BUILD, PCR, CASH, POS, DAYPNL,
+MIN_CLOSE, EXPIRY_D. Output is still 6 closed enums (variance stays low).
+
+**Apply when**:
+- "Is SixJudgments working?" â€” `tail -20 data_cache/atomic_judgments_metrics.jsonl`
+  and look at parse_ok + tier + action. Most calls should be parse_ok=True.
+- "Why all HOLDs?" â€” check `fired_rules` in metrics; Tier 1 VETO means
+  toxic_flow=high or liquidity_stressed=high or volatile+neutral.
+- "Is the LLM cost really low?" â€” count parse_ok lines vs total LLM-DECISION
+  log lines in `data_cache/quant_service.log`. Each parse_ok=True skips
+  the legacy 6K-token prompt entirely.
+- "Add another input signal" â€” extend `_extract_compact_state()` in
+  `scripts/quant_service.py` AND the `_fmt()` formatter in
+  `kotak_bot/signals/atomic_judgments.py::format_state_for_judgments()`.
+  Test in `tests/test_atomic_judgments.py::TestStateFormatter`.
+
 ## Recovery procedures
 
 - **Bot dead mid-session**: `nssm restart KotakBotPaper`
@@ -1624,24 +1649,24 @@ All 5 chains broken (yfinance returns garbage). Watchdog caught them, _chains_un
 
 **Tomorrow focus**: Trade only iron_condor setups per engine signal. Reconcile decision-log vs closed-trade discrepancy. Deploy 3.7% Kelly sizing on the next qualifying setup; do not force directional trades.
 
-### 2026-09-21: Session v7 — Stub-function / settings-not-honoured pattern (recurring)
+### 2026-09-21: Session v7 ï¿½ Stub-function / settings-not-honoured pattern (recurring)
 
 **Rule**: This session shipped 6 fixes (commit fdc4bba) addressing two recurring patterns:
 
-**Pattern 1 — Stub function that returns None silently**. `scripts/quant_service.py:http_server()` was defined with a full docstring describing what it should do (`bind :8503, allow_reuse_address, 5s backoff, graceful shutdown`) but its body was literally `return None`. The brain spawned an HTTP thread that exited immediately, and :8503 was never bound. `premarket_self_heal.py:check_dashboards` flagged this every day but the pattern is invisible in code review — the function LOOKS implemented. **Apply when**: a function has a docstring describing what it should do but the body is suspiciously short (1-3 lines). Cross-check that any function called via `Thread(target=f)` actually has a blocking loop (e.g. `serve_forever()`, `while True`, `asyncio.run`).
+**Pattern 1 ï¿½ Stub function that returns None silently**. `scripts/quant_service.py:http_server()` was defined with a full docstring describing what it should do (`bind :8503, allow_reuse_address, 5s backoff, graceful shutdown`) but its body was literally `return None`. The brain spawned an HTTP thread that exited immediately, and :8503 was never bound. `premarket_self_heal.py:check_dashboards` flagged this every day but the pattern is invisible in code review ï¿½ the function LOOKS implemented. **Apply when**: a function has a docstring describing what it should do but the body is suspiciously short (1-3 lines). Cross-check that any function called via `Thread(target=f)` actually has a blocking loop (e.g. `serve_forever()`, `while True`, `asyncio.run`).
 
-**Pattern 2 — settings.yaml/`.env` flag not honoured**. `config/settings.yaml:alerts.telegram.enabled: false` was set to `false` (user's preference: dashboard, not Telegram), but `TelegramAlerter.__init__` set `self.enabled = bool(self.bot_token)` — entirely ignoring the YAML flag. The alerter self-enabled on token presence. Same pattern in `scripts/_telegram_alert.py:send_telegram()` and `scripts/telegram_alerter.py:get_alerter()`. **Apply when**: a config flag is named `enabled`/`disabled`/`on`/`off` and there are >1 callers of the constructor or function. Trace ALL paths from the YAML ? constructor parameter ? instance attribute ? gate condition. If the gate uses a different attribute than the YAML (e.g. `bot_token` presence vs `enabled` flag), the YAML is silently ignored.
+**Pattern 2 ï¿½ settings.yaml/`.env` flag not honoured**. `config/settings.yaml:alerts.telegram.enabled: false` was set to `false` (user's preference: dashboard, not Telegram), but `TelegramAlerter.__init__` set `self.enabled = bool(self.bot_token)` ï¿½ entirely ignoring the YAML flag. The alerter self-enabled on token presence. Same pattern in `scripts/_telegram_alert.py:send_telegram()` and `scripts/telegram_alerter.py:get_alerter()`. **Apply when**: a config flag is named `enabled`/`disabled`/`on`/`off` and there are >1 callers of the constructor or function. Trace ALL paths from the YAML ? constructor parameter ? instance attribute ? gate condition. If the gate uses a different attribute than the YAML (e.g. `bot_token` presence vs `enabled` flag), the YAML is silently ignored.
 
-**Why both bugs survived >2 weeks**: The first one because premarket_self_heal flagged "dashboard_8503 not responding" daily but no one investigated WHY (the function looked fine in code). The second one because Telegram sends silently fail with 401 (no exception bubbles to the LLM) and the bot kept working — there was no user-visible breakage, just log noise. Both are silent-failure classes that need AUDIT-THE-AUDIT checks (precommit + system_audit), not just functional tests.
+**Why both bugs survived >2 weeks**: The first one because premarket_self_heal flagged "dashboard_8503 not responding" daily but no one investigated WHY (the function looked fine in code). The second one because Telegram sends silently fail with 401 (no exception bubbles to the LLM) and the bot kept working ï¿½ there was no user-visible breakage, just log noise. Both are silent-failure classes that need AUDIT-THE-AUDIT checks (precommit + system_audit), not just functional tests.
 
 **Tests**: 17/17 premarket checks now pass (`SYSTEM READY FOR MARKET`). Telegram 401 retries GONE from bot.log. Brain HTTP `/health` returns 200.
 
 **Apply when**:
 - Adding a new long-running thread: include a heartbeat check (like `_confluence_loop.heartbeat`) and a one-line "thread bound :PORT" log so the absence of the log is a clear failure signal.
 - Adding a new settings flag: write a test that toggles the flag and verifies the behavior changes (not just that the file parses).
-- Future "premkt says X is broken" — the first thing to check is whether the thing LOOKING broken is actually wired at all (function exists but is a stub, or config flag is ignored).
-- Brain HTTP :8503 going down again: `grep "HTTP-SERVER: bound" data_cache/quant_service.log` — if absent, the stub returned.
-- Telegram 401 errors returning: `grep "alerts.telegram.enabled" config/settings.yaml` — should be `false`. If `true`, that's the user re-enabling it (intended). If still `false`, a new caller bypassed the gate.
+- Future "premkt says X is broken" ï¿½ the first thing to check is whether the thing LOOKING broken is actually wired at all (function exists but is a stub, or config flag is ignored).
+- Brain HTTP :8503 going down again: `grep "HTTP-SERVER: bound" data_cache/quant_service.log` ï¿½ if absent, the stub returned.
+- Telegram 401 errors returning: `grep "alerts.telegram.enabled" config/settings.yaml` ï¿½ should be `false`. If `true`, that's the user re-enabling it (intended). If still `false`, a new caller bypassed the gate.
 
 ### 2026-09-22 22:58 IST â€” Windows venv python.exe IS py.exe launcher (the 'bot fork' mystery solved)
 Type: lesson
