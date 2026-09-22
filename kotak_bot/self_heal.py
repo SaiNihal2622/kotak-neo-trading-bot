@@ -29,6 +29,7 @@ Recipes (add to RECIPES dict below):
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
@@ -196,8 +197,49 @@ def _fix_nssm_service_stopped() -> dict:
     'production' registration. If NSSM state is STOPPED, we start it so
     NSSM takes over monitoring + auto-restart.
 
-    Uses NSSM directly (Windows binary, runs as SYSTEM without UAC)."""
+    FIX 2026-09-22 14:00: self-reinforcing restart loop. Before calling
+    'nssm start', count existing kotak_bot paper processes via PowerShell
+    Get-CimInstance. If there's already another running bot (besides
+    ourselves), SKIP the nssm start. Without this check, during the brief
+    AppThrottle window when NSSM is mid-restart, the running bot's
+    self-heal detector sees the service as STOPPED and calls 'nssm start',
+    which makes NSSM spawn a SECOND instance. Both bots then fight for
+    paper.lock and create the orphan-killer 1-min restart loop we saw
+    today (PID 20364 venv python + PID 19140 SYSTEM python both running).
+    """
     try:
+        # FIX 2026-09-22 14:00: count OTHER kotak_bot paper processes.
+        # We're "inside" one (this process), so subtract 1 from the count.
+        _ps = (
+            "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" "
+            "| Where-Object { $_.CommandLine -match 'kotak_bot paper' } "
+            "| Select-Object -ExpandProperty ProcessId"
+        )
+        _r = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", _ps],
+            capture_output=True, text=True, timeout=10,
+        )
+        _other_pids = [
+            int(line.strip())
+            for line in (_r.stdout or "").splitlines()
+            if line.strip().isdigit() and int(line.strip()) != os.getpid()
+        ]
+        if _other_pids:
+            return {
+                "applied": False,
+                "msg": (
+                    f"skipping nssm start: {len(_other_pids)} other kotak_bot paper "
+                    f"process(es) already running (PIDs={_other_pids}). The 'STOPPED' "
+                    f"detection was likely a transient state during NSSM AppThrottle "
+                    f"window; starting NSSM again would spawn a duplicate."
+                ),
+                "action_for_telegram": (
+                    f"🛡 [SELF-HEAL] skipped nssm start KotakBotPaper: {len(_other_pids)} "
+                    f"other bot already running (PIDs={_other_pids}). NSSM is likely "
+                    f"already starting a new instance during AppThrottle."
+                ),
+            }
+        # No other bot processes - safe to start NSSM
         r = subprocess.run(
             [str(NSSM), "start", "KotakBotPaper"],
             capture_output=True, text=True, timeout=20,
