@@ -34,6 +34,13 @@ LOG = ROOT / "Logs" / "nssm_watchdog.log"
 STATE = ROOT / "data_cache" / "nssm_watchdog_state.json"
 COOLDOWN_SEC = 1800  # 30 min between Telegram alerts for the same service
 
+# FIX 2026-09-22 13:45: insert project root into sys.path so the scripts.*
+# package imports below (orphan_killer, _telegram_alert) resolve. Without
+# this, `from scripts import orphan_killer` raises
+# "ModuleNotFoundError: No module named 'scripts'" when the script is
+# launched via Task Scheduler with cwd set elsewhere.
+sys.path.insert(0, str(ROOT))
+
 SERVICES = ["KotakBotPaper", "KotakQuantService"]
 NSSM = r"C:\Tools\nssm\nssm-2.24\win64\nssm.exe"
 
@@ -140,10 +147,10 @@ def main() -> int:
     # NSSM stop should have killed it but didn't (UAC split-token issue). This script
     # uses paper.lock as the canonical "current bot" PID and taskkill /F's any other
     # python -m kotak_bot process. Runs every 15 min via the existing
-    # `\kotak-nssm-watchdog` scheduled task (SYSTEM, HIGHEST — bypasses UAC).
+    # kotak-nssm-watchdog scheduled task (SYSTEM, HIGHEST - bypasses UAC).
     try:
-        from scripts import _orphan_killer  # noqa: F401
-        orphan_rc = _orphan_killer.main()
+        from scripts import orphan_killer  # noqa: F401
+        orphan_rc = orphan_killer.main()
         _log(f"  orphan_killer: rc={orphan_rc} (1=killed orphans, 0=clean)")
     except Exception as _oe:
         _log(f"  orphan_killer error: {_oe}")
