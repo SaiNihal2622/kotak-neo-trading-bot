@@ -133,6 +133,107 @@ def _is_bot_cmdline(cmdline: str) -> bool:
     return any(p.lower() in cl for p in BOT_PATTERNS)
 
 
+# FIX 2026-09-22 22:38: cache for the parent-map of all running python processes.
+# Built once per orphan_killer run. Returns dict[pid, parent_pid].
+_PARENT_MAP: dict[int, int] | None = None
+
+
+def _build_parent_map() -> dict[int, int]:
+    """Build {pid: parent_pid} for all python processes on the box.
+
+    Uses PowerShell Get-CimInstance (same enum path as `_list_bot_processes`).
+    Runs in the SYSTEM context (the orphan_killer is invoked from
+    nssm_watchdog which is SYSTEM-elevated), so it sees every python process.
+    """
+    global _PARENT_MAP
+    if _PARENT_MAP is not None:
+        return _PARENT_MAP
+    ps_cmd = (
+        "Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" "
+        "| Select-Object ProcessId,ParentProcessId "
+        "| ConvertTo-Csv -NoTypeInformation"
+    )
+    out: dict[int, int] = {}
+    try:
+        r = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=20,
+        )
+        if r.returncode != 0 or not r.stdout:
+            _log(f"  parent_map: powershell rc={r.returncode}")
+            _PARENT_MAP = out
+            return out
+        import csv as _csv
+        import io as _io
+        reader = _csv.DictReader(_io.StringIO(r.stdout))
+        for row in reader:
+            try:
+                pid = int((row.get("ProcessId") or "0").strip())
+                ppid = int((row.get("ParentProcessId") or "0").strip())
+            except Exception:
+                continue
+            if pid <= 0:
+                continue
+            out[pid] = ppid
+    except Exception as e:
+        _log(f"  parent_map: powershell failed: {e}")
+    _PARENT_MAP = out
+    return out
+
+
+def _has_bot_descendant(pid: int) -> bool:
+    """Return True if `pid` is the parent (or grandparent, etc.) of any other
+    python process on the box.
+
+    Used by the orphan-killer to avoid killing structural wrappers (e.g. the
+    venv `py.exe` launcher that forwards I/O to the real `python.exe`). On
+    Windows, killing the parent process cascades to the child — directly via
+    job-object cleanup, or via SIGHUP-equivalent effects on the runtime —
+    which in our setup took down the real bot every ~6 minutes.
+
+    Walks the FULL process graph (not just the bot set) because the child
+    might be a non-python python.exe whose parent process ID we still need
+    to resolve.
+    """
+    pm = _build_parent_map()
+    children_of: dict[int, list[int]] = {}
+    for child_pid, parent_pid in pm.items():
+        children_of.setdefault(parent_pid, []).append(child_pid)
+    # BFS down from pid looking for any descendant that has a python child
+    # or is itself a python process running the bot code.
+    stack = [pid]
+    seen = set()
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        for child in children_of.get(cur, []):
+            if child in pm:
+                # child is a python process — if its cmdline matches BOT_PATTERNS
+                # we treat the original `pid` as a structural wrapper.
+                if _is_bot_cmdline(_cmdline_for_pid(child)):
+                    return True
+            stack.append(child)
+    return False
+
+
+def _cmdline_for_pid(pid: int) -> str:
+    """Return the commandline for a single python PID (via PowerShell)."""
+    ps_cmd = (
+        f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\" "
+        f"| Select-Object -First 1 -ExpandProperty CommandLine)"
+    )
+    try:
+        r = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
 def _kill(pid: int, reason: str) -> bool:
     """Kill a process by PID via taskkill /F (works from SYSTEM context)."""
     try:
@@ -170,6 +271,17 @@ def main() -> int:
 
     _log(f"  found {len(bots)} bot process(es): PIDs={[p for p, _ in bots]}")
 
+    # FIX 2026-09-22 22:38: NEVER kill a process that is the PARENT of any bot
+    # process. On Windows, killing the parent process (e.g. via taskkill /F)
+    # cascades to the child — either directly (job object cleanup, CTRL_BREAK
+    # forwarding) or via SIGHUP-like effects on the runtime. The previous
+    # 6-minute restart loop was caused by exactly this: the orphaned process
+    # was the venv's `py.exe` launcher (which reads pyvenv.cfg and forwards
+    # I/O to the real `python.exe`), and killing it took down the real bot too.
+    # We now treat any bot process that has a bot child as "structural" — a
+    # wrapper that exists solely to support another bot — and skip it.
+    bot_pids = {p for p, _ in bots}
+    _log(f"  parent map: {_build_parent_map()}")
     # FIX 2026-09-22 13:55: only kill an orphan if it's been alive for at least
     # MIN_ORPHAN_UPTIME_SEC. Without this, we were killing the new bot that
     # NSSM had JUST started (5s throttle means a fresh start is still in startup
@@ -177,10 +289,16 @@ def main() -> int:
     # to die for unrelated reasons, then NSSM restarted again -> restart loop.
     # Now we wait 5 min of orphan uptime before declaring it killable.
     MIN_ORPHAN_UPTIME_SEC = 300
-    killed_any = False
     for pid, cmdline in bots:
         if pid == canonical:
             _log(f"  PID {pid} matches paper.lock - KEEPING")
+            continue
+        # Skip if this orphan is the ancestor of any bot. Killing a parent bot
+        # propagates to its children (the canonical bot is almost always one of
+        # those children in this codebase, because of the venv py.exe launcher
+        # pattern). The previous 6-min restart loop was this exact bug.
+        if _has_bot_descendant(pid):
+            _log(f"  PID {pid} is orphan but is the parent of another bot process (likely the py.exe launcher forwarding to the real python.exe) - LEAVING (structural wrapper)")
             continue
         # Orphan detected. Check its age via PowerShell (same enum pipeline).
         age_sec = _process_uptime_sec(pid)
