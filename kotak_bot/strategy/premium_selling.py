@@ -21,6 +21,11 @@ class IronCondorStrategy(BaseStrategy):
         self.short_delta = self.config.get("short_delta", 0.16)
         self.profit_target_pct = self.config.get("profit_target_pct", 50)
         self.stop_loss_multiplier = self.config.get("stop_loss_multiplier", 2.0)
+        # FIX 2026-09-22 15:45: realistic limit-price tolerance. If bid is unavailable
+        # we allow up to this fraction of LTP for SELL limits (vs 0% before — which
+        # meant any LTP > bid would reject). 0.05 = 5% LTP buffer (vs old "0%" = instant
+        # reject). For BUY limits we tolerate limit = ask * (1 + buffer).
+        self.limit_tolerance_pct = float(self.config.get("limit_tolerance_pct", 5.0))
 
     def is_eligible(self, ctx: SignalContext, account_state: dict) -> tuple[bool, str]:
         if ctx.regime not in ("range",):
@@ -51,6 +56,31 @@ class IronCondorStrategy(BaseStrategy):
         lp = ctx.option_ltps.get((long_pe, "PE"), 0.0)
         if min(sc, sp, lc, lp) <= 0:
             return None
+        # FIX 2026-09-22 15:45: realistic limit pricing.
+        # For SELL wings, use bid (or LTP * (1 - tolerance) if bid unavailable).
+        # For BUY wings, use ask (or LTP * (1 + tolerance) if ask unavailable).
+        # This is the realistic-mode contract: a SELL fills at the bid (or limit,
+        # whichever is higher), so limit must be <= bid. A BUY fills at ask (or
+        # limit, whichever is lower), so limit must be >= ask. Using LTP directly
+        # caused the 2026-09-22 iron condor SELL rejections (limit=27.5 vs bid=10.5).
+        tol = self.limit_tolerance_pct / 100.0
+        sc_bid = ctx.option_bids.get((short_ce, "CE"), 0.0)
+        sp_bid = ctx.option_bids.get((short_pe, "PE"), 0.0)
+        lc_ask = ctx.option_asks.get((long_ce, "CE"), 0.0)
+        lp_ask = ctx.option_asks.get((long_pe, "PE"), 0.0)
+        # SELL limit = bid (with small discount to ensure fill) — only if bid is known
+        # Otherwise fall back to LTP * (1 - tolerance) which is safer than LTP itself
+        sc_limit = sc_bid if sc_bid > 0 else sc * (1.0 - tol)
+        sp_limit = sp_bid if sp_bid > 0 else sp * (1.0 - tol)
+        # BUY limit = ask (or LTP * (1 + tolerance)) so the LIMIT can actually fill
+        lc_limit = lc_ask if lc_ask > 0 else lc * (1.0 + tol)
+        lp_limit = lp_ask if lp_ask > 0 else lp * (1.0 + tol)
+        # Final safety: clamp to tick size to avoid alignment rejections later
+        from kotak_bot.broker.paper_client import PaperClient
+        sc_limit = PaperClient._align_to_tick(sc_limit)
+        sp_limit = PaperClient._align_to_tick(sp_limit)
+        lc_limit = PaperClient._align_to_tick(lc_limit)
+        lp_limit = PaperClient._align_to_tick(lp_limit)
         net_credit = (sc + sp) - (lc + lp)
         max_loss = self.wing_width - net_credit
         if max_loss <= 0 or net_credit <= 0:
@@ -59,15 +89,18 @@ class IronCondorStrategy(BaseStrategy):
             strategy=self.name,
             underlying=ctx.symbol,
             legs=[
-                {"side": "SELL", "qty": 1, "strike": short_ce, "opt_type": "CE", "order_type": "LIMIT", "price": sc, "tag": f"ic_{ctx.symbol}_sc"},
-                {"side": "BUY",  "qty": 1, "strike": long_ce,  "opt_type": "CE", "order_type": "LIMIT", "price": lc, "tag": f"ic_{ctx.symbol}_lc"},
-                {"side": "SELL", "qty": 1, "strike": short_pe, "opt_type": "PE", "order_type": "LIMIT", "price": sp, "tag": f"ic_{ctx.symbol}_sp"},
-                {"side": "BUY",  "qty": 1, "strike": long_pe,  "opt_type": "PE", "order_type": "LIMIT", "price": lp, "tag": f"ic_{ctx.symbol}_lp"},
+                {"side": "SELL", "qty": 1, "strike": short_ce, "opt_type": "CE", "order_type": "LIMIT", "price": sc_limit, "tag": f"ic_{ctx.symbol}_sc"},
+                {"side": "BUY",  "qty": 1, "strike": long_ce,  "opt_type": "CE", "order_type": "LIMIT", "price": lc_limit, "tag": f"ic_{ctx.symbol}_lc"},
+                {"side": "SELL", "qty": 1, "strike": short_pe, "opt_type": "PE", "order_type": "LIMIT", "price": sp_limit, "tag": f"ic_{ctx.symbol}_sp"},
+                {"side": "BUY",  "qty": 1, "strike": long_pe,  "opt_type": "PE", "order_type": "LIMIT", "price": lp_limit, "tag": f"ic_{ctx.symbol}_lp"},
             ],
             target=net_credit * (self.profit_target_pct / 100.0),
             stop=max_loss * self.stop_loss_multiplier,
             confidence=0.6,
-            reason=f"iron condor: range regime, iv_rank={ctx.iv_rank:.0f}, credit={net_credit:.2f}",
+            reason=(
+                f"iron condor: range regime, iv_rank={ctx.iv_rank:.0f}, credit={net_credit:.2f}, "
+                f"SELL @ bid (or LTP*{1-tol:.2f}), BUY @ ask (or LTP*{1+tol:.2f})"
+            ),
             expected_hold_minutes=240,
         )
 

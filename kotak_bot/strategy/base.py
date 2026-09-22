@@ -29,6 +29,15 @@ class SignalContext:
     # option chain
     strikes: list[float] = field(default_factory=list)
     option_ltps: dict = field(default_factory=dict)  # (strike, opt_type) -> ltp
+    # FIX 2026-09-22 15:45: bid/ask for realistic limit-price construction.
+    # Previously only LTP was passed; the iron condor then set SELL limit=LTP,
+    # but in realistic mode a SELL only fills if limit <= bid. If LTP > bid
+    # (typical for OTM options in quiet markets), the order timed out at 60s
+    # and got rejected. We saw this today: SELL 23550 CE @ limit=27.5 vs bid=10.5
+    # — rejected after 60s. Now strategies can price SELL wings at bid (or
+    # bid - small buffer) so they fill.
+    option_bids: dict = field(default_factory=dict)  # (strike, opt_type) -> bid
+    option_asks: dict = field(default_factory=dict)  # (strike, opt_type) -> ask
     option_ivs: dict = field(default_factory=dict)
     # event context
     upcoming_event: Optional[str] = None  # 'rbi_policy', 'us_fed', etc.

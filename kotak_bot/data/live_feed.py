@@ -272,6 +272,22 @@ class LiveFeed:
             t = self._latest.get(symbol)
             return t.ltp if t else 0.0
 
+    def get_bid(self, symbol: str) -> float:
+        """FIX 2026-09-22 15:45: convenience accessor for the option bid.
+        Returns 0.0 if no tick or bid is unavailable.
+        """
+        with self._lock:
+            t = self._latest.get(symbol)
+            return t.bid if t else 0.0
+
+    def get_ask(self, symbol: str) -> float:
+        """FIX 2026-09-22 15:45: convenience accessor for the option ask.
+        Returns 0.0 if no tick or ask is unavailable.
+        """
+        with self._lock:
+            t = self._latest.get(symbol)
+            return t.ask if t else 0.0
+
     def get_latest(self, symbol: str) -> Optional[Tick]:
         with self._lock:
             return self._latest.get(symbol)

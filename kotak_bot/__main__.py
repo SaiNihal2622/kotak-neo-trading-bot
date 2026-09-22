@@ -684,18 +684,29 @@ def run_paper() -> None:
         except Exception:
             expiry = now.strftime("%d%b%y").upper()
         option_ltps = {}
+        option_bids = {}
+        option_asks = {}
         for k in strikes:
             for ot in ("CE", "PE"):
-                ltp = feed.get_ltp(f"{symbol}{expiry}{int(k)}{ot}")
+                sym = f"{symbol}{expiry}{int(k)}{ot}"
+                ltp = feed.get_ltp(sym)
                 if ltp > 0:
                     option_ltps[(k, ot)] = ltp
+                    # FIX 2026-09-22 15:45: also populate bid/ask for realistic limit pricing
+                    bid = feed.get_bid(sym)
+                    ask = feed.get_ask(sym)
+                    if bid > 0:
+                        option_bids[(k, ot)] = bid
+                    if ask > 0:
+                        option_asks[(k, ot)] = ask
         if not option_ltps:
             return f"Cannot force trade — no option LTPs for {symbol} {expiry}."
         # pretend a permissive context (trending + high confidence) so directional fires
         sc = SignalContext(
             symbol=symbol, spot=spot, vix=14.0, iv_rank=60.0,
             adx=35.0, trend_strength=0.75, regime="trending",
-            timestamp=now, strikes=strikes, option_ltps=option_ltps,
+            timestamp=now, strikes=strikes,
+            option_ltps=option_ltps, option_bids=option_bids, option_asks=option_asks,
             news_sentiment=0.0, news_urgency=0.0,
         )
         # temporarily bump risk to allow
@@ -2895,6 +2906,8 @@ def run_paper() -> None:
                     except Exception as e:
                         logger.warning(f"[SCAN] subscribe options failed: {e}")
                     option_ltps = {}
+                    option_bids = {}
+                    option_asks = {}
                     option_ltp_count = 0
                     for k in strikes:
                         for ot in ("CE", "PE"):
@@ -2904,6 +2917,16 @@ def run_paper() -> None:
                             ltp = feed.get_ltp(sym_full)
                             if ltp > 0:
                                 option_ltps[(k, ot)] = ltp
+                                # FIX 2026-09-22 15:45: also fetch bid/ask for realistic
+                                # limit pricing in iron condor (and any future strategy
+                                # that needs bid/ask). Fall back to LTP-based fallback
+                                # in the strategy if bid/ask are zero.
+                                bid = feed.get_bid(sym_full)
+                                ask = feed.get_ask(sym_full)
+                                if bid > 0:
+                                    option_bids[(k, ot)] = bid
+                                if ask > 0:
+                                    option_asks[(k, ot)] = ask
                                 option_ltp_count += 1
                     if not option_ltps:
                         logger.info(f"[SCAN] cycle={cycle_counter} {symbol} spot={spot:.2f} atm={atm} | skip: 0 option LTPs (synthetic feed may not have option ticks yet)")
@@ -2955,6 +2978,8 @@ def run_paper() -> None:
                         adx=rs.adx, trend_strength=rs.confidence if rs.regime.value == "trending" else 0.0,
                         regime=rs.regime.value, timestamp=now,
                         strikes=strikes, option_ltps=option_ltps,
+                        # FIX 2026-09-22 15:45: pass bid/ask for realistic limit pricing
+                        option_bids=option_bids, option_asks=option_asks,
                         news_sentiment=news_sent, news_urgency=news_urgency,
                         upcoming_event=upcoming_event, minutes_to_event=minutes_to_event,
                     )

@@ -173,6 +173,15 @@ class PaperClient(BrokerClient):
         the LLM proposed limit=0 orders that were never going to fill, wasting
         a full timeout cycle per attempt. Now we catch them at placement time
         and the LLM gets the rejection feedback in the next brain cycle.
+
+        FIX 2026-09-22 15:45: SELL limit auto-snap to bid. When a strategy
+        proposes a SELL limit price that's far above the current bid (e.g.
+        limit=27.5 vs bid=10.5 on 2026-09-22 iron condor), the order times out
+        at 60s and gets rejected. The LLM loses a full cycle on each such reject.
+        Now we snap the SELL limit DOWN to (bid * 1.05) if the limit > bid * 2.0.
+        This preserves the strategy's intent (premium collection) while ensuring
+        the limit actually crosses the book. The strategy library also uses bid
+        directly (commit pending) for clean orders, but this is the safety net.
         """
         with self._lock:
             if not self._connected:
@@ -206,6 +215,25 @@ class PaperClient(BrokerClient):
                     pass
                 self._save_state()
                 return order
+            # FIX 2026-09-22 15:45: SELL limit auto-snap to bid (safety net).
+            # If the strategy (or the LLM) proposes a SELL limit that's far above
+            # the current bid, snap it DOWN to (bid * 1.05). Without this, SELL
+            # orders with limit=2-3x bid sit OPEN for 60s and get rejected,
+            # wasting a full brain cycle. With this, we either fill at bid
+            # (instant) or at the limit (slightly above bid) — both fillable.
+            if (self.fill_mode in ('realistic', 'realistic_limit')
+                    and order.order_type == OrderType.LIMIT
+                    and order.side == OrderSide.SELL
+                    and order.price and order.price > 0):
+                _sym_tick = self._ticks.get(order.symbol)
+                _bid = _sym_tick.bid if _sym_tick and _sym_tick.bid > 0 else 0.0
+                if _bid > 0 and order.price > _bid * 2.0:
+                    _new_limit = self._align_to_tick(_bid * 1.05)
+                    logger.warning(
+                        f"[PAPER] SELL LIMIT auto-snap {order.order_id} {order.symbol} "
+                        f"limit={order.price} → {_new_limit} (bid={_bid}, limit was >2x bid)"
+                    )
+                    order.price = _new_limit
             order.status = OrderStatus.OPEN
             self._order_placed_ts[order.order_id] = _t.time()
             # FIX 2026-09-17 12:25: in realistic mode, validate limit price is on NSE tick.
