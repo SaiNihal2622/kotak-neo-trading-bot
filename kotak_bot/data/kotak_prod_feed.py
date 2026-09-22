@@ -71,26 +71,61 @@ def _totp(secret_b32: str) -> str:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 def _http_post(url: str, body: dict, headers: dict, timeout: int = 15) -> tuple[int, dict | str]:
+    """HTTP POST helper that survives both HTTP and network errors.
+
+    FIX 2026-09-22 17:10: see ``_http_get`` — the previous version only
+    caught ``HTTPError`` (a *subclass* of ``URLError``). Timeouts and
+    connection failures were not caught, causing the polling thread to
+    restart every ~6 minutes. We now mirror the ``_http_get`` fix.
+    """
     data = json.dumps(body).encode()
     h = {**headers, 'Content-Type': 'application/json'}
     req = urllib.request.Request(url, data=data, headers=h, method='POST')
     try:
         r = urllib.request.urlopen(req, timeout=timeout)
         return r.status, json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, json.loads(e.read().decode() or '{}')
-        except Exception:
-            return e.code, e.read().decode(errors='ignore')
+    except urllib.error.URLError as e:
+        if hasattr(e, 'code') and e.code is not None:
+            try:
+                parsed = json.loads(e.read().decode() or '{}')
+            except Exception:
+                parsed = {}
+            return int(e.code), parsed
+        return 0, {}
+    except Exception:
+        return 0, {}
 
 
 def _http_get(url: str, headers: dict, timeout: int = 15) -> tuple[int, str]:
+    """HTTP GET helper that survives both HTTP and network errors.
+
+    FIX 2026-09-22 17:10: previously only caught ``urllib.error.HTTPError``,
+    which is a *subclass* of ``URLError``. Plain ``URLError`` (timeouts, DNS
+    failures, connection refused) propagated up to the polling thread, which
+    then crashed the daemon thread via ``logger.exception`` failing under
+    WinError 1450 (insufficient system resources) — leaving NSSM to restart
+    the bot every ~6 minutes. We now treat ``URLError`` (parent of HTTPError)
+    uniformly: any network failure returns (0, '') so callers can no-op
+    cleanly.
+    """
     req = urllib.request.Request(url, headers=headers)
     try:
         r = urllib.request.urlopen(req, timeout=timeout)
         return r.status, r.read().decode()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(errors='ignore')
+    except urllib.error.URLError as e:
+        # Covers HTTPError (4xx/5xx with body) AND plain URLError (timeout,
+        # DNS, connection refused). Return a synthetic 0 + empty body so the
+        # caller can branch on code==0 and skip processing for this cycle.
+        if hasattr(e, 'code') and e.code is not None:
+            try:
+                body = e.read().decode(errors='ignore')
+            except Exception:
+                body = ''
+            return int(e.code), body
+        return 0, ''
+    except Exception:
+        # Defensive: any other failure (ssl, decoding) is also non-fatal.
+        return 0, ''
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +733,17 @@ class KotakProdFeed:
             return False
 
     def _poll_loop(self) -> None:
-        """Background thread: poll PROD quotes for subscribed symbols."""
+        """Background thread: poll PROD quotes for subscribed symbols.
+
+        FIX 2026-09-22 17:10: tracks consecutive poll errors and backs off
+        exponentially to avoid hammering the Kotak API during a network
+        outage. The previous version logged each error every 2s forever,
+        which flooded the log sink and tripped WinError 1450
+        ("insufficient system resources") in ``logger.exception`` itself —
+        that secondary failure escaped the except handler and killed the
+        daemon thread, causing the NSSM restart loop.
+        """
+        consecutive_errors = 0
         while self._running:
             try:
                 if not self._reauth_if_needed():
@@ -753,7 +798,32 @@ class KotakProdFeed:
                         # is liquid enough that the bid/ask spread is essentially noise)
                         self._update_tick(_ch_und, _ch_spot, _ch_spot * 0.9995, _ch_spot * 1.0005, 0, 0)
             except Exception as e:
-                logger.exception(f"KotakProdFeed poll error: {e}")
+                # Log the error, but never let a logging failure kill the
+                # thread. WinError 1450 ("insufficient system resources")
+                # can be raised by the log sink itself during a flood; we
+                # must not propagate that secondary exception.
+                consecutive_errors += 1
+                try:
+                    if consecutive_errors <= 3 or consecutive_errors % 30 == 0:
+                        # First 3 errors: full traceback. After that: 1-line
+                        # summary every 30 cycles (≈1 minute at 2s poll).
+                        logger.exception(f"KotakProdFeed poll error: {e}")
+                    else:
+                        logger.warning(
+                            f"KotakProdFeed poll error #{consecutive_errors}: "
+                            f"{type(e).__name__}: {e}"
+                        )
+                except Exception:
+                    # Logging itself failed — swallow it, the loop must keep
+                    # running so the thread doesn't die.
+                    pass
+                # Exponential backoff: cap at 30× the poll interval so a
+                # sustained outage doesn't hammer the API.
+                backoff = min(30, consecutive_errors)
+                time.sleep(self.poll_interval * backoff)
+                continue
+            # Reset backoff on a clean cycle.
+            consecutive_errors = 0
             time.sleep(self.poll_interval)
 
     def _fetch_option_quotes(self, psyms: list[str]) -> None:
