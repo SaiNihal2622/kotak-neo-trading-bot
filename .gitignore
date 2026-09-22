@@ -130,3 +130,8 @@ data_cache/_tmp_update_*.py
 data_cache/*.bak
 data_cache/*.broken_backup
 data_cache/_archive_*.py
+
+# FIX 2026-09-23 00:40 — SixJudgments (Jev pattern) runtime metrics
+# Written by scripts/quant_service.py::_write_atomic_judgments_metric() on every
+# LLM call. Used to measure tier distribution + parse-success rate.
+data_cache/atomic_judgments_metrics.jsonl

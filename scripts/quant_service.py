@@ -1497,13 +1497,51 @@ def _get_recent_performance(n: int = 8) -> dict:
         return {"error": str(e)[:100]}
 
 
+def _write_atomic_judgments_metric(parse_ok: bool, action: str, tier: int,
+                                    fired: list, state_size_chars: int,
+                                    latency_ms: int, err_kind: str) -> None:
+    """Append a single JSONL line to data_cache/atomic_judgments_metrics.jsonl.
+
+    FIX 2026-09-23 00:33: tracks tier distribution + parse-success rate so we
+    can verify whether the expanded 21-field context actually improves accuracy
+    over the old 10-field context. Read by the metrics aggregator / dashboard.
+
+    Schema (one line per call):
+      {ts, parse_ok, action, tier, fired, state_size_chars, latency_ms, err_kind}
+
+    Failure modes are tracked via err_kind: "none"|"import"|"llm_call"|"parse"|"exception"
+    """
+    try:
+        path = DATA / "atomic_judgments_metrics.jsonl"
+        rec = {
+            "ts": now_iso(),
+            "parse_ok": bool(parse_ok),
+            "action": str(action),
+            "tier": int(tier),
+            "fired": list(fired)[:8],  # cap to keep file small
+            "state_size_chars": int(state_size_chars),
+            "latency_ms": int(latency_ms),
+            "err_kind": str(err_kind),
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
+    except Exception as _m:
+        # metrics must never break the decision path
+        log(f"atomic-metric-write-err: {_m}")
+
+
 def _extract_compact_state(context: dict) -> dict:
-    """Compress the rich context dict into the <400-token shape that
+    """Compress the rich context dict into the ~21-field shape that
     kotak_bot.signals.atomic_judgments.format_state_for_judgments expects.
 
-    The legacy prompt balloons to 14K characters of JSON context. The Jev
-    pattern is built around compact state. We do the compression here so
-    the SixJudgments LLM call uses ~3% of the legacy prompt's tokens.
+    FIX 2026-09-23 00:33: expanded from 10 fields to 21 to give the SixJudgments
+    LLM more signal (PCR, max-pain distance, OI build intensity, RSI, EMA spread,
+    VWAP dev, intraday range, news sentiment, FII/DII net, time-to-close, expiry
+    days, VIX percentile, day-of-week, last-3-trade P&L). Output schema is
+    unchanged — still 6 closed enums — so variance stays low while the model
+    has more evidence to draw on.
+
+    The compact state line is still ~600 chars (~80 tokens input).
     """
     try:
         paper = context.get("paper") or _safe_read_json(DATA / "paper_state.json", default={})
@@ -1603,11 +1641,197 @@ def _extract_compact_state(context: dict) -> dict:
         direction_bias = str((liveness.get("snapshot") or {}).get("bias") or "neutral").lower()
     except Exception:
         direction_bias = "neutral"
+    # ---- NEW 2026-09-23 00:33 — 11 additional fields ----
+    # PCR (put-call ratio OI) + max pain distance + OI build intensity
+    pcr = None
+    max_pain_dist_pct = None
+    oi_build_intensity = "na"
+    try:
+        # PCR / max-pain from chains_summary (top-level fields in chain analyzer)
+        for sym, ch in (context.get("chains_summary") or {}).items():
+            if not isinstance(ch, dict):
+                continue
+            if ch.get("pcr_oi") is not None:
+                pcr = float(ch.get("pcr_oi") or 0)
+            mp = ch.get("max_pain")
+            if mp and spot:
+                max_pain_dist_pct = (float(mp) - spot) / spot * 100.0
+            break
+        # If not in chains_summary, read from option_chain NIFTY file
+        if pcr is None:
+            chain = _safe_read_json(DATA / "option_chain_NIFTY.json", default={})
+            pe_oi = sum((s.get("pe", {}) or {}).get("oi", 0) for s in (chain.get("records") or {}).get("data", []) if isinstance(s, dict))
+            ce_oi = sum((s.get("ce", {}) or {}).get("oi", 0) for s in (chain.get("records") or {}).get("data", []) if isinstance(s, dict))
+            if ce_oi > 0:
+                pcr = round(pe_oi / ce_oi, 3)
+        # OI build intensity from oi_changes aggregate
+        oi_changes = context.get("oi_changes") or {}
+        if oi_changes:
+            deltas = []
+            for chgs in oi_changes.values():
+                if isinstance(chgs, list):
+                    for c in chgs[-3:]:
+                        if isinstance(c, dict) and "delta_pct" in c:
+                            deltas.append(abs(float(c.get("delta_pct") or 0)))
+            if deltas:
+                avg_d = sum(deltas) / len(deltas)
+                if avg_d > 5:
+                    oi_build_intensity = "high"
+                elif avg_d > 2:
+                    oi_build_intensity = "med"
+                else:
+                    oi_build_intensity = "low"
+    except Exception:
+        pass
+    # RSI 14 + EMA 9/21 spread + VWAP dev — from candle context
+    rsi_14 = None
+    ema_spread_pct = None
+    vwap_dev_pct = None
+    try:
+        candles_ctx = context.get("candles") or {}
+        for sym, payload in candles_ctx.items():
+            if not isinstance(payload, dict):
+                continue
+            ind = payload.get("indicators") or {}
+            if isinstance(ind, dict):
+                if rsi_14 is None and ind.get("rsi_14") is not None:
+                    rsi_14 = float(ind.get("rsi_14") or 0)
+                if vwap_dev_pct is None and ind.get("vwap_dev_pct") is not None:
+                    vwap_dev_pct = float(ind.get("vwap_dev_pct") or 0)
+                ema_9 = ind.get("ema_9")
+                ema_21 = ind.get("ema_21")
+                if ema_spread_pct is None and ema_9 and ema_21 and float(ema_21) > 0:
+                    ema_spread_pct = (float(ema_9) - float(ema_21)) / float(ema_21) * 100.0
+            if rsi_14 is not None and vwap_dev_pct is not None and ema_spread_pct is not None:
+                break
+    except Exception:
+        pass
+    # Intraday range (today high - low) / spot
+    intraday_range_pct = None
+    try:
+        intraday = context.get("intraday") or {}
+        instruments = intraday.get("instruments") or {}
+        for sym, info in instruments.items():
+            if not isinstance(info, dict) or not spot:
+                continue
+            hi = float(info.get("day_high") or 0)
+            lo = float(info.get("day_low") or 0)
+            if hi > 0 and lo > 0 and spot > 0:
+                intraday_range_pct = (hi - lo) / spot * 100.0
+                break
+    except Exception:
+        pass
+    # News sentiment (last 4h aggregate, -1..+1)
+    news_sentiment = None
+    try:
+        na = _safe_read_json(DATA / "news_aggregate.json", default={})
+        if na.get("score") is not None:
+            news_sentiment = float(na.get("score") or 0)
+    except Exception:
+        pass
+    # FII / DII net (latest row, Rs. crore)
+    fii_net_cr = None
+    dii_net_cr = None
+    try:
+        fii_dii = _safe_read_json(DATA / "fii_dii.json", default={})
+        rows = fii_dii.get("rows") or []
+        if rows:
+            latest = rows[0] if isinstance(rows[0], dict) else {}
+            fii_net_cr = float(latest.get("fii_net") or latest.get("net_fii") or 0)
+            dii_net_cr = float(latest.get("dii_net") or latest.get("net_dii") or 0)
+    except Exception:
+        pass
+    # Minutes to close (15:30 IST), capped at 0
+    min_to_close = None
+    try:
+        from datetime import datetime as _dt, time as _t
+        now = _dt.now()
+        market_close = _dt.combine(now.date(), _t(15, 30))
+        if now < market_close:
+            min_to_close = int((market_close - now).total_seconds() / 60)
+        else:
+            min_to_close = 0
+    except Exception:
+        pass
+    # Days to weekly expiry (Thursday)
+    expiry_days = None
+    try:
+        from datetime import timedelta as _td
+        now = _dt.now()
+        # Weekly expiry is Thursday (weekday=3). Days until next Thursday.
+        days_ahead = (3 - now.weekday()) % 7
+        if days_ahead == 0 and now.weekday() == 3 and now.hour >= 15:
+            days_ahead = 7  # post-expiry Thursday → next week
+        expiry_days = days_ahead
+    except Exception:
+        pass
+    # VIX percentile vs 30d (cheap: use VIX_PERCENTILE field if alpha has it)
+    vix_percentile = None
+    try:
+        alpha = context.get("alpha") or {}
+        if isinstance(alpha.get("vix_percentile"), (int, float)):
+            vix_percentile = float(alpha["vix_percentile"])
+        elif isinstance(alpha.get("regime"), dict) and isinstance(alpha["regime"].get("vix_percentile"), (int, float)):
+            vix_percentile = float(alpha["regime"]["vix_percentile"])
+    except Exception:
+        pass
+    # Day of week (3-letter)
+    day_of_week = "?"
+    try:
+        day_of_week = _dt.now().strftime("%a")
+    except Exception:
+        pass
+    # Last 3 trade P&Ls (sum)
+    last3_pnl = None
+    try:
+        tj_lines = []
+        path = DATA / "trade_journal.jsonl"
+        if path.exists():
+            with path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        tj_lines.append(json.loads(line))
+                    except Exception:
+                        continue
+        if tj_lines:
+            recent = tj_lines[-3:]
+            vals = []
+            for t in recent:
+                if isinstance(t, dict):
+                    p = t.get("pnl") or t.get("realized_pnl") or 0
+                    try:
+                        vals.append(float(p))
+                    except (TypeError, ValueError):
+                        pass
+            if vals:
+                last3_pnl = ",".join(f"{v:+.0f}" for v in vals)
+    except Exception:
+        pass
     return {
+        # ---- original 10 (unchanged) ----
         "spot": spot, "vix": vix, "adx": adx,
         "pnl_day": pnl_day, "cash": cash, "positions_count": positions_count,
         "direction_bias": direction_bias, "realized_sigma_5m": sigma_5m,
         "avg_spread_bps": avg_spread_bps, "oi_change_pct_5m": oi_change_pct_5m,
+        # ---- 11 new 2026-09-23 ----
+        "pcr": pcr,
+        "max_pain_dist_pct": max_pain_dist_pct,
+        "oi_build_intensity": oi_build_intensity,
+        "rsi_14": rsi_14,
+        "ema_spread_pct": ema_spread_pct,
+        "vwap_dev_pct": vwap_dev_pct,
+        "intraday_range_pct": intraday_range_pct,
+        "news_sentiment": news_sentiment,
+        "fii_net_cr": fii_net_cr,
+        "dii_net_cr": dii_net_cr,
+        "min_to_close": min_to_close,
+        "expiry_days": expiry_days,
+        "vix_percentile": vix_percentile,
+        "day_of_week": day_of_week,
+        "last3_pnl": last3_pnl,
     }
 
 
@@ -1618,9 +1842,20 @@ def _try_atomic_judgments_decision(context: dict, events: list) -> Optional[dict
     on parse success, or None on any failure. The caller is expected to
     fall back to the legacy free-form prompt when this returns None.
 
+    FIX 2026-09-23 00:33: max_tokens 800 → 1200 (room for richer rationale
+    if the model adds it) + metrics write to atomic_judgments_metrics.jsonl
+    so we can measure tier distribution + parse-success rate over time and
+    verify whether the expanded context actually improves accuracy.
+
     Cost: ~300 tokens out (vs ~6000 for the legacy prompt). When this works
     the legacy call is skipped entirely — that's the win.
     """
+    started_ts = time.time()
+    parse_ok = False
+    action_str = "?"
+    tier = 0
+    fired = []
+    err_kind = "none"
     try:
         from kotak_bot.signals.atomic_judgments import (
             build_judgement_user_prompt,
@@ -1631,6 +1866,11 @@ def _try_atomic_judgments_decision(context: dict, events: list) -> Optional[dict
         )
     except Exception as _imp:
         log(f"atomic-judgments-import-err: {_imp}")
+        _write_atomic_judgments_metric(
+            parse_ok=False, action="?", tier=0, fired=[],
+            state_size_chars=0, latency_ms=int((time.time() - started_ts) * 1000),
+            err_kind="import",
+        )
         return None
     try:
         compact = _extract_compact_state(context)
@@ -1639,18 +1879,37 @@ def _try_atomic_judgments_decision(context: dict, events: list) -> Optional[dict
         result = call_llm_direct(
             JUDGE_SYSTEM_PROMPT,
             user_prompt,
-            # SixJudgments is tiny: 6 enum strings + close brace. 800 tokens is
-            # plenty even with a 200-token <think> block.
-            max_tokens=800,
+            # FIX 2026-09-23 00:33: 800 → 1200. SixJudgments is tiny (6 enum
+            # strings + close brace) but the richer 21-field context may
+            # inspire the model to add a brief rationale (~80-150 tokens).
+            max_tokens=1200,
         )
         if not result.get("ok"):
+            err_kind = "llm_call"
             log(f"ATOMIC-JUDGMENTS-LLM-ERR: {result.get('error','')[:120]}")
+            _write_atomic_judgments_metric(
+                parse_ok=False, action="?", tier=0, fired=[],
+                state_size_chars=len(state_str),
+                latency_ms=int((time.time() - started_ts) * 1000),
+                err_kind=err_kind,
+            )
             return None
         text = result.get("text", "")
         judged = judge_and_aggregate(compact, text)
         if judged is None:
+            err_kind = "parse"
             log(f"ATOMIC-JUDGMENTS-PARSE-FAIL: text[:200]={text[:200]!r}")
+            _write_atomic_judgments_metric(
+                parse_ok=False, action="?", tier=0, fired=[],
+                state_size_chars=len(state_str),
+                latency_ms=int((time.time() - started_ts) * 1000),
+                err_kind=err_kind,
+            )
             return None
+        parse_ok = True
+        action_str = judged.aggregated.action.value
+        tier = judged.aggregated.tier
+        fired = list(judged.aggregated.fired_rules or [])
         # Decide plan qty: use the strategy-library recommendation's qty if
         # available, else default to 75 (a reasonable single-strategy default).
         plan_qty = 75
@@ -1664,9 +1923,20 @@ def _try_atomic_judgments_decision(context: dict, events: list) -> Optional[dict
         except Exception:
             pass
         legacy = aggregator_to_legacy_decision(judged, plan_qty=plan_qty)
+        _write_atomic_judgments_metric(
+            parse_ok=True, action=action_str, tier=tier, fired=fired,
+            state_size_chars=len(state_str),
+            latency_ms=int((time.time() - started_ts) * 1000),
+            err_kind="none",
+        )
         return legacy
     except Exception as _e:
         log(f"atomic-judgments-unhandled-err: {_e}")
+        _write_atomic_judgments_metric(
+            parse_ok=False, action="?", tier=0, fired=[],
+            state_size_chars=0, latency_ms=int((time.time() - started_ts) * 1000),
+            err_kind="exception",
+        )
         return None
 
 

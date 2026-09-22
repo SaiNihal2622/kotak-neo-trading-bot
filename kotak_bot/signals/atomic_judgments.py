@@ -359,10 +359,25 @@ SIX_JUDGMENT_SCHEMA: dict[str, Any] = {
 
 
 def format_state_for_judgments(state: dict[str, Any]) -> str:
-    """Compress state to <400 tokens for the SixJudgements LLM call.
+    """Compress state to a single ~600-token line for the SixJudgements LLM call.
 
-    The legacy prompt was 6-8K tokens. The Jev pattern is built around compact
-    state — buberlo/jev-trader explicitly targets <400 tokens. We do the same.
+    Fields (21 total) are all numeric / categorical — easy for the LLM to scan
+    and reason over without re-introducing prose variance.
+
+    Group 1 — price & vol regime (drives `regime` enum):
+        SPOT, VIX, ADX, SIGMA5m, INTRADAY_RNG, VIX_PCTL
+    Group 2 — direction (drives `direction` enum):
+        BIAS, VWAP_DEV, EMA_SPREAD, RSI14, MAXPAIN_DIST,
+        NEWS_SCORE, FII_NET, DII_NET, DOW, LAST3_PNL
+    Group 3 — flow & liquidity (drives `toxic_flow`, `liquidity_stressed`,
+              `quote_environment` enums):
+        SPREADbps, OIdelta5m, OI_BUILD
+    Group 4 — inventory & session (drives `inventory_pressure` enum + time
+              sensitivity):
+        CASH, POSITIONS, DAYPNL, MIN_TO_CLOSE, EXPIRY_DAYS
+
+    Legacy state was 10 fields. We now pass 21. Still well under the 1500
+    token input budget (this line itself is ~80 tokens).
     """
     spot = state.get("spot", "?")
     vix = state.get("vix", "?")
@@ -374,14 +389,66 @@ def format_state_for_judgments(state: dict[str, Any]) -> str:
     sigma = state.get("realized_sigma_5m", "?")
     spread_bps = state.get("avg_spread_bps", "?")
     oi_change = state.get("oi_change_pct_5m", 0)
+    pcr = state.get("pcr", "?")
+    maxpain_dist = state.get("max_pain_dist_pct", "?")
+    oi_build = state.get("oi_build_intensity", "?")
+    rsi14 = state.get("rsi_14", "?")
+    ema_spread = state.get("ema_spread_pct", "?")
+    vwap_dev = state.get("vwap_dev_pct", "?")
+    intraday_rng = state.get("intraday_range_pct", "?")
+    news = state.get("news_sentiment", "?")
+    fii = state.get("fii_net_cr", "?")
+    dii = state.get("dii_net_cr", "?")
+    min_close = state.get("min_to_close", "?")
+    expiry_days = state.get("expiry_days", "?")
+    vix_pctl = state.get("vix_percentile", "?")
+    dow = state.get("day_of_week", "?")
+    last3 = state.get("last3_pnl", "?")
 
-    # Compact single-line state
-    return (
-        f"SPOT={spot} VIX={vix} ADX={adx} SIGMA5m={sigma} "
-        f"SPREADbps={spread_bps} OIdelta5m={oi_change:+.1f}% "
-        f"CASH={cash:.0f} POSITIONS={positions_count} "
-        f"DAYPNL={pnl_day:+.0f} BIAS={direction_bias}"
-    )
+    def _fmt(v: Any, spec: str = ".2f", na: str = "?") -> str:
+        """Format a value or return the N/A token."""
+        if v is None or v == "" or (isinstance(v, str) and v.lower() == "nan"):
+            return na
+        try:
+            return format(float(v), spec)
+        except (TypeError, ValueError):
+            return str(v)[:8]
+
+    def _pct(v: Any) -> str:
+        return _fmt(v, "+.2f")
+
+    def _intlike(v: Any) -> str:
+        return _fmt(v, ".0f")
+
+    # Compact single-line state. Abbreviations kept short to stay under 600 chars.
+    parts = [
+        f"SPOT={_fmt(spot, '.1f')}",
+        f"VIX={_fmt(vix, '.2f')}",
+        f"ADX={_fmt(adx, '.1f')}",
+        f"SIGMA5m={_fmt(sigma, '.4f')}",
+        f"INTRADAY_RNG={_pct(intraday_rng)}%",
+        f"VIX_PCTL={_fmt(vix_pctl, '.0f')}",
+        f"BIAS={direction_bias}",
+        f"VWAP_DEV={_pct(vwap_dev)}%",
+        f"EMA_SPREAD={_pct(ema_spread)}%",
+        f"RSI14={_fmt(rsi14, '.1f')}",
+        f"MAXPAIN_DIST={_pct(maxpain_dist)}%",
+        f"NEWS={_pct(news)}",
+        f"FII={_pct(fii)}cr",
+        f"DII={_pct(dii)}cr",
+        f"DOW={dow}",
+        f"LAST3={last3}",
+        f"SPREADbps={_fmt(spread_bps, '.1f')}",
+        f"OIdelta5m={_pct(oi_change)}%",
+        f"OI_BUILD={oi_build}",
+        f"PCR={_fmt(pcr, '.2f')}",
+        f"CASH={_intlike(cash)}",
+        f"POS={positions_count}",
+        f"DAYPNL={_pct(pnl_day)}",
+        f"MIN_CLOSE={_intlike(min_close)}",
+        f"EXPIRY_D={_intlike(expiry_days)}",
+    ]
+    return " ".join(parts)
 
 
 JUDGE_SYSTEM_PROMPT = (
@@ -390,7 +457,13 @@ JUDGE_SYSTEM_PROMPT = (
     "values. You never explain. You never hedge. You never add prose. "
     "Return ONLY a single JSON object matching the schema. "
     "If the state is genuinely ambiguous, pick the closest value — do not "
-    "emit 'unknown' or null."
+    "emit 'unknown' or null.\n\n"
+    "INPUT FIELDS YOU CAN USE:\n"
+    "  SPOT/VIX/ADX/SIGMA5m/INTRADAY_RNG/VIX_PCTL → drives regime enum\n"
+    "  BIAS/VWAP_DEV/EMA_SPREAD/RSI14/MAXPAIN_DIST/NEWS/FII/DII/DOW/LAST3 → drives direction\n"
+    "  SPREADbps/OIdelta5m/OI_BUILD → drives toxic_flow, liquidity_stressed, quote_environment\n"
+    "  CASH/POS/DAYPNL/MIN_CLOSE/EXPIRY_D → drives inventory_pressure + time-of-day sensitivity\n"
+    "  PCR (put-call ratio OI): >1.2 = bearish positioning, <0.8 = bullish."
 )
 
 

@@ -315,19 +315,68 @@ class TestJudgeAndAggregate:
 class TestStateFormatter:
 
     def test_state_under_400_tokens(self):
+        # FIX 2026-09-23: state now has 21 fields, but still ~600 chars (~80 tokens)
         state = {
             "spot": 23456.78, "vix": 11.5, "adx": 18.3, "pnl_day": -250.0,
             "cash": 100000, "positions_count": 2,
             "direction_bias": "neutral", "realized_sigma_5m": 0.05,
             "avg_spread_bps": 4.5, "oi_change_pct_5m": -1.2,
+            "pcr": 1.15, "max_pain_dist_pct": -0.4,
+            "oi_build_intensity": "med", "rsi_14": 52.0,
+            "ema_spread_pct": 0.15, "vwap_dev_pct": 0.05,
+            "intraday_range_pct": 0.6, "news_sentiment": 0.12,
+            "fii_net_cr": 450.0, "dii_net_cr": -200.0,
+            "min_to_close": 387, "expiry_days": 1,
+            "vix_percentile": 22.0, "day_of_week": "Wed",
+            "last3_pnl": "+150,-80,+40",
         }
         s = format_state_for_judgments(state)
-        # Roughly 4 chars per token; 400 tokens = 1600 chars. Leave room for prompt overhead.
-        assert len(s) < 600, f"state string too long: {len(s)} chars"
+        # 21 fields × ~20 chars each ≈ 420 chars; leave 50% headroom for safety
+        assert len(s) < 900, f"state string too long: {len(s)} chars"
         # All required fields should appear
-        for key in ("SPOT=", "VIX=", "ADX=", "CASH=", "POSITIONS=", "DAYPNL="):
+        for key in (
+            "SPOT=", "VIX=", "ADX=", "CASH=", "POS=", "DAYPNL=",
+            "PCR=", "MAXPAIN_DIST=", "OI_BUILD=", "RSI14=",
+            "EMA_SPREAD=", "VWAP_DEV=", "INTRADAY_RNG=",
+            "NEWS=", "FII=", "DII=", "DOW=", "LAST3=",
+            "SPREADbps=", "OIdelta5m=", "MIN_CLOSE=", "EXPIRY_D=",
+            "VIX_PCTL=",
+        ):
             assert key in s, f"missing key {key}"
 
     def test_handles_missing_fields(self):
         s = format_state_for_judgments({})  # empty state
         assert "SPOT=" in s and "?" in s  # unknown fields become "?"
+
+    def test_handles_none_for_optional_fields(self):
+        # PCR / RSI / VWAP dev / max_pain may be None when data is missing
+        state = {
+            "spot": 24550, "vix": 11.25, "adx": 22.0,
+            "pcr": None, "rsi_14": None, "vwap_dev_pct": None,
+            "max_pain_dist_pct": None, "news_sentiment": None,
+            "fii_net_cr": None, "dii_net_cr": None,
+            "oi_build_intensity": "na",
+        }
+        s = format_state_for_judgments(state)
+        # Missing values should render as "?" not crash
+        assert "PCR=?" in s
+        assert "RSI14=?" in s
+        assert "VWAP_DEV=?" in s
+        assert "MAXPAIN_DIST=?" in s
+        assert "OI_BUILD=na" in s
+
+    def test_oi_build_intensity_preserved(self):
+        # oi_build_intensity is a string enum, not numeric — make sure it doesn't
+        # get coerced into a float
+        s = format_state_for_judgments({"oi_build_intensity": "high", "spot": 24550})
+        assert "OI_BUILD=high" in s
+        assert "OI_BUILD=low" not in s  # don't confuse with default
+
+    def test_last3_pnl_serialized_as_string(self):
+        # last3_pnl is a pre-formatted string like "+150,-80,+40" — pass through
+        s = format_state_for_judgments({"last3_pnl": "+200,-50,+100"})
+        assert "LAST3=+200,-50,+100" in s
+
+    def test_dow_three_letters(self):
+        s = format_state_for_judgments({"day_of_week": "Thu"})
+        assert "DOW=Thu" in s
