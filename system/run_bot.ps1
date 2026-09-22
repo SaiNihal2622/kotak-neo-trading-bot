@@ -31,6 +31,12 @@ Set-Location $RepoRoot
 $env:PYTHONUNBUFFERED = '1'
 $env:DOTENV_PATH = $EnvFile
 $env:PYTHONPATH = $RepoRoot
+# FIX 2026-09-22 15:50: enable Python faulthandler so any segfault / deadlock
+# dumps a stack trace to stderr. Helps us find the bot-fork spawner (the
+# launcher process that inexplicably spawns a child `python -m kotak_bot paper`
+# on startup). NSSM AppEnvironmentExtra doesn't always propagate PYTHONFAULTHANDLER
+# so we set it directly here.
+$env:PYTHONFAULTHANDLER = '1'
 
 # Write a startup marker so healthcheck can detect restarts
 $startupInfo = @{
