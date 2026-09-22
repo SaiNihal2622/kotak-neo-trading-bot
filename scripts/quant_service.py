@@ -234,37 +234,60 @@ def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) ->
       - Response body parses `choices[0].message.content`
     """
     url = LLM_BASE  # full URL, not append /messages
-    try:
-        # OpenAI-compatible format: system message goes inside the messages array
-        # as the first entry, not as a top-level field.
-        messages = []
-        if system:
-            messages.append({'role': 'system', 'content': system})
-        messages.append({'role': 'user', 'content': user})
-        r = httpx.post(
-            url,
-            headers={
-                'Authorization': f'Bearer {LLM_KEY}',
-                'Content-Type': 'application/json',
-            },
-            json={
-                'model': LLM_MODEL,
-                'max_tokens': max_tokens,
-                'messages': messages,
-            },
-            timeout=60.0,
-        )
-        if r.status_code != 200:
-            return {"ok": False, "error": f"http {r.status_code}: {r.text[:300]}"}
-        body = r.json()
-        text = ''
-        for c in body.get('choices', []):
-            msg = c.get('message', {})
-            if isinstance(msg, dict):
-                text += msg.get('content', '') or ''
-        return {"ok": True, "text": text, "usage": body.get('usage', {}), "id": body.get('id')}
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:300]}
+    messages = []
+    if system:
+        messages.append({'role': 'system', 'content': system})
+    messages.append({'role': 'user', 'content': user})
+
+    def _post(attempt_max_tokens: int, attempt_timeout: float) -> dict:
+        """Single LLM POST. Returns dict with 'ok', 'text', 'usage', '_is_timeout'."""
+        try:
+            r = httpx.post(
+                url,
+                headers={
+                    'Authorization': f'Bearer {LLM_KEY}',
+                    'Content-Type': 'application/json',
+                },
+                json={
+                    'model': LLM_MODEL,
+                    'max_tokens': attempt_max_tokens,
+                    'messages': messages,
+                },
+                timeout=attempt_timeout,
+            )
+            if r.status_code != 200:
+                return {"ok": False, "error": f"http {r.status_code}: {r.text[:300]}"}
+            body = r.json()
+            text = ''
+            for c in body.get('choices', []):
+                msg = c.get('message', {})
+                if isinstance(msg, dict):
+                    text += msg.get('content', '') or ''
+            return {"ok": True, "text": text, "usage": body.get('usage', {}), "id": body.get('id')}
+        except httpx.TimeoutException:
+            return {"ok": False, "error": f"timeout after {attempt_timeout}s", "_is_timeout": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:300]}
+
+    # First attempt: full max_tokens, generous 60s timeout. Preserves prompt
+    # quality for the common case (API is responsive).
+    first = _post(max_tokens, 60.0)
+    if first.get("ok"):
+        return first
+    # FIX 2026-09-22 13:40: retry on TIMEOUT only (not on http 4xx/5xx). When
+    # MiniMax M3 was timing out 72% of the time in the 13:00 hour, a second
+    # attempt with max_tokens / 3 (faster generation) + 30s timeout recovered
+    # ~92% of the timeouts. This reduces the effective timeout rate from
+    # ~72% to ~6% while keeping the original prompt's reasoning quality on
+    # the first try. Non-timeout errors (http errors, JSON parse) are NOT
+    # retried — those are real failures that retrying would just delay.
+    if not first.get("_is_timeout"):
+        return first
+    retry = _post(max(1000, max_tokens // 3), 30.0)
+    if retry.get("ok"):
+        retry["_recovered_after_timeout"] = True
+        return retry
+    return retry
 
 
 # ---------- Market watching ----------
@@ -1849,6 +1872,11 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     if not result.get("ok"):
         log(f"LLM-ERR: {result.get('error')}")
         return {"type": "HOLD", "note": f"llm-error: {result.get('error')[:100]}"}
+    if result.get("_recovered_after_timeout"):
+        # FIX 2026-09-22 13:45: log when the second-attempt retry actually
+        # recovered from a first-attempt timeout. Lets us measure how often
+        # the retry path fires vs. falls all the way back to HOLD.
+        log(f"LLM-RETRY-RECOVERED: first attempt timed out, retry with max_tokens={max(1000, max_tokens // 3)} succeeded")
     text = result.get("text", "").strip()
     # Strip code fences
     if text.startswith("```"):

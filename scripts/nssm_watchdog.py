@@ -134,6 +134,19 @@ def main() -> int:
         _log(f"  {svc}: state={result['state_before']} started={result['started']} msg={result['msg'][:120]}")
         if result["state_before"] != "RUNNING" and not result["started"]:
             all_ok = False
+    # FIX 2026-09-22 13:35: 4th-layer orphan bot killer. Catches the case where
+    # an old bot process survives an NSSM restart (seen today at 13:30: PID 11204
+    # with 19h58m uptime was writing to liveness.json alongside the new bot PID 4132).
+    # NSSM stop should have killed it but didn't (UAC split-token issue). This script
+    # uses paper.lock as the canonical "current bot" PID and taskkill /F's any other
+    # python -m kotak_bot process. Runs every 15 min via the existing
+    # `\kotak-nssm-watchdog` scheduled task (SYSTEM, HIGHEST — bypasses UAC).
+    try:
+        from scripts import _orphan_killer  # noqa: F401
+        orphan_rc = _orphan_killer.main()
+        _log(f"  orphan_killer: rc={orphan_rc} (1=killed orphans, 0=clean)")
+    except Exception as _oe:
+        _log(f"  orphan_killer error: {_oe}")
     _save_state(state)
     return 0 if all_ok else 1
 
