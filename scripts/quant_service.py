@@ -2522,6 +2522,7 @@ last_reconcile_ts = 0
 # Each entry: (last_fired_date_var, hhmm_window, script_relpath, label, args, timeout_sec, weekday_filter)
 # weekday_filter: None = all days, "mon-fri" = Mon-Fri only, "sun" = Sun only
 last_morning_brief_date = None    # 08:15 Mon-Fri: pre-market signals + US close + India VIX (was kotak-bot-morning-brief)
+last_premarket_reauth_date = None # 07:30 Mon-Fri: Kotak session re-auth ONLY (well before 04:00 expiry buffer)
 last_daily_maint_date = None      # 08:25 Mon-Fri: re-auth, self-test, power plan, reconcile (was kotak-bot-daily-maintenance)
 last_news_cache_date = None       # 09:00 Mon-Fri: LLM-judge sentiment aggregate (was implicit via trader-desk)
 last_eod_backup_date = None       # 15:45 Mon-Fri: paper_state + trades_state to Telegram (was kotak-bot-state-backup)
@@ -3126,7 +3127,7 @@ def run_nightly_improvement() -> dict:
 def watch_loop():
     global last_intraday, tick_count, last_eod_check_date
     global last_weekly_check_date, last_intel_refresh, last_reconcile_ts
-    global last_morning_brief_date, last_daily_maint_date, last_news_cache_date
+    global last_morning_brief_date, last_premarket_reauth_date, last_daily_maint_date, last_news_cache_date
     global last_eod_backup_date, last_weekend_intel_date, last_weekly_summary_date
     global last_thesis_update_date, last_closing_straddle_date, last_nightly_improvement_date
     global last_candle_refresh_ts, last_alpha_refresh_ts, last_chain_refresh_ts, last_dashboard_refresh_ts
@@ -3487,6 +3488,20 @@ def watch_loop():
             # --- Scheduled operations (replaces 23 paused Mavis crons) ---
             # Mon-Fri operations
             if _now.weekday() < 5:
+                # FIX 2026-09-23 01:35: pre-market re-auth at 07:30 IST Mon-Fri.
+                # The default Kotak session lasts ~6 hours from auth and expires
+                # mid-morning (~04:00 IST if authed yesterday afternoon). This
+                # slot guarantees a fresh session ~1h45m before market open so
+                # morning brief + news cache + first LLM decisions all run on a
+                # healthy session. Keeps the 08:25 daily_maintenance slot
+                # intact for self-tests, power plan, reconcile, EOD, etc.
+                if _now.hour == 7 and 30 <= _now.minute < 35 and last_premarket_reauth_date != _now.date():
+                    last_premarket_reauth_date = _now.date()
+                    log("SCHED-PREMARKET-REAUTH: triggering (07:30)")
+                    _scheduled_subprocess(
+                        "scripts/daily_maintenance.py", "premarket-reauth",
+                        timeout=60, args=["--reauth-only"],
+                    )
                 # 08:15 morning brief: pre-market signals + US close + India VIX
                 if _now.hour == 8 and 15 <= _now.minute < 20 and last_morning_brief_date != _now.date():
                     last_morning_brief_date = _now.date()

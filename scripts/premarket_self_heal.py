@@ -69,6 +69,30 @@ def get_process_start(pid):
         return None
 
 
+def _is_market_hours_now() -> bool:
+    """FIX 2026-09-23 01:28: gate brain-decision-recency checks on market hours.
+
+    Outside 09:15-15:30 IST Mon-Fri (and on NSE holidays), the brain is correctly
+    idle (no events fire, no decisions expected). Without this gate, the
+    recency checks false-alarm every night, weekend, and post-market window.
+
+    Returns True if the current IST time is inside a market session.
+    """
+    now = datetime.now()
+    # weekday: 0=Mon..6=Sun; market is closed on Sat (5) + Sun (6)
+    if now.weekday() >= 5:
+        return False
+    h, m = now.hour, now.minute
+    # 09:15-15:30 IST inclusive
+    if h < 9 or h > 15:
+        return False
+    if h == 9 and m < 15:
+        return False
+    if h == 15 and m > 30:
+        return False
+    return True
+
+
 def check_bot_brain_alive():
     """Check if bot and brain are running. FIX 2026-09-07 01:25: now also RESTARTS
     the service if it's not running. The 3rd-layer NSSM watchdog (every 15 min)
@@ -117,6 +141,10 @@ def check_bot_brain_alive():
     add_check("bot_liveness", bot_ok, bot_detail)
 
     # --- Brain: cross-check with decision log ---
+    # FIX 2026-09-23 01:28: brain decision-recency is only meaningful DURING
+    # market hours. Outside 09:15-15:30 IST Mon-Fri, the brain is correctly
+    # idle (no events fire from the closed exchange). Treat as INFO not FAIL.
+    in_market = _is_market_hours_now()
     brain_ok = False
     brain_detail = ""
     if brain_state_path.exists():
@@ -140,32 +168,43 @@ def check_bot_brain_alive():
                         brain_ok = True
                         brain_detail += f" (BUT brain made decision {decision_age_min:.0f}m ago - ALIVE)"
                     else:
-                        brain_detail += f" AND last decision {decision_age_min:.0f}m ago (STUCK)"
+                        # FIX 2026-09-23 01:28: only flag as STUCK during market hours.
+                        # Outside market hours, this is the expected state.
+                        if in_market:
+                            brain_detail += f" AND last decision {decision_age_min:.0f}m ago (STUCK)"
+                        else:
+                            brain_ok = True
+                            brain_detail += f" (outside market hours, last decision {decision_age_min:.0f}m ago - expected)"
         except Exception as e:
             brain_detail += f" (decision log parse error: {e})"
     else:
         brain_detail += " (no decision log)"
     if not brain_ok:
         # FIX 2026-09-07 01:25: try to restart KotakQuantService
-        try:
-            sc = subprocess.run(
-                ["sc", "query", "KotakQuantService"],
-                capture_output=True, text=True, timeout=10,
-            )
-            is_stopped = "STOPPED" in (sc.stdout or "").upper() and "1  STOPPED" in (sc.stdout or "").upper()
-            if is_stopped:
-                brain_detail += " — NSSM STOPPED, attempting nssm start"
-                ns = subprocess.run(
-                    [NSSM, "start", "KotakQuantService"],
-                    capture_output=True, text=True, timeout=20,
+        # Only attempt restart during market hours — otherwise we'd kill a
+        # correctly-idle brain in the middle of the night.
+        if not in_market:
+            brain_detail += " — outside market hours, skipping restart attempt"
+        else:
+            try:
+                sc = subprocess.run(
+                    ["sc", "query", "KotakQuantService"],
+                    capture_output=True, text=True, timeout=10,
                 )
-                brain_detail += f" (nssm exit={ns.returncode})"
-                add_fix("brain_liveness", f"nssm start KotakQuantService exit={ns.returncode}")
-            else:
-                brain_detail += " — NSSM is RUNNING but brain not making decisions"
-        except Exception as e:
-            brain_detail += f" — restart attempt failed: {e}"
-            add_error("brain_restart", str(e))
+                is_stopped = "STOPPED" in (sc.stdout or "").upper() and "1  STOPPED" in (sc.stdout or "").upper()
+                if is_stopped:
+                    brain_detail += " — NSSM STOPPED, attempting nssm start"
+                    ns = subprocess.run(
+                        [NSSM, "start", "KotakQuantService"],
+                        capture_output=True, text=True, timeout=20,
+                    )
+                    brain_detail += f" (nssm exit={ns.returncode})"
+                    add_fix("brain_liveness", f"nssm start KotakQuantService exit={ns.returncode}")
+                else:
+                    brain_detail += " — NSSM is RUNNING but brain not making decisions"
+            except Exception as e:
+                brain_detail += f" — restart attempt failed: {e}"
+                add_error("brain_restart", str(e))
     add_check("brain_liveness", brain_ok, brain_detail)
 
 
@@ -213,7 +252,14 @@ def check_intraday_data():
     try:
         d = json.loads(intraday.read_text(encoding="utf-8"))
         age = time.time() - intraday.stat().st_mtime
-        add_check("intraday_levels_fresh", age < 3600, f"age={age:.0f}s (want < 3600)")
+        # FIX 2026-09-23 01:30: intraday_levels.json only refreshes while
+        # the bot is receiving live ticks. Outside market hours, the file
+        # is naturally stale — that's expected, not a failure.
+        if _is_market_hours_now():
+            add_check("intraday_levels_fresh", age < 3600, f"age={age:.0f}s (want < 3600)")
+        else:
+            add_check("intraday_levels_fresh", True,
+                     f"age={age:.0f}s (outside market hours, stale data is expected)")
     except Exception as e:
         add_check("intraday_levels_parseable", False, str(e))
 
@@ -267,12 +313,18 @@ def check_kotak_session():
 
 
 def check_brain_decision_recency():
-    """Check if brain has made a decision in last 10 min."""
+    """Check if brain has made a decision in last 10 min.
+
+    FIX 2026-09-23 01:28: only enforce the 30-minute recency during market
+    hours (09:15-15:30 IST Mon-Fri). Outside market hours the brain is
+    correctly idle and a stale decision log is expected behavior.
+    """
     print("\n[6/12] Brain decision recency...")
     decisions = ROOT / "data_cache" / "quant_service_decisions.jsonl"
     if not decisions.exists():
         add_check("brain_decisions_exist", False, "no decisions log")
         return
+    in_market = _is_market_hours_now()
     try:
         last_line = None
         with open(decisions, "r", encoding="utf-8") as f:
@@ -288,9 +340,15 @@ def check_brain_decision_recency():
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
             now = datetime.now(dt.tzinfo)
             age = (now - dt).total_seconds() / 60
-            add_check("brain_decision_recent", age < 30,
-                     f"last decision {age:.0f}m ago (want < 30m). "
-                     f"If > 30m, brain is stuck — /restart brain")
+            if in_market:
+                add_check("brain_decision_recent", age < 30,
+                         f"last decision {age:.0f}m ago (want < 30m). "
+                         f"If > 30m, brain is stuck — /restart brain")
+            else:
+                # Outside market hours: report but don't flag as FAIL
+                add_check("brain_decision_recent", True,
+                         f"last decision {age:.0f}m ago (outside market hours, "
+                         f"brain correctly idle)")
     except Exception as e:
         add_check("brain_decision_parse", False, str(e))
 

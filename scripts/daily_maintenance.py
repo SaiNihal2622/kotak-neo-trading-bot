@@ -202,10 +202,20 @@ def _run_smoke_test() -> dict:
 
 def main() -> int:
     quiet = "--quiet" in sys.argv
+    # FIX 2026-09-23 01:35: --reauth-only flag for the pre-market re-auth slot
+    # in scripts/quant_service.py's in-process scheduler (07:30 IST Mon-Fri).
+    # Runs ONLY the Kotak session re-auth and exits, well before the 04:00 IST
+    # default session expiry. Keeps the 08:25 full maintenance slot intact for
+    # self-tests, power plan, reconcile, etc.
+    reauth_only = "--reauth-only" in sys.argv
     print("=" * 60)
-    print("Kotak Neo Bot — DAILY MAINTENANCE")
+    print("Kotak Neo Bot — DAILY MAINTENANCE" + (" (reauth-only)" if reauth_only else ""))
     print("Started:", datetime.utcnow().isoformat() + "Z")
     print("=" * 60)
+    if reauth_only:
+        ok, msg = _reauth_kotak()
+        print(f"  [{('OK' if ok else 'FAIL')}] kotak reauth: {msg}")
+        return 0 if ok else 1
 
     lines: list[str] = []
     critical_failures: list[str] = []
