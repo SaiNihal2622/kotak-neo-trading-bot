@@ -1497,6 +1497,179 @@ def _get_recent_performance(n: int = 8) -> dict:
         return {"error": str(e)[:100]}
 
 
+def _extract_compact_state(context: dict) -> dict:
+    """Compress the rich context dict into the <400-token shape that
+    kotak_bot.signals.atomic_judgments.format_state_for_judgments expects.
+
+    The legacy prompt balloons to 14K characters of JSON context. The Jev
+    pattern is built around compact state. We do the compression here so
+    the SixJudgments LLM call uses ~3% of the legacy prompt's tokens.
+    """
+    try:
+        paper = context.get("paper") or _safe_read_json(DATA / "paper_state.json", default={})
+    except Exception:
+        paper = {}
+    try:
+        liveness = _safe_read_json(DATA / "liveness.json", default={})
+    except Exception:
+        liveness = {}
+    # Spot from chains_summary or candles aggregate
+    spot = 0.0
+    try:
+        for sym, c in (context.get("chains_summary") or {}).items():
+            v = c.get("spot")
+            if v:
+                spot = float(v)
+                break
+        if not spot:
+            ca = _safe_read_json(DATA / "candles_aggregate.json", default={})
+            for sym, c in (ca.get("symbols") or {}).items():
+                v = c.get("ltp")
+                if v:
+                    spot = float(v)
+                    break
+    except Exception:
+        spot = 0.0
+    # VIX from liveness snapshot
+    try:
+        vix = float((liveness.get("snapshot") or {}).get("vix") or 14.0)
+    except Exception:
+        vix = 14.0
+    # ADX / regime from alpha context
+    adx = 0.0
+    try:
+        alpha = context.get("alpha") or {}
+        regime_payload = alpha.get("regime") or {}
+        if isinstance(regime_payload, dict):
+            adx = float(regime_payload.get("adx") or 0.0)
+        elif isinstance(regime_payload, str):
+            adx = 0.0
+    except Exception:
+        adx = 0.0
+    # 5m realized vol from candles
+    sigma_5m = 0.0
+    try:
+        candles_ctx = context.get("candles") or {}
+        for sym, payload in candles_ctx.items():
+            if isinstance(payload, dict):
+                bar_5m = payload.get("bar_5m") or {}
+                if bar_5m.get("n_ticks", 0) > 0:
+                    o = float(bar_5m.get("o", 0))
+                    h = float(bar_5m.get("h", 0))
+                    l = float(bar_5m.get("l", 0))
+                    if o > 0:
+                        sigma_5m = max(0.0, (h - l) / o)
+                    break
+    except Exception:
+        sigma_5m = 0.0
+    # Avg spread (bps) — derive from chains_summary bid/ask
+    avg_spread_bps = 0.0
+    try:
+        spreads = []
+        for sym, c in (context.get("chains_summary") or {}).items():
+            atm = c.get("atm_strike")
+            if atm is None:
+                continue
+            for leg in (c.get("options") or []):
+                if abs(leg.get("strike", 0) - atm) < 1:
+                    bid = leg.get("bid") or 0
+                    ask = leg.get("ask") or 0
+                    if bid > 0 and ask > 0:
+                        spreads.append((ask - bid) / bid * 10000)
+        if spreads:
+            avg_spread_bps = sum(spreads) / len(spreads)
+    except Exception:
+        avg_spread_bps = 0.0
+    # OI change in last 5m
+    oi_change_pct_5m = 0.0
+    try:
+        oi_changes = context.get("oi_changes") or {}
+        for sym, chgs in oi_changes.items():
+            if isinstance(chgs, list) and chgs:
+                last = chgs[-1] if isinstance(chgs[-1], dict) else None
+                if last and "delta_pct" in last:
+                    oi_change_pct_5m = float(last.get("delta_pct") or 0.0)
+                    break
+    except Exception:
+        oi_change_pct_5m = 0.0
+    # Cash + positions
+    cash = float(paper.get("cash", 0) or 0)
+    positions_count = len(paper.get("positions") or {})
+    # Day P&L
+    pnl_day = float(paper.get("realized_pnl", 0) or 0)
+    # Direction bias from snapshot or recent_performance
+    direction_bias = "neutral"
+    try:
+        direction_bias = str((liveness.get("snapshot") or {}).get("bias") or "neutral").lower()
+    except Exception:
+        direction_bias = "neutral"
+    return {
+        "spot": spot, "vix": vix, "adx": adx,
+        "pnl_day": pnl_day, "cash": cash, "positions_count": positions_count,
+        "direction_bias": direction_bias, "realized_sigma_5m": sigma_5m,
+        "avg_spread_bps": avg_spread_bps, "oi_change_pct_5m": oi_change_pct_5m,
+    }
+
+
+def _try_atomic_judgments_decision(context: dict, events: list) -> Optional[dict]:
+    """First-pass decision via the Jev SixJudgments pattern.
+
+    Returns a brain-shaped decision dict (ready to write to quant_actions.json)
+    on parse success, or None on any failure. The caller is expected to
+    fall back to the legacy free-form prompt when this returns None.
+
+    Cost: ~300 tokens out (vs ~6000 for the legacy prompt). When this works
+    the legacy call is skipped entirely — that's the win.
+    """
+    try:
+        from kotak_bot.signals.atomic_judgments import (
+            build_judgement_user_prompt,
+            format_state_for_judgments,
+            judge_and_aggregate,
+            aggregator_to_legacy_decision,
+            JUDGE_SYSTEM_PROMPT,
+        )
+    except Exception as _imp:
+        log(f"atomic-judgments-import-err: {_imp}")
+        return None
+    try:
+        compact = _extract_compact_state(context)
+        state_str = format_state_for_judgments(compact)
+        user_prompt = build_judgement_user_prompt(state_str)
+        result = call_llm_direct(
+            JUDGE_SYSTEM_PROMPT,
+            user_prompt,
+            # SixJudgments is tiny: 6 enum strings + close brace. 800 tokens is
+            # plenty even with a 200-token <think> block.
+            max_tokens=800,
+        )
+        if not result.get("ok"):
+            log(f"ATOMIC-JUDGMENTS-LLM-ERR: {result.get('error','')[:120]}")
+            return None
+        text = result.get("text", "")
+        judged = judge_and_aggregate(compact, text)
+        if judged is None:
+            log(f"ATOMIC-JUDGMENTS-PARSE-FAIL: text[:200]={text[:200]!r}")
+            return None
+        # Decide plan qty: use the strategy-library recommendation's qty if
+        # available, else default to 75 (a reasonable single-strategy default).
+        plan_qty = 75
+        try:
+            sl = context.get("STRATEGY_LIBRARY_RECOMMENDATION") or {}
+            tp = sl.get("trade_plan") or {}
+            if isinstance(tp, dict):
+                q = tp.get("qty") or tp.get("quantity")
+                if isinstance(q, (int, float)) and q > 0:
+                    plan_qty = int(q)
+        except Exception:
+            pass
+        legacy = aggregator_to_legacy_decision(judged, plan_qty=plan_qty)
+        return legacy
+    except Exception as _e:
+        log(f"atomic-judgments-unhandled-err: {_e}")
+        return None
+
+
 def invoke_llm_decision(events: list, context: dict) -> dict:
     """Direct LLM call. Builds context, calls API, parses JSON action."""
     # Augment context with portfolio delta (so the LLM can decide hedges)
@@ -1852,6 +2025,17 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         "    If (3) is empty or doesn't list a symbol, you do NOT have that symbol, regardless of what (1) or (2) say.\n\n"
         "Decide now. Output ONE JSON object only. Pay attention to delta (directional risk) and gamma (convexity). Iron condors should be delta-neutral (delta < 5). Long options should have positive delta for CE, negative for PE."
     )
+    # FIX 2026-09-22 23:58 — atomic-judgements fast path.
+    # Try the SixJudgments Jev pattern FIRST. If it parses cleanly, skip the
+    # expensive legacy LLM call entirely (~85% cost reduction when this works).
+    # The legacy path runs only as a fallback when the model can't/won't emit
+    # the closed-enum JSON (e.g. network blip, model quirk, schema mismatch).
+    atomic_decision = _try_atomic_judgments_decision(context, events)
+    if atomic_decision is not None:
+        log(f"ATOMIC-JUDGMENTS: tier={atomic_decision.get('tier')} action={atomic_decision.get('type')} qty={atomic_decision.get('target_qty')} rationale={atomic_decision.get('rationale','')[:120]}")
+        HISTORY.append({"ts": now_iso(), "events": events, "decision": atomic_decision, "source": "atomic_judgments"})
+        return atomic_decision
+
     result = call_llm_direct(
         PROFESSIONAL_QUANT_SYSTEM + get_prompt_addition() + get_min_activity_reminder(),
         user_content,
