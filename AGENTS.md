@@ -1642,3 +1642,38 @@ All 5 chains broken (yfinance returns garbage). Watchdog caught them, _chains_un
 - Future "premkt says X is broken" — the first thing to check is whether the thing LOOKING broken is actually wired at all (function exists but is a stub, or config flag is ignored).
 - Brain HTTP :8503 going down again: `grep "HTTP-SERVER: bound" data_cache/quant_service.log` — if absent, the stub returned.
 - Telegram 401 errors returning: `grep "alerts.telegram.enabled" config/settings.yaml` — should be `false`. If `true`, that's the user re-enabling it (intended). If still `false`, a new caller bypassed the gate.
+
+### 2026-09-22 22:58 IST â€” Windows venv python.exe IS py.exe launcher (the 'bot fork' mystery solved)
+Type: lesson
+
+- **Context**: bot was restarting every ~6 minutes. Many theories (SIGINT,
+  fork spawn, URLError) but the real cause was hidden in plain sight.
+- **Discovery**: \.venv\\Scripts\\python.exe\ (274 KB) is **NOT a copy of
+  the real Python** â€” it's \py.exe\, the Python Launcher. It reads
+  pyvenv.cfg and spawns \C:\\Program Files\\Python312\\python.exe\ (104 KB)
+  with the same args. Both processes have cmdline containing
+  \-m kotak_bot paper\ and run as a parent-child pair.
+- **Why it caused restarts**: \paper.lock\ held the REAL bot's PID
+  (child python.exe). \orphan_killer.py\ enumerated both, saw the
+  launcher (parent py.exe) as 'orphan' (its PID didn't match
+  paper.lock), waited 5 min, then \	askkill /F /PID <launcher>\.
+  Killing the launcher CASCADES to the child â€” Windows job-object
+  cleanup, CTRL_BREAK forwarding, or runtime signals. Real bot died
+  ~5 min after every start.
+- **Fix**: in \scripts/orphan_killer.py\, walk the parent/child graph
+  and skip any candidate that has a bot descendant (it's a 'structural
+  wrapper', killing it would take down the real bot).
+- **Apply when**:
+  - Investigating any 'process dies every N minutes for no reason' on
+    Windows + venv: check if \.venv\\Scripts\\python.exe\ is \py.exe\
+    (\Get-Item\ on it returns OriginalFilename: py.exe).
+  - Designing a single-instance lock on Windows with a venv: write the
+    lock in the launcher process BEFORE the spawn (it gets re-acquired
+    in the child if you let the child run, leading to two lock attempts).
+  - Writing any process-tree inspector: the venv's 'python.exe' may be
+    \py.exe\ (274 KB launcher), not the real interpreter (typically
+    100 KB). File version info reveals this: 'Python Launcher' /
+    'OriginalFilename: py.exe'.
+  - Killing a parent process that has children on Windows: ALWAYS
+    verify the children are disposable first. \	askkill /F\ on a
+    parent often cascades to children via job objects.

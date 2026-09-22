@@ -469,3 +469,117 @@ Affected (last 24h):
 - `mvs_9301778519904c74` — kotak-mavis-self-driver · 08-31 11:50 — 12:02:47
 - `mvs_60c952d415704244` — kotak-trader-desk · 08-31 11:55 — 12:02:46
 - `mvs_4e4669276da7456e` — kotak-mavis-self-driver · 08-31 10:07 — 10:12:22
+
+## Refresh — 2026-09-22 17:25 IST (commit 3ef89aa)
+
+### Session after context_compaction_failed (mvs_968dd4d3cf11483b83a7deb61734ceac)
+- Session mvs_968dd4d3cf11483b83a7deb61734ceac died on efore_llm_checkpoint_aborted:
+  context_compaction_failed. Resumed work in current session.
+- User said "fix these too and check for anything more and did we implement the open source jev".
+
+### Root cause found — bot was restarting every ~6 minutes (the "bot fork" mystery)
+- The previous session was chasing the wrong thing (looked for SIGINT sender, bot fork
+  spawner). Those were red herrings.
+- Real bug: _http_get / _http_post in kotak_bot/data/kotak_prod_feed.py only caught
+  urllib.error.HTTPError. HTTPError is a SUBCLASS of URLError, so plain
+  URLError (socket timeout, DNS failure, connection refused) propagated up.
+- Secondary bug: when the polling thread's except Exception handler tried to log
+  via logger.exception(), the log sink itself failed with WinError 1450
+  ("insufficient system resources") during sustained outages — that secondary
+  exception escaped the handler and killed the daemon thread, causing the
+  NSSM restart loop.
+
+### Fix shipped — commit 3ef89aa
+- _http_get now catches urllib.error.URLError (parent of HTTPError).
+- _http_post mirror change.
+- _poll_loop wraps logger.exception() in its own try/except so a log-sink
+  failure cannot kill the thread.
+- _poll_loop tracks consecutive_errors and applies exponential backoff
+  (cap 30× poll interval = 60s at 2s poll) so a sustained outage no longer
+  hammers the Kotak API every 2s.
+- First 3 errors keep full traceback; later errors log 1-line summaries
+  every 30 cycles.
+- Tests: 	ests/_test_http_get_fix.py, 	ests/_test_http_post_fix.py (6 cases
+  each, all PASS).
+- Full pytest: **669 passed**.
+
+### Status as of 17:25 IST
+- Bot: PID 25008, uptime 5 min, state=running, tick=10, 0 positions, capital
+  intact at ₹100,000 + ₹10,347 realized P&L.
+- Self-restarted via data_cache/mavis_force_action.json (UAC-free path).
+- Paper-state lock holder matches liveness PID. No CRASH-FORENSIC events since
+  the fix deployed.
+
+### OpenAlgo integration — **NOT implemented**
+- openalgo_ref/ directory is a vendor reference copy of the OpenAlgo project
+  (open source algo trading platform with Kotak Neo plugin).
+- No kotak_bot/ code imports anything from OpenAlgo. The project uses its
+  own native Kotak Neo broker code (MCP server + direct API calls).
+- OpenAlgo's Kotak plugin lives at openalgo_ref/broker/kotak/ (4 files,
+  ~99KB total) if user wants to migrate.
+- "Jev" reference in morning_readiness.json ("Jev research tab", "Jev pattern
+  borrow") is a TODO in the user's research notes — no tomic_judgments.py
+  exists. Not an open-source project found in the workspace.
+
+### Other status
+- Capital ₹110,347 (cash), ₹10,347 realized P&L since baseline.
+- Live-go tracker: 4/10 consecutive green days, 9.99/15.0% cumulative return,
+  avg daily P&L ₹1,665.92 (≥1000 ✓), 48/30 trades ✓. Needs 6 more green days
+  and +5% return to clear go-live policy.
+- Dashboard HTTP server alive on :8502, brain HTTP alive on :8503.
+- 43 paused Mavis crons + in-process scheduler covers all daily ops.
+- Next go-live milestone: tomorrow's market open (Wed 23-Sep-2026, 09:15 IST).
+
+## Refresh — 2026-09-22 22:58 IST (commit 603876e)
+
+### Session v3 — RESOLVED the 6-minute restart cycle (the original 'bot fork' mystery)
+
+**Symptom**: bot restarted every ~6 minutes (paper.lock churned through
+20+ PIDs in a 2-hour window).
+
+**Investigation path** (5+ hours of forensic analysis):
+1. SIGINT mystery: ruled out — those were post-mortem SIGINTs from NSSM
+   sending CTRL+C to a dead bot during cleanup, NOT the cause of death.
+2. URLError/WinError 1450: real bugs, fixed in commit 3ef89aa — but they
+   were not the primary cause of the 6-min cycle.
+3. Bot 'fork' (two python processes with identical cmdline 'kotak_bot paper'):
+   documented as 'mysterious' for weeks; turned out to be the actual
+   culprit.
+
+**Root cause** (confirmed empirically):
+- \.venv\\Scripts\\python.exe\ is **NOT the real Python interpreter**.
+  It's \py.exe\ (the Python Launcher), a 274 KB stub that reads
+  \pyvenv.cfg\ and spawns \C:\\Program Files\\Python312\\python.exe\ with
+  the same args. Launched processes:
+    - \py.exe\ launcher: parent, 1 thread, 4 MB, cmdline = 'python.exe -m kotak_bot paper'
+    - \python.exe\ (real): child, 20+ threads, 552 MB, same cmdline
+- \paper.lock\ holds the REAL bot's PID (python.exe), not the launcher's.
+- \orphan_killer.py\ enumerated both processes via BOT_PATTERNS='-m kotak_bot paper',
+  saw the launcher as 'orphan' (its PID doesn't match paper.lock),
+  waited 5 min (MIN_ORPHAN_UPTIME_SEC), then \	askkill /F /PID <launcher>\.
+- Killing the launcher CASCADES to the child (Windows job-object cleanup,
+  CTRL_BREAK forwarding, SIGHUP-equivalent). Real bot died ~5-6 min after
+  every start.
+- NSSM auto-respawn → loop.
+
+**Fix shipped** (commit 603876e):
+- \_has_bot_descendant(pid)\ walks the parent/child process graph and
+  returns True if any descendant has a cmdline matching BOT_PATTERNS.
+- Orphan-killer now skips any candidate that has a bot descendant —
+  it's a 'structural wrapper' (the py.exe launcher case) and killing it
+  would take down the real bot.
+- Helpers added: \_build_parent_map()\ (cached per-run), \_cmdline_for_pid()\.
+- 669 existing tests still pass.
+
+**Verification**: bot PID 22216 stable for 14+ minutes (started 22:42 IST,
+still running at 22:56 IST) — first time in days that the bot has survived
+past the 6-min mark without a restart.
+
+**Other status**:
+- Capital ₹110,347, P&L ₹10,347 since baseline.
+- Orphan-killer log shows the expected new behavior:
+  'PID 12144 is orphan but is the parent of another bot process
+   (likely the py.exe launcher forwarding to the real python.exe)
+   - LEAVING (structural wrapper)'
+- Telegram alerts still disabled (user preference).
+- Market closed (after-hours). Next: tomorrow 09:15 IST pre-market open.
