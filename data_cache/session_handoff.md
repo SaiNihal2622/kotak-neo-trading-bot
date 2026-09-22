@@ -648,3 +648,72 @@ NEXT GO-LIVE MILESTONE
 - Tomorrow's session (Wed 23-Sep-2026, 09:15 IST) is the first full
   session with: (1) py.exe launcher fix = stable bot, (2) SixJudgments
   pattern = lower-variance brain.
+
+## Refresh — 2026-09-23 00:42 IST (commit cd456a7)
+
+### Session v5 (continued) — Atomic judgments state expanded 10 -> 21 fields + metrics
+
+User asked: "increase context window if it makes more better accuracy or profits"
+(now that SixJudgments makes per-decision LLM cost ~3% of legacy).
+
+WHAT SHIPPED (commit cd456a7, 4 files, +420 lines)
+- kotak_bot/signals/atomic_judgments.py::format_state_for_judgments()
+  - 10 fields -> 21 fields
+  - NEW: PCR, MAXPAIN_DIST, OI_BUILD intensity, RSI14, EMA_SPREAD,
+    VWAP_DEV, INTRADAY_RNG, NEWS, FII, DII, MIN_TO_CLOSE,
+    EXPIRY_DAYS, VIX_PCTL, DOW, LAST3_PNL
+  - Robust _fmt() / _pct() / _intlike() helpers handle None / NaN
+  - Output stays compact: ~330 chars, ~83 tokens input (well under 1500)
+  - JUDGE_SYSTEM_PROMPT updated to reference new fields by group
+
+- scripts/quant_service.py::_extract_compact_state()
+  - Pulls new fields from existing sources: chains_summary,
+    option_chain_NIFTY.json, candles.indicators, intraday_levels,
+    news_aggregate, fii_dii, trade_journal.jsonl, datetime calc
+  - Graceful fallbacks everywhere (None / 0 / "na" / "?")
+
+- scripts/quant_service.py::_try_atomic_judgments_decision()
+  - max_tokens 800 -> 1200 (room for richer rationale)
+  - metrics write via _write_atomic_judgments_metric() on every path
+
+- scripts/quant_service.py::_write_atomic_judgments_metric()
+  - Appends JSONL to data_cache/atomic_judgments_metrics.jsonl
+  - Schema: {ts, parse_ok, action, tier, fired, state_size_chars,
+             latency_ms, err_kind}
+  - Tracked err_kinds: none|import|llm_call|parse|exception
+
+PROFITABILITY WIRING (each field drives a specific SixJudgments enum)
+- regime enum: SPOT/VIX/ADX/SIGMA5m/INTRADAY_RNG/VIX_PCTL
+- direction enum: BIAS/VWAP_DEV/EMA_SPREAD/RSI14/MAXPAIN_DIST/NEWS/FII/DII/DOW/LAST3
+- toxic_flow / liquidity_stressed / quote_environment: SPREADbps/OIdelta5m/OI_BUILD
+- inventory_pressure + time sensitivity: CASH/POS/DAYPNL/MIN_CLOSE/EXPIRY_D
+
+TESTS
+- 4 new tests in tests/test_atomic_judgments.py (TestStateFormatter)
+- 703 tests pass (was 699 + 4 new)
+- Smoke-tested module imports + _extract_compact_state() end-to-end
+
+DEPLOYMENT
+- Brain restarted via self-restart marker at 00:41:41 IST (PID 21252)
+- New code loaded. Will exercise expanded state at first event
+  tomorrow 09:15 IST open.
+
+VERIFICATION PLAN
+- After 5-10 trading days, read data_cache/atomic_judgments_metrics.jsonl:
+  - tier distribution (target: more Tier 3 APPROVE in clean conditions)
+  - parse_ok rate (target: >= 90% on SixJudgments path)
+  - latency_ms p50 (target: under 2000ms)
+- Compare paper P&L vs the 4/10 day baseline to see if the richer
+  state translates to better trades
+- If tier 3 (APPROVE) fires more often AND paper P&L improves -> keep
+- If parse rate drops below 80% -> consider trimming back to 15 fields
+
+NEXT GO-LIVE MILESTONE
+======================
+- Streak 4/10 green days, +9.99/15.0% cumulative return.
+- Need 6 more green days and +5% return to clear the go-live policy.
+- Tomorrow's session (Wed 23-Sep-2026, 09:15 IST) is the first full
+  session with: (1) py.exe launcher fix = stable bot,
+  (2) SixJudgments pattern = lower-variance brain,
+  (3) expanded 21-field context = richer decisions.
+
