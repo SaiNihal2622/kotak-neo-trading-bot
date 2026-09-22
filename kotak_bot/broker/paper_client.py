@@ -1511,28 +1511,77 @@ class PaperClient(BrokerClient):
             # write atomically: tmp file then replace, with retry on WinError 5
             tmp = self.persist_path.with_suffix(".tmp")
             json_text = json.dumps(state, indent=2, default=str, ensure_ascii=False)
-            for attempt in range(3):
+            # FIX 2026-09-22 08:50: exponential backoff + lock-holder diagnostics.
+            # Previously 3 attempts with 50/100ms backoff = 150ms total. When
+            # daily_maintenance's reconcile subprocess holds paper_state.json
+            # for ~1s at 08:25, the bot's save raced and got [Errno 13]
+            # Permission denied on all 3 attempts, then silently swallowed the
+            # error in the "fall back to direct write" branch. Now we retry up
+            # to 10 times with exponential backoff (~3.1s total) and log the
+            # lock-holder PID so we can diagnose persistent contention.
+            import os
+            import time as _t
+            import random as _r
+            MAX_ATTEMPTS = 10
+            lock_holder_pid = None
+            lock_holder_alive = None
+            for attempt in range(MAX_ATTEMPTS):
                 try:
                     tmp.write_text(json_text, encoding="utf-8")
-                    # try replace, may fail if file is locked by another reader
                     if self.persist_path.exists():
-                        # on Windows, os.replace works even if file is open for reading
-                        import os
                         os.replace(tmp, self.persist_path)
                     else:
                         tmp.replace(self.persist_path)
+                    if attempt > 0:
+                        logger.info(
+                            f"[PAPER] state save retried successfully on attempt "
+                            f"{attempt + 1}/{MAX_ATTEMPTS} (lock_holder_pid={lock_holder_pid}, "
+                            f"alive={lock_holder_alive})"
+                        )
                     return
                 except (PermissionError, OSError) as e:
-                    if attempt < 2:
-                        import time as _t
-                        _t.sleep(0.05 * (attempt + 1))
+                    # Lazy diagnostic: read paper.lock once to see who's holding the file
+                    if lock_holder_pid is None:
+                        lock_path = self.persist_path.parent / "paper.lock"
+                        if lock_path.exists():
+                            try:
+                                lock_holder_pid = int(lock_path.read_text(encoding="utf-8").strip())
+                                try:
+                                    import psutil
+                                    lock_holder_alive = psutil.pid_exists(lock_holder_pid)
+                                except ImportError:
+                                    lock_holder_alive = "psutil_unavailable"
+                            except Exception:
+                                lock_holder_pid = "unparseable"
+                    if attempt < MAX_ATTEMPTS - 1:
+                        # Exponential backoff: 100, 200, 400, 800, 1600, 3200ms... capped at ~3.1s total
+                        # Plus 0-50ms jitter to avoid thundering herd if multiple bots restart at once.
+                        backoff_ms = min(100 * (2 ** attempt), 3200) + _r.randint(0, 50)
+                        if attempt == 0:
+                            logger.debug(
+                                f"[PAPER] state save got {type(e).__name__} ({e}); "
+                                f"lock_holder_pid={lock_holder_pid}, alive={lock_holder_alive}. "
+                                f"Retrying with backoff..."
+                            )
+                        _t.sleep(backoff_ms / 1000.0)
                     else:
-                        # last attempt failed — fall back to direct write
+                        # All attempts exhausted — log full context and re-raise so the outer
+                        # logger.warning() captures it. The previous code fell back to a
+                        # direct write which had the SAME permission problem and silently
+                        # succeeded only when the lock happened to release between attempts.
+                        logger.error(
+                            f"[PAPER] state save FAILED after {MAX_ATTEMPTS} attempts. "
+                            f"lock_holder_pid={lock_holder_pid}, alive={lock_holder_alive}. "
+                            f"Last error: {type(e).__name__}: {e}. "
+                            f"persist_path={self.persist_path}"
+                        )
+                        # Clean up the orphan .tmp file so it doesn't accumulate.
                         try:
-                            self.persist_path.write_text(json_text, encoding="utf-8")
-                            return
-                        except Exception as ee:
-                            raise
+                            if tmp.exists():
+                                tmp.unlink()
+                        except Exception:
+                            pass
+                        raise
         except Exception as e:
             logger.warning(f"PaperClient state save failed: {e}")
 
