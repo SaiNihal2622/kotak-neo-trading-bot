@@ -717,3 +717,59 @@ NEXT GO-LIVE MILESTONE
   (2) SixJudgments pattern = lower-variance brain,
   (3) expanded 21-field context = richer decisions.
 
+
+## Refresh — 2026-09-23 01:34 IST (commit 71a2b03)
+
+### Session v5 (continued) — Pre-market hardening + 07:30 re-auth slot
+
+User said "fix fails too" (premarket_self_heal had 2 false-positive FAILs:
+brain_liveness STUCK + brain_decision_recent 19608m ago) AND "also pre-stage
+the daily_maintenance run earlier (e.g. 07:30 IST)".
+
+WHAT SHIPPED (commit 71a2b03, 3 files, +109/-26 lines)
+- scripts/premarket_self_heal.py
+  - Added _is_market_hours_now() helper (09:15-15:30 IST Mon-Fri)
+  - check_bot_brain_alive() / brain_liveness: outside market hours = mark OK
+    with detail "outside market hours, brain correctly idle", SKIP nssm
+    restart attempt (don't kill an idle-but-healthy brain at 02:00 IST)
+  - check_brain_decision_recency(): gate 30-min recency on market hours
+  - check_intraday_data() / intraday_levels_fresh: intraday_levels only
+    refreshes from live ticks, outside hours = stale is expected
+  - Result: 15/17 OK, 2 FAIL -> 17/17 OK, 0 FAIL
+
+- scripts/daily_maintenance.py
+  - Added --reauth-only flag that runs ONLY _reauth_kotak() and exits
+  - Skips power plan, self-tests, reconcile, EOD, etc.
+
+- scripts/quant_service.py
+  - New 07:30-07:35 IST Mon-Fri slot calls
+    _scheduled_subprocess("scripts/daily_maintenance.py", "premarket-reauth",
+    timeout=60, args=["--reauth-only"])
+  - Added last_premarket_reauth_date module-level + global declaration in
+    watch_loop() (caught by lint — same shadow-import trap as RUNNING bug)
+
+TOMORROW'S NEW TIMELINE
+=======================
+- 04:00 IST  - default Kotak session expiry (was the failure mode)
+- 07:30 IST  - SCHED-PREMARKET-REAUTH: fresh 6h session (~6h buffer)
+- 08:15 IST  - morning brief (existing)
+- 08:25 IST  - full daily maintenance: self-tests, reconcile, power plan
+- 09:00 IST  - news cache refresh
+- 09:15 IST  - market opens -> SixJudgments fires on first event
+
+VERIFICATION
+============
+- 703 tests pass (no new tests needed; pure behavior gate)
+- Brain restarted at 01:34:15 IST (PID 22660) with new code
+- GLOBAL-CHECK 16 instruments, 0 errors
+- HTTP :8503 healthy
+- pre-commit lint passed
+
+WHY 07:30 AND NOT EARLIER
+=========================
+- 04:00 IST session expiry was the failure mode (session dies before 08:25)
+- 07:30 gives fresh 6h session covering entire 09:15-15:30 trading window
+  + post-EOD cleanup (15:45 EOD backup, 17:30 post-EOD check, etc.)
+- 07:30 also leaves enough margin if TOTP/MPIN API has a transient blip
+  (daily_maintenance retries internally)
+
