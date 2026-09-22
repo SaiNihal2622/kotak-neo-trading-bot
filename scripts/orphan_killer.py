@@ -170,18 +170,47 @@ def main() -> int:
 
     _log(f"  found {len(bots)} bot process(es): PIDs={[p for p, _ in bots]}")
 
+    # FIX 2026-09-22 13:55: only kill an orphan if it's been alive for at least
+    # MIN_ORPHAN_UPTIME_SEC. Without this, we were killing the new bot that
+    # NSSM had JUST started (5s throttle means a fresh start is still in startup
+    # phase when the 1-min watchdog fires), which then caused the old canonical
+    # to die for unrelated reasons, then NSSM restarted again -> restart loop.
+    # Now we wait 5 min of orphan uptime before declaring it killable.
+    MIN_ORPHAN_UPTIME_SEC = 300
     killed_any = False
     for pid, cmdline in bots:
         if pid == canonical:
             _log(f"  PID {pid} matches paper.lock - KEEPING")
             continue
-        # Orphan detected - kill it
+        # Orphan detected. Check its age via PowerShell (same enum pipeline).
+        age_sec = _process_uptime_sec(pid)
+        if age_sec is None:
+            _log(f"  PID {pid} could not determine uptime, skipping (safer)")
+            continue
+        if age_sec < MIN_ORPHAN_UPTIME_SEC:
+            _log(f"  PID {pid} is orphan but only {age_sec:.0f}s old (<{MIN_ORPHAN_UPTIME_SEC}s threshold) - LEAVING (likely mid-startup)")
+            continue
         snippet = cmdline[:120].replace("\n", " ")
-        _log(f"  ORPHAN: PID {pid} does NOT match canonical {canonical}. cmdline={snippet}")
+        _log(f"  ORPHAN: PID {pid} (uptime {age_sec/3600:.1f}h) does NOT match canonical {canonical}. cmdline={snippet}")
         if _kill(pid, "does_not_match_paper_lock"):
             killed_any = True
 
     return 1 if killed_any else 0
+
+
+def _process_uptime_sec(pid: int) -> float | None:
+    """Return the uptime of a PID in seconds, via PowerShell. None on error."""
+    ps_cmd = f"(Get-Date) - (Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CreationDate | Select-Object -ExpandProperty TotalSeconds"
+    try:
+        r = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        return float(r.stdout.strip())
+    except Exception:
+        return None
 
 
 if __name__ == "__main__":
