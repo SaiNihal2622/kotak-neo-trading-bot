@@ -773,3 +773,60 @@ WHY 07:30 AND NOT EARLIER
 - 07:30 also leaves enough margin if TOTP/MPIN API has a transient blip
   (daily_maintenance retries internally)
 
+
+## Refresh — 2026-09-23 11:07 IST (commits fb9616d + ecd160e)
+
+### Session v5 (continued) — 4 mid-session fixes for live trading
+
+User said "fix all the errors or issues or warnings". Found 4 actionable
+bugs during live trading. All fixed and deployed mid-session.
+
+WHAT SHIPPED
+1. commit ecd160e — `fix(cleanup): 3 mid-session warnings + 1 import bug + 1 enum missing`
+   - `recent-rejections: name 'broker' is not defined` → read from
+     data_cache/order_rejections.jsonl instead (bot already writes there)
+   - `No module named 'kotak_bot.strategy.trade_plan'` → re-export
+     TradePlan/StrategyName from base.py; create backwards-compat
+     kotak_bot/strategy/trade_plan.py shim
+   - `AttributeError: StrategyName.CUSTOM` → add CUSTOM="custom" to enum
+2. commit fb9616d — `fix(risk): per-trade cap skipped for SELL legs`
+   - Per-trade cap (5% of cash) was using leg's premium as cost.
+     For NIFTY iron condor SELL 23500 CE at limit=117, cost=Rs.8,775
+     exceeded the Rs.5,517 cap (5% of Rs.110,347 cash). Bot rejected
+     the SELL wings → naked BUY exposure.
+   - Fix: skip per-trade cap for SELL legs (they generate credit);
+     SELL legs add negative cost to position aggregate.
+3. CLOSE_ALL force action — cleaned 8 phantom positions from earlier
+   iron condor attempts (BUY wings that filled but never got SELL
+   counterparts registered because of the trade_plan import bug).
+4. Bot restarted via mavis_force_action.json (action=RESTART_BOT,
+   uppercase required — lowercase "restart" is silently consumed
+   without triggering a restart).
+
+NOT FIXED (intentional, deferred):
+- FINNIFTY yfinance "possibly delisted" warning — already negative-cached
+  for 24h, only fires on cache expiry. Acceptable noise.
+- `no_bid_ask_aware_fills` slippage audit — the bid/ask fill logic
+  exists in PaperClient; the audit's detection logic can't reliably
+  determine fill_mode. Separate work.
+- DNS resolution failures to api.minimax.io — network-level, transient.
+  Brain's legacy fallback (HOLD) handles it correctly.
+- FINNIFTY chain broken (chain_health: chains_unhealthy) — new
+  warning surfaced after restart. New FINNIFTY entries will be rejected
+  but NIFTY/BANKNIFTY still tradeable. Watch for chain-rebuild.
+
+VERIFICATION
+- 706 tests pass
+- Two consecutive iron condors placed at 11:06:36 and 11:06:46
+  both with `legs_placed=4/4` (was 2/4 before fix)
+- `Registered EXTERNAL plan T-XXX: custom 4 legs (brain-driven)`
+  shows trade_plan registration now works
+- Zero `REJECT leg: per-trade cap` warnings after fix
+- Zero `register_external failed` warnings after fix
+- Zero `name 'broker' is not defined` warnings after fix
+- bot uptime fresh, NSSM-managed, 11:07 IST
+
+GO-LIVE PROGRESS
+- Streak 5/10, +10.35%/+15% cumulative — preserved (no losses today)
+- Tomorrow day 6
+
