@@ -1840,6 +1840,14 @@ def run_paper() -> None:
                                             _sym = f"{_qa_inst}{_exp_str}{int(_strike)}{_opt_type}"
                                             _lot = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65, "MIDCPNIFTY": 120}.get(_qa_inst, 75)
                                             _qty_shares = max(1, _qty_lots * _lot)
+                                            # FIX 2026-09-23 10:55: SELL legs generate CREDIT (negative cost),
+                                            # not cash outlay. The per-trade cap should not apply to them
+                                            # — otherwise a NIFTY iron condor with SELL wings priced at
+                                            # 117 (= spot * 0.5%) gets rejected as "Cost=8775 > 5% of cash"
+                                            # even though the BUY wings would actually lock only Rs.2,632
+                                            # of capital. SELL legs are bounded by position cap + SPAN margin
+                                            # elsewhere; the per-trade cap is for BUY-side cash lock only.
+                                            _is_credit_leg = str(_side).upper() == "SELL"
                                             _order = Order(
                                                 symbol=_sym,
                                                 side=OrderSide(_side),
@@ -1857,12 +1865,17 @@ def run_paper() -> None:
                                             _est_cost = _qty_shares * (float(_price) if _price else 50.0)
                                             # FIX 2026-09-04 12:09: cap is now per-trade (2%) for individual legs, not per-position.
                                             # Use the per-trade cap on each leg; the position cap still protects against aggregate.
-                                            if _cash > 0 and _est_cost > _max_per_trade_pct * _cash:
-                                                logger.warning(f"[QUANT-ACTION] REJECT leg: per-trade cap {_max_per_trade_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
-                                                continue
-                                            if _cash > 0 and (_total_cost + _est_cost) > _max_position_pct * _cash:
-                                                logger.warning(f"[QUANT-ACTION] REJECT leg: position cap {_max_position_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
-                                                continue
+                                            # FIX 2026-09-23 10:56: skip per-trade cap for SELL legs (they generate credit).
+                                            if not _is_credit_leg:
+                                                if _cash > 0 and _est_cost > _max_per_trade_pct * _cash:
+                                                    logger.warning(f"[QUANT-ACTION] REJECT leg: per-trade cap {_max_per_trade_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
+                                                    continue
+                                                if _cash > 0 and (_total_cost + _est_cost) > _max_position_pct * _cash:
+                                                    logger.warning(f"[QUANT-ACTION] REJECT leg: position cap {_max_position_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
+                                                    continue
+                                            else:
+                                                # SELL leg: count the credit as NEGATIVE cost (reduces aggregate)
+                                                _est_cost = -_est_cost
                                             _filled = broker.place_order(_order)
                                             if _filled.status in (OrderStatus.COMPLETE, OrderStatus.OPEN):
                                                 _placed += 1
