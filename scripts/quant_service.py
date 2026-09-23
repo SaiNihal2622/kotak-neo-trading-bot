@@ -3320,10 +3320,28 @@ def watch_loop():
                     # own broker surfaces them on every cycle. Without this the
                     # LLM has no signal that a LIMIT order just timed out — it
                     # would keep proposing the same off-market limits.
+                    #
+                    # FIX 2026-09-23 10:46: read from data_cache/order_rejections.jsonl
+                    # instead of `broker.get_recent_rejections()`. The brain runs as a
+                    # separate process from the bot (NSSM KotakQuantService), so it
+                    # has no `broker` symbol in scope — the old code raised
+                    # `name 'broker' is not defined` on every periodic scan and
+                    # silently dropped the rejections. The bot already writes
+                    # rejections to this JSONL file (PaperClient._reject_unfilled),
+                    # so we just tail it here.
                     try:
-                        _recent_rejects = broker.get_recent_rejections(n=10)
-                        if _recent_rejects:
-                            _scan_ctx["recent_rejections"] = _recent_rejects
+                        _rej_path = DATA / "order_rejections.jsonl"
+                        if _rej_path.exists():
+                            with _rej_path.open("r", encoding="utf-8") as _rj_f:
+                                _rej_lines = _rj_f.readlines()
+                            _recent_rejects = []
+                            for _rl in _rej_lines[-10:]:
+                                try:
+                                    _recent_rejects.append(json.loads(_rl))
+                                except Exception:
+                                    continue
+                            if _recent_rejects:
+                                _scan_ctx["recent_rejections"] = _recent_rejects
                     except Exception as _rj_err:
                         log(f"recent-rejections: {_rj_err}")
                     try:

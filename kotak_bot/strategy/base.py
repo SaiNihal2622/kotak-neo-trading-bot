@@ -13,6 +13,11 @@ class StrategyName(str, Enum):
     IRON_CONDOR = "iron_condor"
     SHORT_STRANGLE = "short_strangle"
     EVENT_STRADDLE = "event_straddle"
+    # FIX 2026-09-23 10:50: brain-driven (SixJudgments) trades use CUSTOM
+    # because the strategy library may propose structures that don't map to
+    # the canonical 4. Without this, register_external_managed_trade in
+    # __main__.py raises AttributeError on StrategyName.CUSTOM.
+    CUSTOM = "custom"
 
 
 @dataclass
