@@ -599,15 +599,24 @@ def aggregator_to_legacy_decision(
     judged: JudgedDecision,
     plan_qty: int,
     override_type: Optional[str] = None,
+    trade_plan: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Convert {APPROVE, DOWNSIZE, VETO} + multiplier into the brain's
-    `{type, target_qty, rationale}` shape used by quant_service.
+    `{type, target_qty, rationale, legs, ...}` shape used by quant_service.
 
     If `override_type` is supplied (e.g. "CLOSE"), we always produce that
     action — the aggregator's multiplier still scales the qty.
 
     `plan_qty` is the qty the trade plan would normally use; the multiplier
     from the aggregator scales it.
+
+    FIX 2026-09-23 10:32 — pass-through `trade_plan`: when supplied, copy the
+    underlying, expiry, strategy, target, stop, max_hold_minutes, AND legs
+    into the decision. Each leg's `qty` is scaled by the aggregator's
+    multiplier so Tier 4 DOWNSIZE halves every leg, not just the top-level
+    qty. Without this, the bot's order_mgr reads the action file but sees
+    legs=[] and places nothing (the "OPEN None legs=0" bug — bot generates
+    100+ OPEN signals today with 0 fills).
     """
     action = override_type
     if action is None:
@@ -617,16 +626,47 @@ def aggregator_to_legacy_decision(
             action = "OPEN"
         else:  # DOWNSIZE
             action = "OPEN"  # still trade, just half size
-    qty = int(round(plan_qty * judged.aggregated.qty_multiplier))
-    return {
+    mult = judged.aggregated.qty_multiplier
+    qty = int(round(plan_qty * mult))
+    out: dict[str, Any] = {
         "type": action,
         "target_qty": qty,
         "rationale": (
             f"SixJudgments → {judged.aggregated.action.value} "
-            f"(tier {judged.aggregated.tier}, mult {judged.aggregated.qty_multiplier:.2f}): "
+            f"(tier {judged.aggregated.tier}, mult {mult:.2f}): "
             + judged.aggregated.rationale
         ),
         "judgments": judged.judgments.to_dict(),
         "tier": judged.aggregated.tier,
         "source": "atomic_judgments",
     }
+    # FIX 2026-09-23 10:32: copy trade_plan fields + scale each leg's qty.
+    # Without this the bot writes `placed_legs: 0` for every OPEN and
+    # nothing ever fills.
+    if trade_plan and isinstance(trade_plan, dict):
+        for fld in ("underlying", "expiry", "strategy", "structure",
+                    "target", "stop", "max_hold_minutes", "target_pnl",
+                    "stop_pnl", "max_credit", "max_loss"):
+            if fld in trade_plan and trade_plan[fld] is not None:
+                out[fld] = trade_plan[fld]
+        # n_lots becomes the authoritative per-leg qty source (overrides
+        # the caller-supplied plan_qty default)
+        n_lots = trade_plan.get("n_lots")
+        if isinstance(n_lots, (int, float)) and n_lots > 0:
+            scaled_n_lots = max(1, int(round(float(n_lots) * mult)))
+            # If target_qty was the placeholder default (75), replace it
+            # with the strategy's actual scaled lot count
+            out["target_qty"] = scaled_n_lots
+        raw_legs = trade_plan.get("legs") or []
+        if isinstance(raw_legs, list) and raw_legs:
+            scaled_legs = []
+            for leg in raw_legs:
+                if not isinstance(leg, dict):
+                    continue
+                leg_copy = dict(leg)
+                leg_qty = leg_copy.get("qty")
+                if isinstance(leg_qty, (int, float)) and leg_qty > 0:
+                    leg_copy["qty"] = max(1, int(round(float(leg_qty) * mult)))
+                scaled_legs.append(leg_copy)
+            out["legs"] = scaled_legs
+    return out

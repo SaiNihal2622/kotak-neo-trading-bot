@@ -298,6 +298,79 @@ class TestJudgeAndAggregate:
         assert legacy["type"] == "OPEN"
         assert legacy["target_qty"] == 38  # round(75 * 0.5) = 38 (banker's rounding)
 
+    def test_trade_plan_passthrough_copies_legs_and_metadata(self):
+        # FIX 2026-09-23 10:32: when trade_plan is supplied, the legacy decision
+        # must carry underlying/expiry/strategy/legs through. Without this,
+        # the bot's order_mgr reads the action file but sees legs=[] and
+        # places nothing (the "OPEN None legs=0" bug).
+        text = '{"regime":"quiet","direction":"neutral","toxic_flow":"low","liquidity_stressed":"low","quote_environment":"favorable","inventory_pressure":"none"}'
+        result = judge_and_aggregate({}, text)
+        plan = {
+            "strategy": "iron_condor_nifty",
+            "structure": "iron_condor",
+            "underlying": "NIFTY",
+            "expiry": "WEEKLY",
+            "n_lots": 2,
+            "max_hold_minutes": 45,
+            "target": 1500.0,
+            "stop": -750.0,
+            "legs": [
+                {"side": "SELL", "qty": 2, "strike": 24600, "opt_type": "CE", "order_type": "LIMIT", "price": 100},
+                {"side": "BUY",  "qty": 2, "strike": 24700, "opt_type": "CE", "order_type": "LIMIT", "price": 30},
+                {"side": "SELL", "qty": 2, "strike": 24400, "opt_type": "PE", "order_type": "LIMIT", "price": 100},
+                {"side": "BUY",  "qty": 2, "strike": 24300, "opt_type": "PE", "order_type": "LIMIT", "price": 30},
+            ],
+        }
+        legacy = aggregator_to_legacy_decision(result, plan_qty=75, trade_plan=plan)
+        # Tier 3 APPROVE → type=OPEN, full qty
+        assert legacy["type"] == "OPEN"
+        assert legacy["target_qty"] == 2  # n_lots * 1.0 = 2 (overrides plan_qty default)
+        # Plan metadata copied
+        assert legacy["underlying"] == "NIFTY"
+        assert legacy["expiry"] == "WEEKLY"
+        assert legacy["strategy"] == "iron_condor_nifty"
+        assert legacy["structure"] == "iron_condor"
+        assert legacy["max_hold_minutes"] == 45
+        assert legacy["target"] == 1500.0
+        assert legacy["stop"] == -750.0
+        # Legs passed through, qty unchanged (Tier 3 = 1.0x)
+        assert len(legacy["legs"]) == 4
+        assert all(leg["qty"] == 2 for leg in legacy["legs"])
+        assert legacy["legs"][0]["strike"] == 24600
+        assert legacy["legs"][3]["opt_type"] == "PE"
+
+    def test_trade_plan_dowsize_scales_each_leg(self):
+        # Tier 4 DOWNSIZE with n_lots=2 should produce legs with qty=1 each
+        # (2 * 0.5 = 1, rounded).
+        text = '{"regime":"ranging","direction":"neutral","toxic_flow":"normal","liquidity_stressed":"low","quote_environment":"unfavorable","inventory_pressure":"none"}'
+        result = judge_and_aggregate({}, text)
+        plan = {
+            "underlying": "BANKNIFTY",
+            "expiry": "WEEKLY",
+            "n_lots": 3,
+            "legs": [
+                {"side": "BUY", "qty": 3, "strike": 56000, "opt_type": "CE", "order_type": "MARKET"},
+                {"side": "BUY", "qty": 3, "strike": 55500, "opt_type": "PE", "order_type": "MARKET"},
+            ],
+        }
+        legacy = aggregator_to_legacy_decision(result, plan_qty=75, trade_plan=plan)
+        assert legacy["type"] == "OPEN"  # Tier 4 = DOWNSIZE but still OPEN
+        assert legacy["target_qty"] == 2  # round(3 * 0.5) = 2 (banker's rounding)
+        # Each leg should also be halved
+        assert all(leg["qty"] == 2 for leg in legacy["legs"]), \
+            f"legs not halved: {[leg['qty'] for leg in legacy['legs']]}"
+        assert legacy["underlying"] == "BANKNIFTY"
+
+    def test_no_trade_plan_still_works_without_legs(self):
+        # Backwards compat: calling without trade_plan should still work
+        # and not include 'legs' in the output (matches the old behavior).
+        text = '{"regime":"quiet","direction":"neutral","toxic_flow":"low","liquidity_stressed":"low","quote_environment":"favorable","inventory_pressure":"none"}'
+        result = judge_and_aggregate({}, text)
+        legacy = aggregator_to_legacy_decision(result, plan_qty=75)
+        assert legacy["type"] == "OPEN"
+        assert legacy["target_qty"] == 75
+        assert "legs" not in legacy  # no plan = no legs (backwards compat)
+
     def test_legacy_cl_override(self):
         """When the caller supplies override_type='CLOSE' (e.g. risk override),
         we always emit CLOSE — the aggregator's multiplier still scales the qty."""

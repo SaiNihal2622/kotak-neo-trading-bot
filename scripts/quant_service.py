@@ -1910,19 +1910,28 @@ def _try_atomic_judgments_decision(context: dict, events: list) -> Optional[dict
         action_str = judged.aggregated.action.value
         tier = judged.aggregated.tier
         fired = list(judged.aggregated.fired_rules or [])
-        # Decide plan qty: use the strategy-library recommendation's qty if
-        # available, else default to 75 (a reasonable single-strategy default).
+        # FIX 2026-09-23 10:32: pull the FULL trade_plan (not just qty) so the
+        # atomic decision carries underlying/expiry/strategy/legs through to
+        # the bot's order_mgr. Without this, every OPEN has placed_legs=0.
+        trade_plan: dict = {}
         plan_qty = 75
         try:
             sl = context.get("STRATEGY_LIBRARY_RECOMMENDATION") or {}
             tp = sl.get("trade_plan") or {}
             if isinstance(tp, dict):
-                q = tp.get("qty") or tp.get("quantity")
+                trade_plan = tp
+                # plan_qty is used as a fallback if the plan has no legs
+                # (e.g. malformed plan from a non-standard strategy). The
+                # leg-scaling path inside aggregator_to_legacy_decision
+                # uses n_lots from trade_plan when available.
+                q = tp.get("qty") or tp.get("quantity") or tp.get("n_lots")
                 if isinstance(q, (int, float)) and q > 0:
                     plan_qty = int(q)
         except Exception:
-            pass
-        legacy = aggregator_to_legacy_decision(judged, plan_qty=plan_qty)
+            trade_plan = {}
+        legacy = aggregator_to_legacy_decision(
+            judged, plan_qty=plan_qty, trade_plan=trade_plan or None,
+        )
         _write_atomic_judgments_metric(
             parse_ok=True, action=action_str, tier=tier, fired=fired,
             state_size_chars=len(state_str),
