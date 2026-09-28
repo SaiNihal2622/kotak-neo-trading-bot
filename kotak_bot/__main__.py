@@ -1911,6 +1911,41 @@ def run_paper() -> None:
                                             else:
                                                 logger.warning(f"[QUANT-ACTION] leg failed: {_leg_err}")
                                     # Record the open decision in performance tracker (so EOD/weekly can compute outcomes)
+                                    # FIX 2026-09-29 02:35: deduplicate actions against the live
+                                    # order_mgr state. The bot's previous behavior was to place
+                                    # orders + register_external_managed_trade on every action
+                                    # consumption. If the bot restarted mid-action (or the action
+                                    # file wasn't marked consumed before crash), the same action
+                                    # was processed twice → 4 legs × 2 = 8 phantom orders in
+                                    # order_mgr → max positions cap (8) hit → no new trades for
+                                    # the rest of the day. The dedup check below: if ANY symbol in
+                                    # the action's leg records is already tracked in
+                                    # order_mgr._symbol_to_trade, mark the action consumed and
+                                    # skip — the trade is already in the book.
+                                    if _leg_records:
+                                        _tracked_already = [
+                                            _lr["symbol"] for _lr in _leg_records
+                                            if _lr.get("symbol") in getattr(order_mgr, '_symbol_to_trade', {})
+                                        ]
+                                        if _tracked_already:
+                                            logger.warning(
+                                                f"[QUANT-ACTION] DEDUP-SKIP: action ts={_qa.get('ts')} "
+                                                f"already has {len(_tracked_already)}/{len(_leg_records)} "
+                                                f"legs tracked ({_tracked_already[:3]}). Marking consumed "
+                                                f"without re-registering (avoids the order_mgr "
+                                                f"double-count bug from Sep 23)."
+                                            )
+                                            _qa["consumed"] = True
+                                            _qa["consumed_at"] = now.isoformat()
+                                            _qa["placed_legs"] = _placed_total
+                                            _qa["dedup_skip"] = True
+                                            _placed = 0  # already in the book
+                                            try:
+                                                with open(_qa_path, "w", encoding="utf-8") as _qw:
+                                                    json.dump(_qa, _qw, ensure_ascii=False)
+                                            except Exception:
+                                                pass
+                                            continue
                                     if _leg_records:
                                         try:
                                             # FIX 2026-09-04 15:50: removed `import sys` (same shadow
