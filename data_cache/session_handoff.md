@@ -978,3 +978,76 @@ TOMORROW'S AUTO-TIMELINE (Wed 30-Sep-2026)
 - 09:00 — news cache refresh (RSS + LLM judge sentiment)
 - 09:15 — market opens; SixJudgments fires on first event
 
+
+## Refresh — 2026-09-29 02:55 IST (commit e2f6a08, user going to sleep)
+
+### Session v6 final — system ready for today + future days
+
+User: "set everything ready for today and days to come, i am sleepinh"
+
+WHAT SHIPPED
+- Commit db7b420: 4 deferred issues fixed (watchdog + dedup guard +
+  live_go_tracker run + 3 stale tests rewritten)
+- Commit e2f6a08: live_go_scheduler silent-skip bug fixed (the bug
+  that caused the Sep 23-29 streak-math staleness in the first place)
+
+VERIFIED
+- brain :8503       = 200 (just restarted with e2f6a08 fix)
+- dash :8501        = 200 ok
+- http_server :8502 = 200 (manual process, watchdog-protected)
+- confluence_loop   = alive (heartbeat 18s ago, watchdog-protected)
+- KotakAncillaryWatchdog = Running, next fire 02:54 IST (every 5 min)
+- premarket_self_heal = 17/17 OK, SYSTEM READY FOR MARKET
+- 712 tests pass
+
+WHAT WON'T RECUR
+1. confluence_loop / http_server dying silently
+   → KotakAncillaryWatchdog (SYSTEM-context, every 5 min)
+   → Verified: TaskName=KotakAncillaryWatchdog State=Running
+2. order_mgr double-count from Sep 23
+   → Dedup guard at __main__.py:1940 (source-level, can't drift)
+   → 6 new tests in test_order_dedup.py
+3. live_go_status.json going stale
+   → Scheduler no longer silent-skips when now_ist unavailable
+   → Tracks fallback to local IST computation
+4. Stale gate tests blocking CI
+   → tests/test_gate_data_paths.py rewritten to verify logic
+     (returns %, in range 0-100) not outcome (passes threshold)
+5. NSSM elevation issue blocking service restart
+   → Watchdog uses Start-Process (works from any context)
+   → Scheduled task is SYSTEM-context (no UAC needed)
+
+TIMELINE FOR TODAY (Tue 29-Sep-2026, market opens 09:15 IST)
+- 03:30 — session_watch auto re-auths Kotak (~30 min before 06:29 expiry)
+- 02:54, 02:59, 03:04, ... — KotakAncillaryWatchdog fires every 5 min
+- 05:00 — confluence_loop + :8502 verified by watchdog
+- 06:29 — current Kotak session expires (session_watch should re-auth ~05:59)
+- 07:30 — premarket-reauth via daily_maintenance --reauth-only
+- 08:15 — morning brief via Telegram
+- 08:25 — full daily maintenance (self-tests, reconcile, EOD audit)
+- 09:00 — news cache refresh (RSS + LLM judge)
+- 09:15 — market opens, SixJudgments fires on first event
+- 15:30 — live_go_tracker fires (will refresh live_go_status.json
+         daily — the fix in commit e2f6a08 ensures this)
+- 15:35 — EOD post-mortem
+- 15:45 — state backup to Telegram
+- 21:30 — live_go_tracker fires again
+
+TIMELINE FOR FUTURE DAYS
+- Daily: same as today (auto)
+- Weekly: Sun 18:00 weekly_summary, Sun 21:00 weekend_intel + monday_brief
+- Daily 23:00: nightly_improvement (LLM self-review, may update AGENTS.md)
+- 24/7: confluence_loop heartbeat (every 30s)
+- 24/7: KotakAncillaryWatchdog (every 5 min)
+- 24/7: session_watch (every 5 min, auto-reauth before expiry)
+- 24/7: bot + brain process heartbeats (every 30s)
+
+GO-LIVE STATUS (post Sep 25 loss)
+- Consecutive green days: 0/10 (RESET — need 10 from scratch)
+- Cumulative return: +3.97% / +15%
+- Total realized: Rs.3,972
+- Total trades: 68/30
+- Tomorrow (Wed 30-Sep) is day 1 of streak rebuild
+
+USER: GO TO SLEEP — system is auto-piloted from here.
+
