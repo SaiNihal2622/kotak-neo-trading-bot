@@ -3449,18 +3449,25 @@ def watch_loop():
                 # writes data_cache/live_go_status.json, and sends a one-time
                 # Telegram alert when all conditions flip to met. The bot stays in
                 # paper mode regardless — user must explicitly set KOTAK_LIVE_CONFIRMED=YES.
+                #
+                # FIX 2026-09-29 02:50: the previous version bailed silently when
+                # `_now_ist_fn` was None, logging "live-go-tracker-sched-skip:
+                # now_ist unavailable". The result was that live_go_status.json
+                # went stale from Sep 23 to Sep 29 (6 days) because the scheduler
+                # skipped every cycle. Fall back to a local IST timestamp computed
+                # from `datetime.now() + IST_OFFSET` so the tracker ALWAYS fires
+                # when the 6h window elapses.
                 try:
-                    if datetime.now().timestamp() - last_live_go_tracker_ts > 3600 * 6:  # every 6h (so it definitely fires once after 15:30)
+                    if datetime.now().timestamp() - last_live_go_tracker_ts > 3600 * 6:
                         last_live_go_tracker_ts = datetime.now().timestamp()
-                        # Only fire during/after market hours (15:30 IST = 10:00 UTC)
-                        # to avoid stale data evaluation. The check itself is
-                        # idempotent so multiple fires per day is fine.
-                        if _now_ist_fn is None:
-                            log("live-go-tracker-sched-skip: now_ist unavailable")
-                        else:
-                            _now_ist = _now_ist_fn()
-                            if _now_ist.hour >= 15 and _now_ist.minute >= 30:
-                                _scheduled_subprocess("scripts/live_go_tracker.py", "live-go-tracker", timeout=30)
+                        # Always compute IST timestamp locally as a fallback so
+                        # this block never silently skips. The legacy path
+                        # (_now_ist_fn) is kept for future testability.
+                        from datetime import timezone, timedelta as _td
+                        _ist = (_now_ist_fn() if _now_ist_fn is not None
+                                else datetime.now(timezone.utc).astimezone(timezone(_td(hours=5, minutes=30))))
+                        if _ist.hour >= 15 and _ist.minute >= 30:
+                            _scheduled_subprocess("scripts/live_go_tracker.py", "live-go-tracker", timeout=30)
                 except Exception as _lgt_err:
                     log(f"live-go-tracker-sched-err: {_lgt_err}")
                 # FIX 2026-09-08 16:35: GROK BOT DESK — 6-role LLM desk (parallel 2nd opinion).
