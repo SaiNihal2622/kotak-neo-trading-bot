@@ -830,3 +830,61 @@ GO-LIVE PROGRESS
 - Streak 5/10, +10.35%/+15% cumulative — preserved (no losses today)
 - Tomorrow day 6
 
+
+## Refresh — 2026-09-29 01:40 IST (pre-market audit)
+
+### Session v6 — readiness audit + fixes for Wed 30-Sep-2026
+
+User asked "make sure everything is ready for tomorrow". Ran a full
+pre-market audit. Found 4 issues, fixed 3. System now passes all 17
+pre-market self-heal checks.
+
+ISSUES FOUND
+1. confluence_loop DEAD for 5.3 days (heartbeat ts=2026-09-23T18:02)
+   The confluence_loop.py is a standalone process; not NSSM-managed.
+   If it dies, nothing restarts it. Self-heal reports FAIL.
+   FIX: Started fresh (PID 8240, heartbeat 8s ago).
+
+2. session_opens.json stale by 4 days (date=2026-09-25, today=2026-09-29)
+   FIX: Ran scripts/_seed_session_opens.py. New date=2026-09-29.
+
+3. http_server on :8502 NOT listening
+   The NSSM service `KotakHttpServer` is registered as Automatic but
+   was Stopped. NSSM restart failed (Start-Service throws
+   "Cannot open service on computer '.'" — same NSSM-system-context
+   issue we've hit before).
+   FIX: Manually launched python -m kotak_bot.http_server --port 8502
+   via Start-Process (PID 13620). Service responds.
+
+4. mavis_trades.json had action=BLOCK with age=89.3h (3.7 days stale)
+   FIX: Auto-fix in premarket_self_heal re-ran the pre-market plan;
+   now valid_for=2026-09-29 (legitimate BLOCK — conditions not met,
+   VIX not ideal).
+
+PRE-MARKET SELF-HEAL: 17 OK, 0 FAIL — SYSTEM READY FOR MARKET.
+
+STILL OPEN (post-session investigation only, NOT blocking tomorrow)
+- order_mgr double-count bug from Sep 23 — caused phantom positions
+  that blocked new trades. Need to investigate why
+  register_external_managed_trade is being called twice per trade.
+- Streak math: live_go_status.cumulative_pnl_rs=10347 vs
+  paper_state.realized_pnl=3972 (Rs.6,375 gap). live_go_tracker.py
+  hasn't run since Sep 23. Will auto-recompute tomorrow at 15:30.
+- NSSM KotakHttpServer service still STOPPED. Manually-launched
+  python process is the only thing on :8502. Will die on reboot.
+
+TOMORROW'S AUTO-FIX TIMELINE (Wed 30-Sep-2026)
+- 03:30 — session_watch auto re-auths Kotak (~30 min before 06:29 expiry)
+- 07:30 — daily_maintenance --reauth-only (fresh 6h session)
+- 08:15 — morning brief via Telegram
+- 08:25 — full daily maintenance: self-tests, reconcile, etc.
+- 09:00 — news cache refresh (RSS + LLM judge sentiment)
+- 09:15 — market opens; SixJudgments fires on first event
+
+NOT FIXED (deliberate, not blocking)
+- NSSM KotakHttpServer is Stopped; manual process on :8502 is the
+  safety. Will die on reboot. Need to either (a) fix NSSM elevation
+  issue or (b) replace with SYSTEM-context scheduled task. Defer.
+- confluence_loop is a manual Start-Process. Will die on reboot. Same
+  defer-to-post-session rationale.
+
