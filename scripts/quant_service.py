@@ -1932,6 +1932,24 @@ def _try_atomic_judgments_decision(context: dict, events: list) -> Optional[dict
         legacy = aggregator_to_legacy_decision(
             judged, plan_qty=plan_qty, trade_plan=trade_plan or None,
         )
+        # FIX 2026-09-29 12:10: when the strategy library finds NO match,
+        # trade_plan is {} and aggregator_to_legacy_decision returns
+        # type=OPEN with no underlying/no legs. The bot then logs
+        # "ACTION-WRITTEN: OPEN None" + "LLM-DECISION: OPEN legs=0"
+        # and skips placement. That's noise + wasted cycles. Downgrade
+        # the action to HOLD with a clear reason so the bot stays flat.
+        if not trade_plan:
+            legacy["type"] = "HOLD"
+            legacy["rationale"] = (
+                f"SixJudgments → {action_str} (tier {tier}, mult {judged.aggregated.qty_multiplier:.2f}) "
+                f"BUT strategy library found no match (no trade_plan); "
+                f"downgraded to HOLD. " + judged.aggregated.rationale
+            )
+            legacy.pop("target_qty", None)
+            log(
+                f"ATOMIC-DOWNGRADE: SixJudgments={action_str} tier={tier} → HOLD "
+                f"(strategy library returned no trade_plan; can't place orders without legs)"
+            )
         _write_atomic_judgments_metric(
             parse_ok=True, action=action_str, tier=tier, fired=fired,
             state_size_chars=len(state_str),
