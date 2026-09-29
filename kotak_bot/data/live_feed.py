@@ -84,6 +84,8 @@ class LiveFeed:
                  neo_client=None, deribit_feed=None):
         self.mode = mode
         self.broker = broker
+        # FIX 2026-09-29 14:30: late-binding broker setter (in case of order-of-ops
+        # issues where broker isn't ready when LiveFeed is constructed).
         self.persist_path = Path(persist_path)
         self.persist_path.parent.mkdir(parents=True, exist_ok=True)
         self.neo_client = neo_client  # for live_uat / live_ws modes
@@ -231,10 +233,30 @@ class LiveFeed:
                 except Exception as e:
                     logger.warning(f"deribit keep_alive: {e}")
 
+    def set_broker(self, broker) -> None:
+        """FIX 2026-09-29 14:30: late-binding broker setter.
+
+        If broker isn't ready when LiveFeed is constructed, the wiring breaks
+        and ticks never reach PaperClient._ticks (SELL snap can't fire).
+        Call this later once broker is fully initialized.
+        """
+        with self._lock:
+            self.broker = broker
+            if broker is not None and hasattr(broker, 'inject_tick'):
+                # Replay any cached ticks we already collected so the paper book
+                # has bid/ask data for every symbol we've seen.
+                for sym, t in list(self._latest.items()):
+                    try:
+                        broker.inject_tick(t)
+                    except Exception as e:
+                        logger.debug(f"replay inject {sym}: {e}")
+                logger.info(f"[LIVE-FEED] broker set late; replayed {len(self._latest)} cached ticks to PaperClient")
+
     def subscribe(self, symbols: list[str]) -> None:
         with self._lock:
             for s in symbols:
                 if s not in self._subscribed:
+                    self._subscribed.add(s)
                     self._subscribed.add(s)
                     if self.mode in ("live_uat", "live_ws") and self.neo_client and self.neo_client._client:
                         try:
@@ -539,7 +561,21 @@ class LiveFeed:
             hist.append(tick.ltp)
             if len(hist) > 600:
                 hist[:] = hist[-600:]
-        if self.broker is not None and hasattr(self.broker, "inject_tick"):
+        # FIX 2026-09-29 14:30: defensive tick injection.
+        # Today (Sep 29) the bot had 0 ticks in PaperClient despite the heartbeat
+        # showing tick_count=148. Root cause: the broker reference passed at LiveFeed
+        # construction time was either None or a different instance than the one
+        # the bot uses for order placement. The result: SELL LIMIT orders kept their
+        # proposed limit (LLM's 113.0) and timed out at 60s because the SELL snap
+        # (which requires bid data) couldn't fire.
+        # Fix: ALWAYS try to inject ticks to the broker if it has inject_tick.
+        # Also log a one-time warning if self.broker is None so the wiring issue
+        # is visible in the next session.
+        if self.broker is None:
+            if not getattr(self, '_warned_no_broker', False):
+                logger.warning(f"[LIVE-FEED] broker is None; ticks won't reach PaperClient. SELL-leg auto-snap won't fire.")
+                self._warned_no_broker = True
+        elif hasattr(self.broker, "inject_tick"):
             try:
                 self.broker.inject_tick(tick)
             except Exception as e:
