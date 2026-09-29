@@ -2148,6 +2148,19 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
                 "performance_history": {k: v.to_dict() for k, v in _perf.items()},
             }
             log(f"STRATEGY-LIBRARY: selected {_strategy.name} (edge: {_strategy.expected_edge[:80]})")
+        else:
+            # FIX 2026-09-29 12:00: was silent. Now log WHY no strategy
+            # matched so we can diagnose recurring zeros.
+            closes = [c.get("c", 0) for c in _sel_ctx.get("candles", []) if c.get("c")]
+            _spot_v = _sel_ctx.get("spot", 0)
+            _sopen_v = _sel_ctx.get("session_open", 0)
+            _vix_v = _sel_ctx.get("vix", 0)
+            _spct = (_spot_v - _sopen_v) / _sopen_v * 100 if (_spot_v and _sopen_v) else 0
+            log(
+                f"STRATEGY-LIBRARY: no-match spot={_spot_v} session_open={_sopen_v} "
+                f"vix={_vix_v} session_pct={_spct:+.2f}% n_closes={len(closes)} "
+                f"(iron_condor needs: vix<15 AND abs(session_pct)<0.7)"
+            )
     except Exception as _strat_err:
         log(f"strategy-library-err: {_strat_err}")
         pass
