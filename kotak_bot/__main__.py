@@ -473,11 +473,18 @@ def run_paper() -> None:
         )
         feed = LiveFeed(mode=feed_mode, broker=broker, neo_client=None, deribit_feed=deribit_feed)
         feed.start()
+        # FIX 2026-09-29 14:30: defensive re-bind broker after start.
+        feed.set_broker(broker)
         # Deribit doesn't use NIFTY/BANKNIFTY — subscribe to crypto spot instead.
         feed.subscribe(["BTC", "ETH"])
     else:
         feed = LiveFeed(mode=feed_mode, broker=broker, neo_client=neo_client_for_feed)
         feed.start()
+        # FIX 2026-09-29 14:30: defensive re-bind broker after start.
+        # Today (Sep 29) the wiring broke and PaperClient had 0 ticks despite
+        # LiveFeed seeing 148 ticks. Re-binding via set_broker() replays any
+        # cached ticks so the paper book has bid/ask data for SELL snap.
+        feed.set_broker(broker)
         feed.subscribe(["NIFTY", "BANKNIFTY"])
     # FIX 2026-08-12: pin strikes for any open orders that survived a bot restart,
     # so live_kotak feed keeps polling them and the paper fill sim can fill them.
