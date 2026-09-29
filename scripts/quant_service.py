@@ -2079,15 +2079,48 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     # iterating a string-keyed dict raised AttributeError on each periodic
     # scan.
     def _build_candles_list_for_strategy(candle_ctx) -> list:
+        """FIX 2026-09-29 12:25: previously only returned the latest 1m bar per
+        symbol (~5 bars total). Strategy library needs 15+ bars for RSI-14.
+        Read 20+ recent 1m bars from the per-symbol JSONL candle file so
+        select_strategy has enough history to compute indicators.
+        """
         if not candle_ctx or not isinstance(candle_ctx, dict):
             return []
         out = []
-        for sym, payload in candle_ctx.items():
-            if not isinstance(payload, dict):
-                continue
-            bar = payload.get("bar_1m") or {}
-            if bar and all(k in bar for k in ("o", "h", "l", "c")):
-                out.append({"o": bar["o"], "h": bar["h"], "l": bar["l"], "c": bar["c"], "v": bar.get("n_ticks", 0)})
+        # First, try to get many bars from the JSONL candle files
+        try:
+            for sym in candle_ctx.keys():
+                jsonl = DATA / "candles" / f"{sym}_1m.jsonl"
+                if not jsonl.exists():
+                    continue
+                # Read last 20 bars (oldest first so RSI/slopes are correct)
+                with open(jsonl, "r", encoding="utf-8") as fh:
+                    lines = fh.readlines()[-20:]
+                for line in lines:
+                    try:
+                        _bar = json.loads(line)
+                        if all(k in _bar for k in ("o", "h", "l", "c")):
+                            out.append({
+                                "o": _bar["o"],
+                                "h": _bar["h"],
+                                "l": _bar["l"],
+                                "c": _bar["c"],
+                                "v": _bar.get("v", 0),
+                            })
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        # Fallback: at least include the latest 1m bar per symbol from
+        # the candle_ctx payload (covers the case where JSONL doesn't
+        # exist yet for newly-added symbols).
+        if not out:
+            for sym, payload in candle_ctx.items():
+                if not isinstance(payload, dict):
+                    continue
+                bar = payload.get("bar_1m") or {}
+                if bar and all(k in bar for k in ("o", "h", "l", "c")):
+                    out.append({"o": bar["o"], "h": bar["h"], "l": bar["l"], "c": bar["c"], "v": bar.get("n_ticks", 0)})
         return out
     try:
         from strategy_library import (
