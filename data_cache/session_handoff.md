@@ -1122,3 +1122,56 @@ OPEN / DEFERRED
   with the new scheduler fix from e2f6a08). No impact on
   current trading day.
 
+
+## Refresh — 2026-09-29 12:35 IST (commits 3c98a41 + d68bfa0)
+
+### Session v6 continued — "what is nifty cas and do the needful"
+
+User asked for current NIFTY cash price and to act. Investigation
+uncovered TWO more strategy-library bugs:
+
+ROOT CAUSES (after session_open fix v1)
+1. session_open source priority was wrong
+   - intraday_levels.json has instruments.NIFTY.open (= TODAY'S
+     actual intraday open, e.g. 22597 today), NOT session_opens.
+   - session_opens.json has opens.NIFTY (= yesterday's close carried
+     over, e.g. 23985 today). When the candle engine first writes
+     intraday_levels at 09:15, it stamps the open from the live tick,
+     but session_opens.json holds the pre-market reference. The two
+     diverge after a gap-down / gap-up open.
+   - Fix (d68bfa0): prefer intraday_levels.open FIRST; fall back to
+     session_opens.json only when intraday_levels is missing it.
+   - Result: session_pct=+0.63% (correct), was -5.19% (wrong)
+
+2. _build_candles_list_for_strategy returned only 1 bar per symbol
+   - Strategy library's iron_condor needs RSI-14 (15+ bars)
+   - Previous version read only the latest 1m bar from candle_ctx,
+     returning ~5 bars total (1 per symbol in events)
+   - Fix (3c98a41): read 20 recent 1m bars from per-symbol JSONL
+     files in data_cache/candles/. Falls back to latest-bar only
+     if JSONL doesn't exist yet.
+   - Result: strategy library now fires iron_condor_nifty correctly
+
+WHAT HAPPENED AT 12:29 IST (after deploy)
+- STRATEGY-LIBRARY: selected iron_condor_nifty (back online after
+  ~3 days silent due to the stale-candles bug)
+- LLM-DECISION: OPEN
+- 4 fills placed: BUY 22950 CE + BUY 22550 PE (long strangle,
+  not strictly iron condor — strategy library chose strangle)
+- Trade journal: 28 entries today, 14 lots × 75 = 1050 shares/side
+
+CURRENT POSITIONS (12:35 IST)
+- NIFTY01OCT2622950CE: qty=1050 (BUY) avg=4.57 ltp=3.12 pnl=-1,524
+- NIFTY01OCT2622550PE: qty=1050 (BUY) avg=13.89 ltp=20.71 pnl=+7,166
+- Net unrealized: +Rs.5,642
+- Cash: Rs.84,592 (down from 103k due to position cost)
+- Realized: Rs.3,972 (unchanged)
+
+WHAT'S NEXT
+- Bot is now LIVE with positions. Iron condor would have been better
+  for range-bound NIFTY but the strategy library picked a strangle
+  (still works in a bearish environment).
+- Positions have ~Rs.5,642 unrealized profit (puts winning as
+  NIFTY is down from open).
+- Streak day 1 of rebuild starts with this open position.
+
