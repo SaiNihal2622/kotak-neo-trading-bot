@@ -1,0 +1,82 @@
+# Docker Compose for the full system stack.
+#
+# Usage:
+#   docker compose -f system/infra/docker-compose.yml up
+#
+# Services:
+#   core       - FastAPI trading core (event-sourced, single writer)
+#   ui         - React real-time dashboard
+#   prometheus - Metrics collection
+#   grafana    - Dashboards (PnL, positions, fill rate, LLM latency)
+
+version: "3.9"
+
+services:
+  core:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.core
+    container_name: kotak-core
+    restart: unless-stopped
+    ports:
+      - "8510:8510"
+    volumes:
+      - core-data:/data
+    environment:
+      - KOTAK_DB_PATH=/data/state.db
+      - KOTAK_HOST=0.0.0.0
+      - KOTAK_PORT=8510
+      - KOTAK_BROKER=paper
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8510/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  ui:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.ui
+    container_name: kotak-ui
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - core
+    environment:
+      - VITE_CORE_API=http://core:8510
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: kotak-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: kotak-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=kotak
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+
+volumes:
+  core-data:
+  prometheus-data:
+  grafana-data:

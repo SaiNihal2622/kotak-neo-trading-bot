@@ -1,0 +1,23 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps for aiosqlite
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Install dependencies
+COPY system/core/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Copy core code
+COPY system/core /app/system/core
+
+ENV PYTHONPATH=/app
+
+EXPOSE 8510
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8510/healthz || exit 1
+
+CMD ["python", "-m", "uvicorn", "system.core.api.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8510"]
