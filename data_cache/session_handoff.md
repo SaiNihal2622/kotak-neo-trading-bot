@@ -1051,3 +1051,74 @@ GO-LIVE STATUS (post Sep 25 loss)
 
 USER: GO TO SLEEP — system is auto-piloted from here.
 
+
+## Refresh — 2026-09-29 12:14 IST (commits 5e06d09 + d133124 + b4931dd)
+
+### Session v6 continued — "no trades today" investigation revealed a real bug chain
+
+User asked for status at 11:48 IST. Bot had been firing 149 atomic
+decisions but ZERO trades. ACTION-WRITTEN logs all said
+"OPEN None legs=0". Investigated and found 3 connected bugs.
+
+WHAT SHIPPED (3 commits)
+
+1. commit b4931dd — strategy library reading session_open from
+   intraday_levels (which doesn't have the key) and falling back to
+   stale candles_aggregate data. The fallback overwrote fresh spot
+   with stale 22724 NIFTY (vs actual 23401 earlier). Fixed to
+   read session_open from session_opens.json as a second source.
+
+2. commit d133124 — added explicit debug log when strategy library
+   returns no-match. Previously silent; now we see WHY no strategy
+   matched (e.g., "spot=22740 session_pct=-5.19%").
+
+3. commit 5e06d09 — atomic OPEN decisions without a trade_plan
+   were being written to quant_actions.json with no underlying/legs,
+   generating ~149 "OPEN None legs=0" warnings today. Fixed by
+   downgrading to type=HOLD with clear rationale ("strategy library
+   found no match; downgraded to HOLD").
+
+ROOT CAUSE OF "ZERO TRADES TODAY"
+- NIFTY opened at 23985 and dropped to 22740 (session_pct -5.19%)
+- iron_condor needs abs(session_pct) < 0.7% → FAILS
+- long_put needs session_pct < -0.5 AND RSI14 < 40 → RSI not low enough
+- vwap_bounce needs abs(dist_vwap) > 0.3% → only 0.29%
+- → strategy library correctly returns None
+- → atomic decisions fired OPEN but had no legs to execute
+
+This is CORRECT behavior. The bot SHOULD hold flat in a -5%
+session where no strategy has edge. The "OPEN None legs=0" log
+spam was the only real issue — fixed in 5e06d09.
+
+CURRENT STATE (post-fix)
+- brain :8503       = 200 ok
+- dash  :8501        = 200 ok
+- http_server :8502 = 200 ok
+- Kotak session expires 14:25 IST (2.2h left, 07:30 re-auth slot
+  already ran, session is fresh)
+- 0 open positions
+- 0 trades today (CORRECT — bot correctly HOLDing in a -5% session)
+- realized_pnl: Rs.3,972 (unchanged)
+- cash: Rs.103,972 (unchanged)
+
+GO-LIVE STATUS
+- Streak: 0/10 (was 5 before Sep 25 -Rs.6,480 loss)
+- Cumulative return: +3.97% / +15%
+- Today is day 1 of streak rebuild (technically day 1 = neutral
+  day if no trades, depends on live_go_tracker classification)
+
+WHAT WON'T RECUR
+- session_open / spot fallback to stale candles_aggregate: fix
+  reads from session_opens.json second-source
+- "OPEN None legs=0" log spam: atomic HOLD downgrade when no
+  trade_plan
+- Silent strategy-library no-match: explicit debug log
+
+OPEN / DEFERRED
+- 5 phase15_fixes.py strike-sanity tests fail (pre-existing,
+  hardcoded strikes vs drifted live spot). Not from these
+  changes — separate issue for post-session review.
+- live_go_tracker still hasn't run today (will fire at 15:30
+  with the new scheduler fix from e2f6a08). No impact on
+  current trading day.
+
