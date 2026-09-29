@@ -1698,11 +1698,20 @@ def run_paper() -> None:
                 # client_order_ids, and the exec gateway processes all of them).
                 # The bot still runs for data feed + dashboard + force-action
                 # + telegram — just not for plan submission.
+                _qa = {}  # ensure _qa is always defined (the bridge-active
+                # path below may skip reading the file)
                 if os.environ.get("KOTAK_BRIDGE_ACTIVE", "").upper() == "YES":
                     if _qa_path.exists() and (now - _last_qa_bridge_log).total_seconds() > 60:
                         _last_qa_bridge_log = now
                         logger.info("[QUANT-ACTION] bridge-active mode — bot does not submit plans")
-                if _qa_path.exists():
+                    # Skip the rest of this try block — bridge handles plans
+                    # We still need to consume the action so the bridge's
+                    # bridge_consumed check doesn't conflict, but that's the
+                    # bridge's responsibility, not ours.
+                    pass  # fall through to the except block, which is a no-op
+                else:
+                    if _qa_path.exists():
+                        _qa = _read_json(_qa_path, {})
                     if isinstance(_qa, dict) and _qa.get("actions") and not _qa.get("consumed"):
                         _qa_ts = _qa.get("ts", "")
                         _qa_actions = _qa.get("actions", [])
@@ -2261,7 +2270,11 @@ def run_paper() -> None:
                             pass
             except Exception as _qa_err:
                 logger.warning(f"quant-action check failed: {_qa_err}")
-                logger.warning(f"brain-action check failed: {_ba_err}")
+                # PHASE 5 FIX 2026-09-29: previously this referenced _ba_err
+                # from the brain-action try block — but if _qa_err is raised
+                # (not _ba_err), _ba_err is undefined and Python raises
+                # UnboundLocalError, crashing the bot. Use _qa_err here.
+                logger.warning(f"brain-action check failed: {_qa_err}")
             # FIX 2026-09-09 14:15: system-enforced action (LLM-silent safety net).
             # The brain writes data_cache/system_enforced_action.json when the LLM
             # has been silent for 60+ min during market hours AND the candle engine

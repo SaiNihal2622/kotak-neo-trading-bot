@@ -107,7 +107,12 @@ class BrainBridge:
 
     def _read_json(self, path: Path, default=None):
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            # PHASE 5 FIX 2026-09-29: use utf-8-sig to handle BOM
+            # (PowerShell's Out-File -Encoding utf8 writes a BOM).
+            # The legacy bot writes JSON without BOM, but our bridge is
+            # sometimes called from PowerShell scripts that write with
+            # BOM — without this fix, the file is unreadable.
+            with open(path, "r", encoding="utf-8-sig") as f:
                 return json.load(f)
         except FileNotFoundError:
             return default
@@ -117,6 +122,8 @@ class BrainBridge:
 
     def _write_json(self, path: Path, data: dict) -> None:
         try:
+            # Use utf-8 (no BOM) for compatibility with the legacy bot's
+            # JSON parser which doesn't strip BOM.
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
         except Exception as e:
@@ -231,13 +238,26 @@ class BrainBridge:
         submitted = 0
         for i, action in enumerate(actions):
             try:
-                # Build composite key
-                ts = str(action.get("ts", ""))
+                # PHASE 5 FIX 2026-09-29: use a more robust dedup key.
+                # The legacy brain may write actions with empty ts (older
+                # bots didn't always populate it). Combined with the same
+                # sym+strat, this caused collisions across cycles. Use
+                # action dict's full fingerprint instead of ts-based key.
+                import hashlib
+                import json as _json
+                # Serialize the legs (the actual content) for fingerprint
+                payload = {
+                    "strategy": str(action.get("strategy", "")),
+                    "underlying": str(action.get("underlying", "")),
+                    "legs": action.get("legs", []),
+                    "rationale": str(action.get("rationale", ""))[:100],
+                }
+                fp = hashlib.md5(_json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
                 sym = str(action.get("symbol") or
                           (action.get("legs", [{}])[0].get("opt_type", "")
                            if action.get("legs") else ""))
                 strat = str(action.get("strategy", ""))
-                key = f"{ts}|{sym}|{strat}"
+                key = f"{strat}|{sym}|{fp}"
                 if key in self._processed_keys:
                     continue
                 # Submit
