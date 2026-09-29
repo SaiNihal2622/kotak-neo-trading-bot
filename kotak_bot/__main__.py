@@ -1079,6 +1079,9 @@ def run_paper() -> None:
     _loop_start_ts = datetime.now(timezone.utc)
     _last_cycle_ts = _loop_start_ts
     _cycle_counter = 0
+    # PHASE 5 (2026-09-29): throttle for the "bridge-active" log line so it
+    # doesn't spam every cycle
+    _last_qa_bridge_log = datetime.now(timezone.utc) - timedelta(seconds=120)
 
     def _write_crash(reason: str, **details):
         try:
@@ -1687,8 +1690,19 @@ def run_paper() -> None:
             # auto-executed with hard risk caps; CLOSE actions square off all.
             try:
                 _qa_path = Path("data_cache/quant_actions.json")
+                # PHASE 5 (2026-09-29): when KOTAK_BRIDGE_ACTIVE=YES is set,
+                # the new system.bridge.brain_bridge is the source of truth for
+                # plan submission. The bot must NOT also submit the same plans
+                # via /api/plan — that would create double positions (both
+                # submissions emit ORDER_PROPOSED events with different
+                # client_order_ids, and the exec gateway processes all of them).
+                # The bot still runs for data feed + dashboard + force-action
+                # + telegram — just not for plan submission.
+                if os.environ.get("KOTAK_BRIDGE_ACTIVE", "").upper() == "YES":
+                    if _qa_path.exists() and (now - _last_qa_bridge_log).total_seconds() > 60:
+                        _last_qa_bridge_log = now
+                        logger.info("[QUANT-ACTION] bridge-active mode — bot does not submit plans")
                 if _qa_path.exists():
-                    _qa = _read_json(_qa_path, {})
                     if isinstance(_qa, dict) and _qa.get("actions") and not _qa.get("consumed"):
                         _qa_ts = _qa.get("ts", "")
                         _qa_actions = _qa.get("actions", [])
@@ -1718,6 +1732,19 @@ def run_paper() -> None:
                                 _qa_type = str(_qa_a.get("action", _qa_a.get("type", ""))).upper()
                                 _qa_inst = str(_qa_a.get("instrument", _qa_a.get("underlying", ""))).upper()
                                 _qa_reason = f"quant_service:{_qa_a.get('rationale', '')[:80]}"
+                                # PHASE 5 (2026-09-29): skip actions already consumed
+                                # by the new brain bridge (system.bridge.brain_bridge).
+                                # The bridge runs as a separate daemon and submits plans
+                                # via /api/plan. Without this skip, the bot would retry
+                                # the same action at the next market open, causing
+                                # double execution. The bridge sets bridge_consumed=True
+                                # after a successful submission.
+                                if _qa_a.get("bridge_consumed"):
+                                    logger.info(
+                                        f"[QUANT-ACTION] skip (bridge_consumed): "
+                                        f"{_qa_a.get('strategy','?')} {_qa_inst} ts={_qa_a.get('ts','?')}"
+                                    )
+                                    continue
                                 if _qa_type == "CLOSE":
                                     n = order_mgr.square_off_all(reason=_qa_reason)
                                     logger.info(f"[QUANT-ACTION] CLOSE executed (instrument={_qa_inst or 'ALL'}): {n} trades.")

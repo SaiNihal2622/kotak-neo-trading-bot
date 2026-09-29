@@ -353,7 +353,12 @@ class StateProjection:
             pos.qty = new_qty
         else:  # SELL
             new_qty = pos.qty - qty
-            if pos.qty > 0 and new_qty >= 0:
+            if pos.qty == 0:
+                # PHASE 5 FIX 2026-09-29: opening a fresh short position.
+                # Previously this branch fell through with avg_price=0.0,
+                # making subsequent MTM/PnL computations meaningless.
+                pos.avg_price = fill_price
+            elif pos.qty > 0 and new_qty >= 0:
                 # Selling long
                 pass
             elif pos.qty > 0 and new_qty < 0:
@@ -389,4 +394,5 @@ class StateProjection:
             "recent_rejections": self.rejected_orders[-10:],
             "risk_breaches_today": len(self.risk_breaches),
             "ticks_known": len(self.ticks),
+            "ticks": {sym: vars(t) for sym, t in self.ticks.items()},
         }

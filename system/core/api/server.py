@@ -292,6 +292,64 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
         await _broadcast(app, [event])
         return {"ok": True}
 
+    @app.post("/api/order_fill")
+    async def post_order_fill(
+        order_id: Optional[str] = None,
+        fill_price: Optional[float] = None,
+        filled_qty: Optional[int] = None,
+        request: Request = None,
+    ):
+        """Phase 5: exec gateway posts fill results back to the core.
+
+        The exec gateway places orders via the broker and reports the
+        result here. The core emits ORDER_FILLED events, which update
+        positions and P&L.
+
+        Accepts BOTH query params (legacy tests) AND JSON body (exec gateway).
+        If query params are missing, falls back to JSON body.
+        """
+        # Try JSON body if query params are absent
+        if order_id is None and request is not None:
+            try:
+                body = await request.json()
+                order_id = body.get("order_id")
+                fill_price = body.get("fill_price")
+                filled_qty = body.get("filled_qty")
+            except Exception:
+                pass
+        if order_id is None or fill_price is None or filled_qty is None:
+            raise HTTPException(status_code=400, detail="order_id, fill_price, filled_qty required")
+        event = order_filled(order_id, float(fill_price), int(filled_qty))
+        app.state.store.append(event)
+        app.state.projection.apply(event)
+        await _broadcast(app, [event])
+        return {"ok": True, "event_id": event.id}
+
+    @app.post("/api/order_reject")
+    async def post_order_reject(
+        order_id: Optional[str] = None,
+        reason: Optional[str] = None,
+        request: Request = None,
+    ):
+        """Phase 5: exec gateway reports an order rejection back to the core.
+
+        Accepts both query params and JSON body.
+        """
+        if order_id is None and request is not None:
+            try:
+                body = await request.json()
+                order_id = body.get("order_id")
+                reason = body.get("reason")
+            except Exception:
+                pass
+        if order_id is None or reason is None:
+            raise HTTPException(status_code=400, detail="order_id, reason required")
+        event = order_rejected({"order_id": order_id}, reason, gate="exec")
+        app.state.store.append(event)
+        app.state.projection.apply(event)
+        await _broadcast(app, [event])
+        return {"ok": True, "event_id": event.id}
+
     # ----- WebSocket for real-time updates -----
 
     @app.websocket("/ws")
