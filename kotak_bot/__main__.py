@@ -1962,11 +1962,113 @@ def run_paper() -> None:
                                     _expiry = str(_qa_a.get("expiry", "") or "").strip()
                                     if not _expiry or _expiry.upper() in ("WEEKLY", "0", "THIS WEEK", "CURRENT"):
                                         _expiry = _nearest_weekly_expiry().isoformat()
-                                    # Place each leg
+                                    # Place each leg — Phase 3: route through core pre-flight
+                                    # FIRST, then call broker. The core's pre-flight validates
+                                    # the whole plan atomically (limit/cap/lot/atomicity).
+                                    # If the LLM proposes limit=113 when bid=12, the core
+                                    # rejects the WHOLE plan with gate=limit_reasonable —
+                                    # no broker call happens, no naked strangle state.
                                     _placed = 0
                                     _total_cost = 0.0
                                     _decision_id = str(_qa_a.get('id', '')) or f"q-{now.isoformat()}"
                                     _leg_records = []
+                                    # Build plan dict for core submission
+                                    try:
+                                        from kotak_bot.core_bridge import get_bridge as _get_bridge
+                                        _bridge = _get_bridge()
+                                        # Format legs into the core's plan schema
+                                        _plan_legs = []
+                                        for _leg in _qa_legs:
+                                            try:
+                                                _l_strike = int(_leg.get("strike", 0))
+                                                _l_opt = str(_leg.get("opt_type", "")).upper()
+                                                _l_side = str(_leg.get("side", "BUY")).upper()
+                                                _l_qty_lots = int(_leg.get("qty", 1))
+                                                if _l_qty_lots < 1:
+                                                    _l_qty_lots = 1
+                                                if _l_qty_lots > 10:
+                                                    _l_qty_lots = 10
+                                                _l_type = str(_leg.get("order_type", "MARKET")).upper()
+                                                _l_price = _leg.get("price")
+                                                if _l_price is None and _l_type == "LIMIT":
+                                                    _l_type = "MARKET"
+                                                _l_cash = str(_leg.get("segment", "")).lower() == "nse_cm"
+                                                _l_lot = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65, "MIDCPNIFTY": 120}.get(_qa_inst, 75)
+                                                _l_qty_shares = max(1, _l_qty_lots * _l_lot)
+                                                # Format symbol
+                                                from datetime import datetime as _l_dt
+                                                try:
+                                                    _l_edt = _l_dt.strptime(_expiry, "%Y-%m-%d")
+                                                    _l_exp_str = _l_edt.strftime("%d%b%y").upper()
+                                                except Exception:
+                                                    _l_exp_str = _expiry
+                                                if _l_cash:
+                                                    _l_sym = "NIFTY"
+                                                else:
+                                                    _l_sym = f"{_qa_inst}{_l_exp_str}{int(_l_strike)}{_l_opt}"
+                                                _plan_legs.append({
+                                                    "symbol": _l_sym,
+                                                    "underlying": _qa_inst,
+                                                    "side": _l_side,
+                                                    "qty": _l_qty_shares,
+                                                    "order_type": _l_type,
+                                                    "product": "MIS",
+                                                    "price": float(_l_price) if _l_price else 0.0,
+                                                    "tag": f"QUANT-{str(_qa_a.get('strategy','?'))[:10]}"[:30],
+                                                    "strike": float(_l_strike) if not _l_cash else 0.0,
+                                                    "option_type": "" if _l_cash else _l_opt,
+                                                    "expiry": "" if _l_cash else _expiry,
+                                                    "exchange": "NSE" if _l_cash else "NFO",
+                                                })
+                                            except Exception as _l_build_err:
+                                                logger.debug(f"plan leg build skip: {_l_build_err}")
+                                        if _plan_legs and _bridge.health():
+                                            # Atomic pre-flight via /api/plan
+                                            _plan = {
+                                                "strategy": str(_qa_a.get("strategy", "custom")),
+                                                "underlying": _qa_inst,
+                                                "legs": _plan_legs,
+                                                "target": float(_qa_a.get("target", 0) or 0),
+                                                "stop": float(_qa_a.get("stop", 0) or 0),
+                                                "confidence": 0.0,
+                                                "reason": str(_qa_a.get("rationale", ""))[:200],
+                                                "dry_run": True,  # plan goes to core; broker call still happens below
+                                            }
+                                            _ok, _details = _bridge.submit_plan(_plan)
+                                            if not _ok:
+                                                _gate = _details.get("gate", "?")
+                                                _reason = _details.get("reason", "?")
+                                                logger.warning(
+                                                    f"[QUANT-ACTION] REJECT by core pre-flight: "
+                                                    f"strategy={_qa_a.get('strategy','?')} gate={_gate} "
+                                                    f"reason={_reason[:120]}"
+                                                )
+                                                try:
+                                                    alerter.send(
+                                                        f"[Quant] REJECTED {_qa_a.get('strategy','?')}: "
+                                                        f"{_gate} - {_reason[:200]}"
+                                                    )
+                                                except Exception:
+                                                    pass
+                                                # Mark action consumed (don't keep retrying the same bad plan)
+                                                _qa["consumed"] = True
+                                                _qa["consumed_at"] = now.isoformat()
+                                                _qa["placed_legs"] = 0
+                                                _qa["rejected_by_preflight"] = True
+                                                _qa["preflight_gate"] = _gate
+                                                _qa["preflight_reason"] = _reason[:200]
+                                                try:
+                                                    with open(_qa_path, "w", encoding="utf-8") as _qw:
+                                                        json.dump(_qa, _qw, ensure_ascii=False)
+                                                except Exception:
+                                                    pass
+                                                continue  # skip the rest of the leg loop
+                                            else:
+                                                logger.info(f"[QUANT-ACTION] core pre-flight OK: plan_id={_details.get('plan_id', '?')}")
+                                        elif _plan_legs:
+                                            logger.debug("[QUANT-ACTION] core bridge unhealthy, falling back to direct broker")
+                                    except Exception as _bridge_err:
+                                        logger.debug(f"[QUANT-ACTION] bridge setup skipped: {_bridge_err}")
                                     for _leg in _qa_legs:
                                         try:
                                             _strike = int(_leg.get("strike", 0))
