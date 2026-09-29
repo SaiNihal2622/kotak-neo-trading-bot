@@ -457,6 +457,61 @@ class CandleEngine:
             atr = (atr * (n - 1) + trs[i]) / n
         return atr
 
+    @staticmethod
+    def _adx(bars: list[dict], n: int = 14) -> Optional[float]:
+        """FIX 2026-09-29 13:45: ADX (Average Directional Index).
+
+        ADX measures trend strength (NOT direction). ADX > 25 = trending;
+        ADX < 20 = ranging. Used by nifty_cash_long/short in strategy_library
+        to decide when directional cash trades have an edge.
+
+        Wilder's smoothing (different from EMA):
+        - first value = sum of first N values / N
+        - subsequent = (prev * (N-1) + current) / N
+
+        Returns rounded ADX value (0-100), or None if insufficient data.
+        """
+        if len(bars) < n * 2 + 1:
+            return None
+        # +DM, -DM, TR for each bar (skip first bar — no prev close)
+        plus_dm, minus_dm, trs = [], [], []
+        for i in range(1, len(bars)):
+            h, l, pc = bars[i]['h'], bars[i]['l'], bars[i - 1]['c']
+            up = h - bars[i - 1]['h']
+            down = bars[i - 1]['l'] - l
+            if up > down and up > 0:
+                plus_dm.append(up)
+            else:
+                plus_dm.append(0.0)
+            if down > up and down > 0:
+                minus_dm.append(down)
+            else:
+                minus_dm.append(0.0)
+            trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        if len(trs) < n:
+            return None
+        # Wilder's smoothing
+        sm_plus = sum(plus_dm[:n])
+        sm_minus = sum(minus_dm[:n])
+        sm_tr = sum(trs[:n])
+        dx_list = []
+        for i in range(n, len(trs)):
+            plus_di = 100 * sm_plus / sm_tr if sm_tr > 0 else 0
+            minus_di = 100 * sm_minus / sm_tr if sm_tr > 0 else 0
+            di_sum = plus_di + minus_di
+            dx = 100 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 0
+            dx_list.append(dx)
+            sm_plus = (sm_plus * (n - 1) + plus_dm[i]) / n
+            sm_minus = (sm_minus * (n - 1) + minus_dm[i]) / n
+            sm_tr = (sm_tr * (n - 1) + trs[i]) / n
+        if len(dx_list) < n:
+            return None
+        # ADX = Wilder's smoothing of DX over n periods
+        adx = sum(dx_list[:n]) / n
+        for i in range(n, len(dx_list)):
+            adx = (adx * (n - 1) + dx_list[i]) / n
+        return adx
+
     def compute_indicators(self, symbol: str, tf: str = '1m') -> dict:
         bars = self.get_bars(symbol, tf, n=120)
         if len(bars) < 5:
@@ -469,6 +524,11 @@ class CandleEngine:
         ema21 = self._ema(closes, 21)
         ema50 = self._ema(closes, 50)
         atr = self._atr(bars, 14)
+        # FIX 2026-09-29 13:45: ADX — Average Directional Index.
+        # nifty_cash_long/short in strategy_library require ADX > 25 to fire
+        # (trending regime). Without this, CAS would never trigger because the
+        # aggregate file would have no adx value.
+        adx = self._adx(bars, 14)
         # EMA trend
         ema_trend = 'sideways'
         if ema9 and ema21 and ema50:
@@ -495,8 +555,9 @@ class CandleEngine:
             'ema_50': round(ema50, 2) if ema50 is not None else None,
             'ema_trend': ema_trend,
             'atr_14': round(atr, 2) if atr is not None else None,
-            'vwap': round(vwap, 2) if vwap else None,
+            'vwap': round(vwap, 2) if vwap is not None else None,
             'vwap_dev_pct': round(vwap_dev_pct, 2) if vwap_dev_pct is not None else None,
+            'adx': round(adx, 2) if adx is not None else None,
         }
 
     # ---------- candlestick patterns (pure Python) ----------
