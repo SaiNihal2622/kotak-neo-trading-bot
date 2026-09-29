@@ -2105,28 +2105,34 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
         _instruments = _intraday.get("instruments", {}) or {}
         _nifty = _instruments.get("NIFTY", {}) or {}
         _spot = float(_nifty.get("ltp") or _nifty.get("current") or 0)
-        # FIX 2026-09-29 11:50: intraday_levels.json does NOT have a "session_opens"
-        # top-level key — that data lives in a separate file (session_opens.json).
-        # The previous code did `_intraday.get("session_opens", {}).get("NIFTY")`
-        # which always returned 0 because the key is missing from intraday_levels.
-        # That triggered the candles_aggregate fallback which read STALE data
-        # (e.g., NIFTY=22724 from earlier session, current=23401) → bogus
-        # session_pct of -5.26% → no iron_condor candidate → strategy library
-        # silent since Sep 25. Fix: read session_opens.json as a SECOND source.
-        _session_open = float(_intraday.get("session_opens", {}).get("NIFTY") or 0)
+        # FIX 2026-09-29 12:18: the previous chain of fallbacks used the WRONG
+        # source for session_open:
+        #   - intraday_levels.json has instruments.NIFTY.open (= today's
+        #     ACTUAL intraday open, e.g. 22597 today), NOT session_opens.
+        #   - session_opens.json has opens.NIFTY (= yesterday's close carried
+        #     over, e.g. 23985 today). When the candle engine first writes
+        #     intraday_levels at 09:15, it stamps the open from the live tick,
+        #     but session_opens.json holds the pre-market reference. The two
+        #     diverge after a gap-down / gap-up open.
+        # Previous fix (b4931dd) read from session_opens.json → bogus
+        # session_pct of -5.19% when actual was +0.63%. Fix: prefer the
+        # INTRADAY open (most accurate for today's session) and only fall
+        # back to session_opens.json if intraday_levels is missing it.
+        _session_open = float(_nifty.get("open") or 0)
         if not _session_open:
+            # Fallback 1: session_opens.json (only valid if dated today)
             _opens_path = DATA / "session_opens.json"
             if _opens_path.exists():
                 try:
                     _opens_doc = json.loads(_opens_path.read_text(encoding="utf-8"))
                     if _opens_doc.get("date") == datetime.now().strftime("%Y-%m-%d"):
                         _session_open = float(_opens_doc.get("opens", {}).get("NIFTY") or 0)
+                        if _session_open:
+                            log(f"strategy-library: using session_open={_session_open} from session_opens.json (intraday_levels.json missing 'open' for NIFTY)")
                 except Exception:
                     pass
         if not _spot or not _session_open:
-            # Fallback to candles (only if BOTH are still missing). When this
-            # fires, both files must be missing the right keys. Use the candle
-            # data as a last resort but LOG a warning so we notice.
+            # Fallback 2: candles_aggregate (last resort, may be stale)
             _candles_agg = _safe_read_json(DATA / "candles_aggregate.json", default={})
             _nifty_agg = _candles_agg.get("symbols", {}).get("NIFTY", {}) or {}
             if not _spot:
@@ -2136,7 +2142,7 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             if not _session_open:
                 _session_open = float(_nifty_agg.get("session_open") or 0)
                 if _session_open:
-                    log(f"strategy-library: using STALE session_open={_session_open} from candles_aggregate (session_opens.json missing for today)")
+                    log(f"strategy-library: using STALE session_open={_session_open} from candles_aggregate (intraday_levels.json missing 'open' for NIFTY)")
         _sel_ctx = {
             "spot": _spot,
             "vix": _vix,
