@@ -182,56 +182,43 @@ class TestCloseTradeGeneratesProperTags:
 
 
 class TestBrokenCondorHandlerUpdatesOrderMgr:
-    """FIX E: broken-condor handler must update order_mgr._symbol_to_trade."""
+    """PHASE 4 (2026-09-29): broken-condor handlers REMOVED.
 
-    def test_broken_condor_handler_removes_symbol_mapping(self):
-        """When a symbol is closed by the broken-condor handler, the symbol
-        mapping must be removed from order_mgr so the orphan-killer doesn't
-        re-close it."""
+    The original FIX 2026-09-29 19:45 added order_mgr._symbol_to_trade update
+    logic inside the broken-condor handlers to prevent the close_None →
+    orphan-auto-close loop. With Phase 4 removing the broken-condor handlers
+    entirely (pre-flight + atomic paper fills make the state unreachable),
+    the order_mgr update logic is no longer needed.
+
+    These tests now verify the cleanup: no broken-condor order_mgr updates
+    remain in the codebase.
+    """
+
+    def test_broken_condor_handler_order_mgr_update_removed(self):
+        """The order_mgr._symbol_to_trade update inside the broken-condor
+        top-of-loop handler is REMOVED."""
         main_py = (ROOT / "kotak_bot" / "__main__.py").read_text(encoding="utf-8")
-        # Find the FIX 2026-09-29 19:45 comment that introduces the order_mgr
-        # update inside the top-loop broken-condor handler.
-        idx = main_py.find('FIX 2026-09-29 19:45')
-        assert idx > 0
-        # Get the next 2500 chars (the order_mgr update block)
-        block = main_py[idx:idx + 2500]
-        # The fix must include:
-        # 1. Look up _om_tid_top from order_mgr._symbol_to_trade
-        # 2. Mark closed_at on the trade
-        # 3. Remove from _symbol_to_trade
-        assert '_symbol_to_trade' in block, (
-            "Broken-condor handler must reference order_mgr._symbol_to_trade"
+        # The original FIX 2026-09-29 19:45 was inside the broken-condor handler.
+        # After Phase 4, the handler is gone, so the FIX comment is gone too.
+        # The order_mgr update del statement can still exist in other paths
+        # (orphan close at 14:30, hard-kill), but not for broken-condor.
+        # Specifically, the patterns that lived inside the broken-condor block:
+        # - "_om_trade_top.exit_reason = \"broken_condor_emergency_top_loop\""
+        # - "_om_tid_top = getattr(order_mgr, '_symbol_to_trade', {}).get(_sym)"
+        # - The combined del + closed_at + exit_reason pattern unique to broken-condor
+        assert 'broken_condor_emergency_top_loop' not in main_py, (
+            "Top-of-loop handler exit_reason must be REMOVED in Phase 4"
         )
-        assert 'closed_at = datetime.now(timezone.utc)' in block, (
-            "Broken-condor handler must set trade.closed_at"
-        )
-        assert 'del order_mgr._symbol_to_trade' in block, (
-            "Broken-condor handler must remove the symbol mapping to prevent "
-            "the orphan-killer from re-closing it (FIX 2026-09-29 19:45)"
+        assert 'broken_condor_emergency"' not in main_py, (
+            "Plan-handler exit_reason must be REMOVED in Phase 4"
         )
 
-    def test_broken_condor_force_action_handler_also_updates_order_mgr(self):
-        """The force-action-handler variant of the broken-condor fix must also
-        update order_mgr. (Both handlers exist for resilience.)"""
+    def test_no_duplicate_broken_condor_fix_markers(self):
+        """There should be no FIX 2026-09-29 19:45 markers left (both handlers
+        and their order_mgr updates are gone)."""
         main_py = (ROOT / "kotak_bot" / "__main__.py").read_text(encoding="utf-8")
-        # Both blocks are tagged with FIX 2026-09-29 19:45. The first occurrence
-        # is the TOP-LOOP handler (uses exit_reason="broken_condor_emergency_top_loop"),
-        # the second is the FORCE-ACTION handler (uses "broken_condor_emergency").
-        first_idx = main_py.find('FIX 2026-09-29 19:45')
-        assert first_idx > 0
-        second_idx = main_py.find('FIX 2026-09-29 19:45', first_idx + 10)
-        assert second_idx > 0, (
-            "Both broken-condor handlers (force-action + top-loop) must "
-            "include the FIX 2026-09-29 19:45 order_mgr update"
-        )
-        # The force-action handler is the SECOND occurrence. Verify it has
-        # the order_mgr update + uses the right exit_reason label.
-        second_block = main_py[second_idx:second_idx + 2500]
-        assert 'del order_mgr._symbol_to_trade' in second_block, (
-            "Force-action broken-condor handler must also update order_mgr "
-            "to prevent the close_None → orphan-auto-close loop"
-        )
-        assert '_om_trade.exit_reason = "broken_condor_emergency"' in second_block, (
-            "Force-action handler must use reason='broken_condor_emergency' "
-            "(the top-loop variant uses 'broken_condor_emergency_top_loop')"
+        count = main_py.count('FIX 2026-09-29 19:45')
+        assert count == 0, (
+            f"FIX 2026-09-29 19:45 markers must be REMOVED in Phase 4 "
+            f"(found {count}, expected 0)"
         )
