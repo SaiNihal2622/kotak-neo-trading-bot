@@ -1827,7 +1827,17 @@ def run_paper() -> None:
                                             _price = _leg.get("price")
                                             if _price is None and _order_type == "LIMIT":
                                                 _order_type = "MARKET"
-                                            if not _strike or not _opt_type or not _qa_inst:
+                                            # FIX 2026-09-29 12:45: route CAS legs differently.
+                                            # CAS legs have segment="nse_cm" and no strike/opt_type.
+                                            # They use NIFTY cash symbol (no strike suffix) and
+                                            # product=ProductType.MIS (intraday, mandatory EOD).
+                                            # CAS check happens BEFORE the missing-field validation
+                                            # because CAS legs deliberately don't have strike/opt_type.
+                                            _is_cash_leg = str(_leg.get("segment", "")).lower() == "nse_cm"
+                                            if not _qa_inst:
+                                                logger.warning(f"[QUANT-ACTION] skip leg (missing underlying): {_qa_inst}")
+                                                continue
+                                            if not _is_cash_leg and (not _strike or not _opt_type):
                                                 logger.warning(f"[QUANT-ACTION] skip leg (missing field): strike={_strike} opt_type={_opt_type} underlying={_qa_inst}")
                                                 continue
                                             # Format symbol
@@ -1837,7 +1847,10 @@ def run_paper() -> None:
                                                 _exp_str = _edt.strftime("%d%b%y").upper()
                                             except Exception:
                                                 _exp_str = _expiry
-                                            _sym = f"{_qa_inst}{_exp_str}{int(_strike)}{_opt_type}"
+                                            if _is_cash_leg:
+                                                _sym = "NIFTY"  # CAS uses underlying symbol only
+                                            else:
+                                                _sym = f"{_qa_inst}{_exp_str}{int(_strike)}{_opt_type}"
                                             _lot = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65, "MIDCPNIFTY": 120}.get(_qa_inst, 75)
                                             _qty_shares = max(1, _qty_lots * _lot)
                                             # FIX 2026-09-23 10:55: SELL legs generate CREDIT (negative cost),
@@ -1848,6 +1861,11 @@ def run_paper() -> None:
                                             # of capital. SELL legs are bounded by position cap + SPAN margin
                                             # elsewhere; the per-trade cap is for BUY-side cash lock only.
                                             _is_credit_leg = str(_side).upper() == "SELL"
+                                            # FIX 2026-09-29 13:30: CAS legs use NSE segment (not NFO).
+                                            # Options trade on NFO (futures & options); equity cash trades on
+                                            # NSE. PaperClient stores exchange verbatim so MTM/reconcile see
+                                            # "NSE" for cash positions vs "NFO" for options.
+                                            _order_exchange = "NSE" if _is_cash_leg else "NFO"
                                             _order = Order(
                                                 symbol=_sym,
                                                 side=OrderSide(_side),
@@ -1856,7 +1874,7 @@ def run_paper() -> None:
                                                 product=ProductType.MIS,
                                                 price=float(_price) if _price else 0.0,
                                                 tag=f"QUANT-{str(_qa_a.get('strategy','?'))[:10]}"[:30],
-                                                exchange="NFO",
+                                                exchange=_order_exchange,
                                                 strike=float(_strike),
                                                 option_type=_opt_type,
                                                 expiry=_expiry,
@@ -1866,9 +1884,16 @@ def run_paper() -> None:
                                             # FIX 2026-09-04 12:09: cap is now per-trade (2%) for individual legs, not per-position.
                                             # Use the per-trade cap on each leg; the position cap still protects against aggregate.
                                             # FIX 2026-09-23 10:56: skip per-trade cap for SELL legs (they generate credit).
+                                            # FIX 2026-09-29 12:45: CAS legs use full cash outlay (no margin
+                                            # leverage assumption); cap at 0.5% of cash per trade.
                                             if not _is_credit_leg:
-                                                if _cash > 0 and _est_cost > _max_per_trade_pct * _cash:
-                                                    logger.warning(f"[QUANT-ACTION] REJECT leg: per-trade cap {_max_per_trade_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
+                                                if _is_cash_leg:
+                                                    # CAS: tight 0.5% cap to limit exposure on cash trades
+                                                    _cash_cap = 0.005 * _cash
+                                                else:
+                                                    _cash_cap = _max_per_trade_pct * _cash
+                                                if _cash > 0 and _est_cost > _cash_cap:
+                                                    logger.warning(f"[QUANT-ACTION] REJECT leg: per-trade cap (CAS={_is_cash_leg}) Cost={_est_cost}, cash={_cash}")
                                                     continue
                                                 if _cash > 0 and (_total_cost + _est_cost) > _max_position_pct * _cash:
                                                     logger.warning(f"[QUANT-ACTION] REJECT leg: position cap {_max_position_pct*100}% of cash. Cost={_est_cost}, cash={_cash}")
