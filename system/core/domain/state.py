@@ -272,35 +272,54 @@ class StateProjection:
                 return coid
         return None
 
+    def _find_order(self, order_id: str) -> Optional[Order]:
+        """Resolve an order_id to its Order record.
+
+        Tries client_order_id first, then broker_order_id. Returns None
+        if neither matches (orphan fill path).
+        """
+        if not order_id:
+            return None
+        if order_id in self.orders:
+            return self.orders[order_id]
+        coid = self._find_client_by_broker(order_id)
+        if coid:
+            return self.orders[coid]
+        return None
+
     def _apply_fill_to_position(self, fill_payload: dict) -> None:
         """Update position projection from an ORDER_FILLED event.
 
         Handles both:
-        1. Fills with a known order_id — look up order, apply delta
+        1. Fills with a known order_id — look up order, derive symbol/side/underlying
         2. Orphan fills (e.g. legacy bot bridging) — use synthetic symbol/qty from payload
         """
         oid = fill_payload.get("order_id", "")
-        client_oid = self._find_client_by_broker(oid) if oid else None
-        if client_oid and client_oid in self.orders:
-            o = self.orders[client_oid]
-            sym = o.symbol
-            side = o.side.upper()
+        qty = int(fill_payload["filled_qty"])
+        fill_price = float(fill_payload["fill_price"])
+
+        target_order = self._find_order(oid) if oid else None
+        if target_order is not None:
+            sym = target_order.symbol
+            side = target_order.side.upper()
+            _und = target_order.underlying
+            _strike = target_order.strike
+            _opt = target_order.option_type
+            _exp = target_order.expiry
+            _exch = target_order.exchange
+            _prod = target_order.product
         else:
             # FIX 2026-09-29 21:35: orphan fill (no matching order).
             # Use synthetic symbol/qty/side from payload. This is how the
             # legacy bot's positions enter the event log.
             sym = fill_payload.get("symbol") or (oid.replace("legacy-", "") if oid.startswith("legacy-") else "UNKNOWN")
             side = fill_payload.get("side", "BUY")
-        qty = int(fill_payload["filled_qty"])
-        fill_price = float(fill_payload["fill_price"])
-
-        # Get underlying attributes from order (or defaults for orphan fills)
-        _und = o.underlying if 'o' in locals() and o else fill_payload.get("underlying", "")
-        _strike = o.strike if 'o' in locals() and o else 0.0
-        _opt = o.option_type if 'o' in locals() and o else ""
-        _exp = o.expiry if 'o' in locals() and o else ""
-        _exch = o.exchange if 'o' in locals() and o else "NFO"
-        _prod = o.product if 'o' in locals() and o else "MIS"
+            _und = fill_payload.get("underlying", "")
+            _strike = 0.0
+            _opt = ""
+            _exp = ""
+            _exch = "NFO"
+            _prod = "MIS"
 
         if sym not in self.positions:
             self.positions[sym] = Position(
