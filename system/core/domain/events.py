@@ -43,7 +43,7 @@ class EventType(str, Enum):
     # Plans (multi-leg strategies)
     PLAN_SUBMITTED = "plan.submitted"      # atomic plan
     PLAN_EXECUTING = "plan.executing"      # some legs filled
-    PLAN_COMPLETED = "plan.completed"      # all legs filled
+    PLAN_COMPLETED = "plan.completed"   # all legs filled
     PLAN_FAILED = "plan.failed"            # any leg rejected → rollback
     PLAN_CANCELLED = "plan.cancelled"
 
@@ -66,6 +66,7 @@ class EventType(str, Enum):
 
     # Audit
     AUDIT_FORCE_ACTION = "audit.force_action"
+    AUDIT_LOG = "audit.log"                # FIX 2026-09-29 21:30: replaces direct audit_log writes
 
 
 @dataclass
@@ -138,16 +139,31 @@ def order_placed(order: dict, broker_order_id: str, actor: str = "exec") -> Even
     )
 
 
-def order_filled(order_id: str, fill_price: float, filled_qty: int, slippage_bps: float = 0.0) -> Event:
+def order_filled(
+    order_id: str,
+    fill_price: float,
+    filled_qty: int,
+    slippage_bps: float = 0.0,
+    symbol: str = None,
+    side: str = None,
+) -> Event:
+    """FIX 2026-09-29 21:35: symbol/side are optional — for orphan fills
+    (no matching order in the event log, e.g. legacy bot bridging).
+    """
+    payload = {
+        "order_id": order_id,
+        "fill_price": fill_price,
+        "filled_qty": filled_qty,
+        "slippage_bps": slippage_bps,
+    }
+    if symbol:
+        payload["symbol"] = symbol
+    if side:
+        payload["side"] = side
     return Event(
         type=EventType.ORDER_FILLED,
         actor="broker",
-        payload={
-            "order_id": order_id,
-            "fill_price": fill_price,
-            "filled_qty": filled_qty,
-            "slippage_bps": slippage_bps,
-        },
+        payload=payload,
     )
 
 
@@ -210,4 +226,18 @@ def order_cancelled(order_id: str, actor: str = "exec") -> Event:
         actor=actor,
         payload={"order_id": order_id},
         correlation_id=order_id,
+    )
+
+
+def audit_log(action: str, actor: str, details: dict = None) -> Event:
+    """FIX 2026-09-29 21:30: replaces direct audit_log table writes.
+
+    Use this for any admin / force / override action so the audit trail
+    is captured in the event log (replayable, queryable, consistent
+    with the rest of the state).
+    """
+    return Event(
+        type=EventType.AUDIT_LOG,
+        actor=actor,
+        payload={"action": action, "details": details or {}},
     )

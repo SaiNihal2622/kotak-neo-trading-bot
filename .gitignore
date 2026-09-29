@@ -135,3 +135,4 @@ data_cache/_archive_*.py
 # Written by scripts/quant_service.py::_write_atomic_judgments_metric() on every
 # LLM call. Used to measure tier distribution + parse-success rate.
 data_cache/atomic_judgments_metrics.jsonl
+system/ui/node_modules

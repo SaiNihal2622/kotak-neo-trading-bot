@@ -8,8 +8,7 @@
  * The UI subscribes to the snapshot for header/positions, and to events
  * for the live activity feed.
  */
-import { create } from "zustand/vanilla";
-import { useStore as useVanillaStore } from "zustand";
+import { create } from "zustand";
 
 type Account = {
   cash: number;
@@ -86,7 +85,7 @@ type State = {
   clear: () => void;
 };
 
-export const store = create<State>((set) => ({
+export const useStore = create<State>((set) => ({
   snapshot: null,
   events: [],
   setSnapshot: (s) => set({ snapshot: s }),
@@ -96,7 +95,3 @@ export const store = create<State>((set) => ({
     })),
   clear: () => set({ snapshot: null, events: [] }),
 }));
-
-export function useStore<T>(selector: (state: State) => T): T {
-  return useVanillaStore(store, selector);
-}

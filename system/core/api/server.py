@@ -134,16 +134,10 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
 
     @app.get("/api/audit")
     async def get_audit(limit: int = 100):
-        rows = app.state.store._conn.execute(
-            "SELECT ts, actor, action, details_json FROM audit_log ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return {
-            "audit": [
-                {"ts": r[0], "actor": r[1], "action": r[2], "details": json.loads(r[3])}
-                for r in rows
-            ]
-        }
+        # FIX 2026-09-29 21:30: read from event-sourced audit_entries (projection).
+        # This replaces the old direct DB read which bypassed the event log.
+        entries = getattr(app.state.projection, "audit_entries", [])
+        return {"audit": entries[-limit:][::-1]}
 
     @app.get("/api/events")
     async def get_events(types: str = "", limit: int = 100):
@@ -254,8 +248,12 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
         app.state.store.append_batch(events)
         for e in events:
             app.state.projection.apply(e)
-        app.state.store.audit(actor="api", action="CLOSE_ALL", details={"count": len(positions)})
-        await _broadcast(app, events)
+        # FIX 2026-09-29 21:30: emit audit_log event (not direct DB write)
+        from ..domain.events import audit_log
+        audit_event = audit_log(action="CLOSE_ALL", actor="api", details={"count": len(positions)})
+        app.state.store.append(audit_event)
+        app.state.projection.apply(audit_event)
+        await _broadcast(app, events + [audit_event])
         return {"ok": True, "closed": len(positions)}
 
     @app.post("/api/force_action")
@@ -277,7 +275,12 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
                 app.state.store._conn.execute("DELETE FROM snapshot")
                 app.state.store._conn.commit()
             app.state.projection = StateProjection()
-        app.state.store.audit(actor="api", action=action.action, details=details)
+        # FIX 2026-09-29 21:30: emit audit_log event
+        from ..domain.events import audit_log
+        audit_event = audit_log(action=action.action, actor="api", details=details)
+        app.state.store.append(audit_event)
+        app.state.projection.apply(audit_event)
+        await _broadcast(app, [audit_event])
         return {"ok": True, "details": details}
 
     @app.post("/api/market_tick")
