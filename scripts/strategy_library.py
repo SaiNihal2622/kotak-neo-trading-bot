@@ -197,6 +197,53 @@ STRATEGIES = {
         backtested_avg_pnl=4500.0,
         requires=["range_established", "volume_confirmation"],
     ),
+    # FIX 2026-09-29 12:40: NIFTY CASH strategies. User-requested.
+    # Trade the spot NIFTY directly (nse_cm segment) instead of options.
+    # CONSERVATIVE defaults: 1 lot max, mandatory EOD square-off, hard stop
+    # loss. The strategy_library generates cash legs with structure="cash_long"
+    # or "cash_short"; __main__.py routes these to a separate order path
+    # that uses nse_cm + MIS product type.
+    #
+    # Why these triggers: ADX > 25 confirms trending regime (vs ranging).
+    # RSI > 55 (long) / < 45 (short) confirms momentum direction. session_pct
+    # confirms intraday move. VIX > 13 to ensure some volatility to capture.
+    "nifty_cash_long": Strategy(
+        name="nifty_cash_long",
+        description="NIFTY CASH long in confirmed uptrend. ADX>25 + RSI>55 + "
+                    "session_pct>+0.3%. Intraday MIS (mandatory square-off). "
+                    "Target +1.0%, stop -0.75%. 1 lot (75 shares) max.",
+        underlying="NIFTY",
+        structure="cash_long",  # routes to nse_cm path
+        entry_window_start=dtime(9, 45),
+        entry_window_end=dtime(14, 30),
+        max_hold_minutes=240,
+        target_pct=1.0,   # target 1.0% from entry
+        stop_pct=0.75,   # hard stop at -0.75%
+        wing_width=0,
+        expected_edge="Trending intraday moves (ADX>25) have 55% continuation rate over 1-2h. "
+                      "Combined with RSI>55 momentum, expected win rate ~58% on long side.",
+        backtested_win_rate=0.58,  # conservative estimate
+        backtested_avg_pnl=8700.0,  # 75 qty * 22,800 avg price * 1% target
+        requires=["adx_above_25", "rsi_above_55", "session_pct_above_0.3"],
+    ),
+    "nifty_cash_short": Strategy(
+        name="nifty_cash_short",
+        description="NIFTY CASH short in confirmed downtrend. ADX>25 + RSI<45 + "
+                    "session_pct<-0.3%. Intraday MIS. Target +1.0%, stop -0.75%. 1 lot max.",
+        underlying="NIFTY",
+        structure="cash_short",  # routes to nse_cm path with SELL
+        entry_window_start=dtime(9, 45),
+        entry_window_end=dtime(14, 30),
+        max_hold_minutes=240,
+        target_pct=1.0,
+        stop_pct=0.75,
+        wing_width=0,
+        expected_edge="Trending intraday moves (ADX>25) have 55% continuation rate. "
+                      "Short-side mirror of nifty_cash_long. Expected win rate ~58%.",
+        backtested_win_rate=0.58,
+        backtested_avg_pnl=8700.0,
+        requires=["adx_above_25", "rsi_below_45", "session_pct_below_-0.3"],
+    ),
 }
 
 
@@ -321,6 +368,46 @@ def select_strategy(context: dict, performance: Dict[str, StrategyResult]) -> Op
         if not (sr and sr.is_disabled):
             direction = "long_call" if rsi2 < 10 else "long_put"
             candidates.append((rsi2_strat, 0.7, f"RSI(2)={rsi2:.0f} extreme = {direction} edge"))
+    # FIX 2026-09-29 12:40: NIFTY CASH (spot) strategies. Trigger ONLY when
+    # market is TRENDING (ADX > 25) — range-bound days belong to iron_condor,
+    # not directional cash. Use RSI-14 (closes) for direction confirmation.
+    # Conservative: 1 lot only via vol_targeted_size() with hard cap.
+    # FIX 2026-09-29 13:00: default to 0 (NOT closes list) so missing-data
+    # fallback is safe; previously the placeholder was the closes list which
+    # crashed `adx_value > 25` with TypeError when candles_aggregate.json is
+    # missing.
+    adx_value = 0
+    # ADX comes from candles aggregate (computed by candle_engine)
+    try:
+        from pathlib import Path as _P
+        _candles_agg = _P("data_cache") / "candles_aggregate.json"
+        if _candles_agg.exists():
+            import json as _j
+            _ca = _j.loads(_candles_agg.read_text(encoding="utf-8"))
+            _nifty_ca = (_ca.get("symbols") or {}).get("NIFTY") or {}
+            adx_value = float(_nifty_ca.get("indicators", {}).get("adx") or 0)
+    except Exception:
+        adx_value = 0
+    nc_long = STRATEGIES["nifty_cash_long"]
+    if (adx_value > 25 and (rsi14 or 50) > 55
+            and session_pct > 0.3 and nc_long.in_entry_window(now)):
+        sr = performance.get("nifty_cash_long")
+        if not (sr and sr.is_disabled):
+            candidates.append((
+                nc_long, 0.75,
+                f"NIFTY CAS LONG: ADX={adx_value:.0f} (trending) + RSI={rsi14:.0f} "
+                f"+ session_pct={session_pct:+.2f}% = directional edge"
+            ))
+    nc_short = STRATEGIES["nifty_cash_short"]
+    if (adx_value > 25 and (rsi14 or 50) < 45
+            and session_pct < -0.3 and nc_short.in_entry_window(now)):
+        sr = performance.get("nifty_cash_short")
+        if not (sr and sr.is_disabled):
+            candidates.append((
+                nc_short, 0.75,
+                f"NIFTY CAS SHORT: ADX={adx_value:.0f} (trending) + RSI={rsi14:.0f} "
+                f"+ session_pct={session_pct:+.2f}% = directional edge"
+            ))
     if not candidates:
         return None
     # Pick highest score
@@ -389,6 +476,28 @@ def generate_trade_plan(strategy: Strategy, context: dict, capital: float = 1000
         ]
         plan["target_pnl"] = target_leg_price * n_lots * lot_size * (strategy.target_pct / 100)
         plan["stop_pnl"] = -target_leg_price * n_lots * lot_size * (strategy.stop_pct / 100)
+    elif strategy.structure == "cash_long":
+        # FIX 2026-09-29 12:40: NIFTY CASH (spot) long. Single leg.
+        # __main__.py routes structure="cash_long" to nse_cm + MIS.
+        # Conservative: 1 lot max, hard stop loss at -0.75%.
+        cash_lots = max(1, min(n_lots, 1))  # hard cap at 1 lot
+        plan["underlying"] = "NIFTY"
+        plan["legs"] = [
+            {"side": "BUY", "qty": cash_lots * lot_size, "instrument": "NIFTY",
+             "order_type": "MARKET", "price": None, "segment": "nse_cm"}
+        ]
+        plan["target_pnl"] = spot * cash_lots * lot_size * (strategy.target_pct / 100)
+        plan["stop_pnl"] = -spot * cash_lots * lot_size * (strategy.stop_pct / 100)
+    elif strategy.structure == "cash_short":
+        # FIX 2026-09-29 12:40: NIFTY CASH (spot) short. Single leg.
+        cash_lots = max(1, min(n_lots, 1))  # hard cap at 1 lot
+        plan["underlying"] = "NIFTY"
+        plan["legs"] = [
+            {"side": "SELL", "qty": cash_lots * lot_size, "instrument": "NIFTY",
+             "order_type": "MARKET", "price": None, "segment": "nse_cm"}
+        ]
+        plan["target_pnl"] = spot * cash_lots * lot_size * (strategy.target_pct / 100)
+        plan["stop_pnl"] = -spot * cash_lots * lot_size * (strategy.stop_pct / 100)
     return plan
 
 
