@@ -1185,6 +1185,23 @@ def run_paper() -> None:
                                 _res = broker.place_order(_ord)
                                 if _res.status.value in ('complete', 'filled', 'open'):
                                     _bc_top_n_closed += 1
+                                    # FIX 2026-09-29 19:45: also update order_mgr so the
+                                    # trade is marked closed in its view. See comment in
+                                    # the force-action handler for the full explanation.
+                                    _om_tid_top = getattr(order_mgr, '_symbol_to_trade', {}).get(_sym)
+                                    if _om_tid_top and _om_tid_top in getattr(order_mgr, '_trades', {}):
+                                        _om_trade_top = order_mgr._trades[_om_tid_top]
+                                        if _om_trade_top.closed_at is None:
+                                            try:
+                                                _om_trade_top.closed_at = datetime.now(timezone.utc)
+                                                _om_trade_top.exit_reason = "broken_condor_emergency_top_loop"
+                                                try:
+                                                    del order_mgr._symbol_to_trade[_sym]
+                                                except Exception:
+                                                    pass
+                                                logger.warning(f"[BROKEN-CONDOR-TOP] also marked order_mgr trade {_om_tid_top} closed for {_sym}")
+                                            except Exception as _om_top_err:
+                                                logger.warning(f"[BROKEN-CONDOR-TOP] order_mgr update failed for {_sym}: {_om_top_err}")
                             except Exception as _bc_top_err:
                                 logger.warning(f"[BROKEN-CONDOR-TOP] leg close failed: {_bc_top_err}")
                         if _bc_top_n_closed > 0:
@@ -1523,6 +1540,31 @@ def run_paper() -> None:
                                             if _res.status.value in ('complete', 'filled', 'open'):
                                                 _n_closed += 1
                                                 logger.warning(f"[BROKEN-CONDOR] EMERGENCY CLOSE {_sym} SELL {_qty} status={_res.status.value}")
+                                                # FIX 2026-09-29 19:45: also update order_mgr so the trade
+                                                # is marked closed in its view. Without this, EOD
+                                                # force-square / smart-exit / auto-tp runs close_trade()
+                                                # again on this trade, which creates bogus SELL orders
+                                                # for already-closed longs — those SELLs OPEN new SHORT
+                                                # positions in the broker, which the ORPHAN-AUTO-CLOSE
+                                                # then tries to close (churning loop). Bug confirmed on
+                                                # 2026-09-29 15:15 — see trade_journal entries with
+                                                # tag=close_None followed by tag=ORPHAN-AUTO-CLOSE.
+                                                _om_tid = getattr(order_mgr, '_symbol_to_trade', {}).get(_sym)
+                                                if _om_tid and _om_tid in getattr(order_mgr, '_trades', {}):
+                                                    _om_trade = order_mgr._trades[_om_tid]
+                                                    if _om_trade.closed_at is None:
+                                                        try:
+                                                            _om_trade.closed_at = datetime.now(timezone.utc)
+                                                            _om_trade.exit_reason = "broken_condor_emergency"
+                                                            # Remove the symbol mapping so the orphan-killer
+                                                            # doesn't try to close this again.
+                                                            try:
+                                                                del order_mgr._symbol_to_trade[_sym]
+                                                            except Exception:
+                                                                pass
+                                                            logger.warning(f"[BROKEN-CONDOR] also marked order_mgr trade {_om_tid} closed for {_sym}")
+                                                        except Exception as _om_err:
+                                                            logger.warning(f"[BROKEN-CONDOR] order_mgr update failed for {_sym}: {_om_err}")
                                         except Exception as _bc_close_err:
                                             logger.warning(f"[BROKEN-CONDOR] close leg failed: {_bc_close_err}")
                                     if _n_closed > 0:
@@ -2028,11 +2070,23 @@ def run_paper() -> None:
                                                 _total_cost += _est_cost
                                                 logger.info(f"[QUANT-ACTION] PLACED {_filled.symbol} {_filled.side.value} {_filled.qty} @ {_filled.avg_fill_price or _filled.price} status={_filled.status.value}")
                                                 # Record this fill in performance tracker
+                                                # FIX 2026-09-29 19:35: capture order_id so that when this
+                                                # trade is later closed via order_mgr.close_trade(), the
+                                                # close order's tag is "close_PAPER-XXXX" instead of
+                                                # "close_None". The "close_None" tag is what happens when
+                                                # the trade's orders have order_id=None — close_trade
+                                                # builds the close tag as f"close_{order.order_id}".
+                                                # Without this fix, the close_None orders would either
+                                                # close already-closed positions (if no live shorts) or
+                                                # open new SHORT positions (which the ORPHAN-AUTO-CLOSE
+                                                # would then try to close, causing a churning loop that
+                                                # lost ~Rs.120 on 2026-09-29).
                                                 _leg_records.append({
                                                     "symbol": _filled.symbol,
                                                     "side": _filled.side.value,
                                                     "qty": _filled.qty,
                                                     "fill_price": _filled.avg_fill_price or _filled.price,
+                                                    "order_id": _filled.order_id,
                                                 })
                                             else:
                                                 logger.warning(f"[QUANT-ACTION] REJECTED {_filled.symbol}: {_filled.rejection_reason}")
@@ -2162,6 +2216,19 @@ def run_paper() -> None:
                                                     product=ProductType.MIS,
                                                     price=float(_lr["fill_price"]),
                                                     tag=f"QUANT-{_qa_a.get('strategy','?')}"[:30],
+                                                    # FIX 2026-09-29 19:40: propagate order_id so that
+                                                    # order_mgr.close_trade() generates a proper
+                                                    # close_<id> tag instead of "close_None". Without
+                                                    # this, EOD force-square creates bogus short
+                                                    # positions because close orders for already-closed
+                                                    # longs are tagged with "close_None" and the
+                                                    # broker sees them as fresh SELLs (going short).
+                                                    order_id=_lr.get("order_id"),
+                                                    exchange=_filled.exchange if hasattr(_filled, "exchange") else "NFO",
+                                                    strike=float(_filled.strike) if hasattr(_filled, "strike") and _filled.strike else 0,
+                                                    option_type=_filled.option_type if hasattr(_filled, "option_type") else "",
+                                                    expiry=_expiry,
+                                                    underlying=_qa_inst,
                                                 )
                                                 _orders.append(_o)
                                             order_mgr.register_external_managed_trade(_plan, _orders)
