@@ -1139,6 +1139,57 @@ def run_paper() -> None:
         try:
             now = now_ist()
             session = market_session(now)
+            # FIX 2026-09-29 14:25: broken-condor emergency close (top of loop).
+            # Previously this was inside the force-action block which only fires
+            # when mavis_force_action.json exists. But _broken_condor.json is
+            # a separate marker. Moving it to the top of the main loop so it
+            # fires every cycle (just like force-action does).
+            _bc_top_path = Path("data_cache/_broken_condor.json")
+            if _bc_top_path.exists():
+                try:
+                    _bc_top = _read_json(_bc_top_path, default={})
+                    if isinstance(_bc_top, dict) and not _bc_top.get("consumed"):
+                        _bc_top_strategy = str(_bc_top.get("strategy", "?"))[:40]
+                        _bc_top_reason = str(_bc_top.get("reason", ""))[:120]
+                        _bc_top_filled = _bc_top.get("filled_legs", [])
+                        _bc_top_n_closed = 0
+                        for _lr in _bc_top_filled:
+                            try:
+                                _sym = _lr.get("symbol", "")
+                                if not _sym:
+                                    continue
+                                _qty = int(_lr.get("qty", 0))
+                                if _qty <= 0:
+                                    continue
+                                _ord = Order(
+                                    symbol=_sym,
+                                    side=OrderSide.SELL,
+                                    qty=_qty,
+                                    order_type=OrderType.MARKET,
+                                    product=ProductType.MIS,
+                                    price=0.0,
+                                    tag='BROKEN-CONDOR-CLOSE',
+                                    exchange='NFO',
+                                    strike=0.0,
+                                    option_type='',
+                                    expiry='',
+                                    underlying=str(_bc_top.get("underlying", "NIFTY")),
+                                )
+                                _res = broker.place_order(_ord)
+                                if _res.status.value in ('complete', 'filled', 'open'):
+                                    _bc_top_n_closed += 1
+                            except Exception as _bc_top_err:
+                                logger.warning(f"[BROKEN-CONDOR-TOP] leg close failed: {_bc_top_err}")
+                        if _bc_top_n_closed > 0:
+                            logger.warning(f"[BROKEN-CONDOR-TOP] {_bc_top_strategy}: emergency-closed {_bc_top_n_closed} orphan longs (top-loop handler). reason={_bc_top_reason}")
+                            alerter.send(f"[Broken-condor] top-loop handler: closed {_bc_top_n_closed} orphan longs. Reason: {_bc_top_reason}")
+                        _bc_top["consumed"] = True
+                        _bc_top["consumed_at"] = now.isoformat()
+                        _bc_top["n_closed"] = _bc_top_n_closed
+                        with open(_bc_top_path, "w", encoding="utf-8") as _bc_top_w:
+                            json.dump(_bc_top, _bc_top_w, ensure_ascii=False)
+                except Exception as _bc_top_outer_err:
+                    logger.warning(f"[BROKEN-CONDOR-TOP] handler failed: {_bc_top_outer_err}")
             # FIX 2026-08-27: Mavis force-action channel — Mavis can write
             # data_cache/mavis_force_action.json with action=CLOSE_ALL /
             # CLOSE_UNDERLYING=X / PAUSE_BOT / RESUME_BOT. The bot reads it
@@ -1155,10 +1206,16 @@ def run_paper() -> None:
                         _fa_reason = str(_fa.get("reason", "mavis_force_action"))[:200]
                         if _fa_action == "CLOSE_ALL":
                             n = order_mgr.square_off_all(reason=f"mavis_force:{_fa_reason[:80]}")
-                            # FIX 2026-09-03 14:55: fall back to broker positions if order_mgr is empty
-                            # (brain-driven OPENs may have bypassed execute_plan).
+                            # FIX 2026-09-29 14:00: ALWAYS check broker positions for orphans.
+                            # Before this fix, the orphan fallback only ran if order_mgr
+                            # had 0 trades to close — but brain-driven OPENs bypass
+                            # order_mgr entirely. If order_mgr closed even 1 trade, the
+                            # orphan fallback was skipped, leaving broker-only positions
+                            # open. This caused the 2026-09-29 broken-condor state
+                            # (50 BUY orders filled, 0 SELL — net strangle losing Rs.10k)
+                            # to persist after CLOSE_ALL.
                             n_broker = 0
-                            if n == 0:
+                            if True:
                                 try:
                                     broker_positions = broker.get_positions() if hasattr(broker, 'get_positions') else []
                                     # FIX 2026-09-05 00:35: removed in-function `from kotak_bot.broker.base import Order, ...`
@@ -1416,6 +1473,63 @@ def run_paper() -> None:
                                     alerter.send(f"❌ [RUN-CMD] failed: {_rc_err}")
                                 except Exception:
                                     pass
+                        # FIX 2026-09-29 14:00: broken-condor emergency close.
+                        # When the QUANT-ACTION OPEN handler detects a partial fill
+                        # (BUYs went through, SELLs didn't — net long strangle, not
+                        # iron condor), it writes _broken_condor.json with the orphan
+                        # BUY legs. We process it here: close those longs at MARKET
+                        # to cap the damage, then mark the marker consumed.
+                        _bc_path = Path("data_cache/_broken_condor.json")
+                        if _bc_path.exists():
+                            try:
+                                _bc = _read_json(_bc_path, default={})
+                                if isinstance(_bc, dict) and not _bc.get("consumed"):
+                                    _filled = _bc.get("filled_legs", [])
+                                    _expected = int(_bc.get("expected_legs", 0))
+                                    _placed = int(_bc.get("placed_legs", 0))
+                                    _bc_reason = str(_bc.get("reason", "broken condor"))[:120]
+                                    _bc_strategy = str(_bc.get("strategy", "?"))[:40]
+                                    _n_closed = 0
+                                    for _lr in _filled:
+                                        try:
+                                            _sym = _lr.get("symbol", "")
+                                            if not _sym:
+                                                continue
+                                            _qty = int(_lr.get("qty", 0))
+                                            if _qty <= 0:
+                                                continue
+                                            _ord = Order(
+                                                symbol=_sym,
+                                                side=OrderSide.SELL,
+                                                qty=_qty,
+                                                order_type=OrderType.MARKET,
+                                                product=ProductType.MIS,
+                                                price=0.0,
+                                                tag='BROKEN-CONDOR-CLOSE',
+                                                exchange='NFO',
+                                                strike=0.0,
+                                                option_type='',
+                                                expiry='',
+                                                underlying=str(_bc.get("underlying", "NIFTY")),
+                                            )
+                                            _res = broker.place_order(_ord)
+                                            if _res.status.value in ('complete', 'filled', 'open'):
+                                                _n_closed += 1
+                                                logger.warning(f"[BROKEN-CONDOR] EMERGENCY CLOSE {_sym} SELL {_qty} status={_res.status.value}")
+                                        except Exception as _bc_close_err:
+                                            logger.warning(f"[BROKEN-CONDOR] close leg failed: {_bc_close_err}")
+                                    if _n_closed > 0:
+                                        logger.warning(f"[BROKEN-CONDOR] {_bc_strategy}: emergency-closed {_n_closed}/{_placed} orphan BUY legs ({_placed}/{_expected} expected). reason={_bc_reason}")
+                                        alerter.send(f"[Broken-condor] {_bc_strategy}: closed {_n_closed} orphan longs. expected {_expected}, only filled {_placed}. Reason: {_bc_reason}")
+                                    else:
+                                        logger.info(f"[BROKEN-CONDOR] no orphan BUY legs to close in marker (already cleaned up)")
+                                    _bc["consumed"] = True
+                                    _bc["consumed_at"] = now.isoformat()
+                                    _bc["n_closed"] = _n_closed
+                                    with open(_bc_path, "w", encoding="utf-8") as _bcw:
+                                        json.dump(_bc, _bcw, ensure_ascii=False)
+                            except Exception as _bc_err:
+                                logger.warning(f"[BROKEN-CONDOR] handler failed: {_bc_err}")
                         # Mark consumed so we don't repeat
                         _fa["consumed"] = True
                         _fa["consumed_at"] = now.isoformat()
@@ -2050,6 +2164,30 @@ def run_paper() -> None:
                                     _summary = f"OPEN {_qa_a.get('strategy','?')} {_qa_inst} expiry={_expiry} legs_placed={_placed}/{len(_qa_legs)}"
                                     logger.info(f"[QUANT-ACTION] {_summary} target={_qa_a.get('target')} stop={_qa_a.get('stop')}")
                                     alerter.send(f"[Quant service] {_summary}\nRationale: {_qa_a.get('rationale','')[:200]}\nMax hold: {_qa_a.get('max_hold_minutes','?')}m")
+                                    # FIX 2026-09-29 14:00: broken-condor detector.
+                                    # If we expected multiple legs (e.g. iron_condor = 4)
+                                    # but only filled some, we have a broken-condor state:
+                                    # BUY-only legs = a long strangle (unlimited downside).
+                                    # Mark the action and write a force-close marker so
+                                    # the next cycle (or force-square) cleans up the BUYs.
+                                    if _placed > 0 and _placed < len(_qa_legs) and len(_qa_legs) >= 3:
+                                        _broken_path = Path("data_cache/_broken_condor.json")
+                                        _broken_state = {
+                                            "ts": now.isoformat(),
+                                            "strategy": _qa_a.get('strategy', '?'),
+                                            "underlying": _qa_inst,
+                                            "expected_legs": len(_qa_legs),
+                                            "placed_legs": _placed,
+                                            "filled_legs": _leg_records,
+                                            "reason": f"only {_placed}/{len(_qa_legs)} legs placed; remaining BUYs are naked longs (strangle), not the intended multi-leg structure"
+                                        }
+                                        try:
+                                            with open(_broken_path, "w", encoding="utf-8") as _bw:
+                                                json.dump(_broken_state, _bw, ensure_ascii=False)
+                                            logger.warning(f"[QUANT-ACTION] BROKEN-CONDOR detected: {_placed}/{len(_qa_legs)} legs placed. Writing _broken_condor.json for emergency cleanup.")
+                                            alerter.send(f"[Quant] BROKEN-CONDOR: only {_placed}/{len(_qa_legs)} legs filled for {_qa_inst} {strategy}. Writing emergency close marker.")
+                                        except Exception as _bw_err:
+                                            logger.warning(f"[QUANT-ACTION] broken-condor marker write failed: {_bw_err}")
                             except Exception as _qa_a_err:
                                 logger.warning(f"quant-action sub-process failed: {_qa_a_err}")
                         # Mark consumed only if we actually placed legs OR if rejection was hard
