@@ -234,19 +234,23 @@ class StateProjection:
             self.account.pause_reason = p.get("reason", "circuit_breaker")
 
         elif et == EventType.MARKET_TICK:
-            sym = p["symbol"]
+            sym = p.get("symbol", "")
+            if not sym:
+                return  # skip malformed tick
+            # FIX 2026-09-29 21:15: defensive .get() — previous code did p["ltp"] which
+            # raised KeyError on any tick with missing field, crashing the core.
             self.ticks[sym] = Tick(
                 symbol=sym,
-                ltp=float(p["ltp"]),
-                bid=float(p["bid"]),
-                ask=float(p["ask"]),
-                oi=int(p.get("oi", 0)),
-                volume=int(p.get("volume", 0)),
+                ltp=float(p.get("ltp", 0) or 0),
+                bid=float(p.get("bid", 0) or 0),
+                ask=float(p.get("ask", 0) or 0),
+                oi=int(p.get("oi", 0) or 0),
+                volume=int(p.get("volume", 0) or 0),
                 ts=event.ts,
             )
             if sym in self.positions:
                 pos = self.positions[sym]
-                pos.ltp = float(p["ltp"])
+                pos.ltp = float(p.get("ltp", 0) or 0)
                 pos.pnl = (pos.ltp - pos.avg_price) * pos.qty
 
     def _find_client_by_broker(self, broker_oid: str) -> Optional[str]:

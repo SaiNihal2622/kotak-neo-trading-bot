@@ -177,19 +177,33 @@ class PreFlight:
             return PreflightResult(ok=False, reason="zero cash", gate="cash")
         sym = order.get("symbol", "")
         pos = state.positions.get(sym)
-        existing_qty = abs(pos.qty) if pos else 0
-        new_qty = existing_qty + int(order.get("qty", 0)) if order.get("side") == "BUY" else max(0, existing_qty - int(order.get("qty", 0)))
+        # FIX 2026-09-29 21:15: short-aware qty math.
+        # Previous code used existing_qty = abs(pos.qty) which is wrong for shorts:
+        # a short position of -100 plus a SELL 50 would compute max(0, 100-50)=50,
+        # but the actual position after is -150. The cap check would UNDERESTIMATE
+        # the position value for shorts, allowing oversize shorts.
+        side = order.get("side", "BUY")
+        qty = int(order.get("qty", 0))
+        existing_qty = pos.qty if pos else 0
+        # Compute the signed new quantity after this fill
+        if side == "BUY":
+            new_qty = existing_qty + qty
+        else:  # SELL
+            new_qty = existing_qty - qty
+        # Use the absolute (exposure) value for the cap check — both longs and shorts
+        # tie up capital (margin requirement).
+        position_exposure = abs(new_qty)
         price = float(order.get("price", 0) or 0) or state.ticks.get(sym, type("T", (), {"ltp": 0})).ltp
         if price <= 0:
             return PreflightResult(ok=False, reason="no price for position cap check", gate="pricing")
-        position_value = new_qty * price
+        position_value = position_exposure * price
         cap = cash * self.max_position_pct
         if position_value > cap:
             return PreflightResult(
                 ok=False,
-                reason=f"position {position_value:.0f} > {self.max_position_pct*100:.0f}% of cash {cash:.0f}",
+                reason=f"position exposure {position_value:.0f} > {self.max_position_pct*100:.0f}% of cash {cash:.0f}",
                 gate="position_cap",
-                details={"position_value": position_value, "cap": cap},
+                details={"position_value": position_value, "cap": cap, "new_qty": new_qty},
             )
         return PreflightResult(ok=True)
 

@@ -97,19 +97,23 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
     app.state.projection = app.state.store.build_state_projection()
     app.state.preflight = PreFlight()
     app.state.ws_clients = set()
-    app.state.ws_lock = threading.Lock()
+    # FIX 2026-09-29 21:15: use asyncio.Lock (async-safe) instead of threading.Lock.
+    # A threading lock inside async code blocks the event loop, stalling all other
+    # coroutines (including health checks and other HTTP requests).
+    import asyncio as _asyncio
+    app.state.ws_lock = _asyncio.Lock()
 
     # ----- Health & introspection -----
 
     @app.get("/healthz")
     async def healthz():
+        # FIX 2026-09-29 21:15: actually count events in the log instead of returning null.
+        # Use a cheap query that doesn't load events into memory.
+        count = app.state.store._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         return {
             "ok": True,
             "ts": datetime.utcnow().isoformat(),
-            "events_in_log": len(app.state.store.events_since(limit=1)) + (
-                # quick hack: we know events count from projection
-                len(app.state.store.events_since(limit=100000))
-            ) if False else None,
+            "events_in_log": count,
         }
 
     @app.get("/api/state")
@@ -290,7 +294,8 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()
-        with app.state.ws_lock:
+        # FIX 2026-09-29 21:15: use async lock
+        async with app.state.ws_lock:
             app.state.ws_clients.add(websocket)
         try:
             # Send initial state
@@ -303,7 +308,7 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
-            with app.state.ws_lock:
+            async with app.state.ws_lock:
                 app.state.ws_clients.discard(websocket)
 
     # ----- Prometheus metrics -----
@@ -350,15 +355,21 @@ async def _broadcast(app: FastAPI, events: list[Event]) -> None:
          "correlation_id": e.correlation_id, "payload": e.payload}
         for e in events
     ]}
-    with app.state.ws_lock:
-        dead = []
-        for ws in list(app.state.ws_clients):
-            try:
-                await ws.send_json(payload)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            app.state.ws_clients.discard(ws)
+    # FIX 2026-09-29 21:15: use async lock so concurrent broadcasts don't race.
+    # Snapshot the client set under the lock to avoid holding it during awaits.
+    async with app.state.ws_lock:
+        clients = list(app.state.ws_clients)
+    # Send to each client outside the lock; a slow client only stalls itself.
+    dead = []
+    for ws in clients:
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.append(ws)
+    if dead:
+        async with app.state.ws_lock:
+            for ws in dead:
+                app.state.ws_clients.discard(ws)
 
 
 # ----- Runner -----
