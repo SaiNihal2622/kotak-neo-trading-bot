@@ -138,6 +138,24 @@ def _is_force_square_time(d: datetime) -> bool:
     return hm >= 14 * 60 + 30
 
 
+def _is_eod_close_time(d: datetime) -> bool:
+    """PHASE 6 FIX: 15:15-15:25 IST = force-square window.
+
+    At 15:15 we close ALL open positions for the day. This prevents
+    overnight gap risk and ensures the day's P&L is realized before
+    market close at 15:30.
+    """
+    if not _is_weekday(d):
+        return False
+    hm = d.hour * 60 + d.minute
+    return (15 * 60 + 15) <= hm < (15 * 60 + 25)
+
+
+# PHASE 6 FIX 2026-09-30: tracks the last reset date so we only
+# clear circuit-breaker flags once per day at market open.
+_last_reset_date: str = ""
+
+
 class BrainDaemon:
     """Reads market state, calls LLM for decision, writes to quant_actions.json."""
 
@@ -412,12 +430,22 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
             return {"action": "HOLD", "rationale": f"VIX {vix:.1f} outside [{VIX_MIN_TRADE}, {VIX_MAX_TRADE}]"}
 
         # Trending up + ADX proxy > threshold + momentum positive
-        if regime in ("trending_up", "mild_up", "uptrend") and adx > ADX_TREND_THRESHOLD and rsi > RSI_LONG_THRESHOLD:
+        # PHASE 6 FIX 2026-09-30: tightened to require MULTI-SIGNAL confirmation
+        # (regime + ADX + RSI + VWAP alignment). Single-signal triggers caused
+        # 56 OPENs/2hrs — over-trading.
+        long_confirmed = (
+            regime in ("trending_up", "mild_up", "uptrend")
+            and adx > 0.15  # raised from 0.10
+            and rsi > 55
+            and dist_vwap > 0.05  # NEW: must be above VWAP
+        )
+        if long_confirmed:
             return {
                 "action": "OPEN",
                 "rationale": (
-                    f"CAS long: regime={regime}, ADX={adx:.1f}, RSI={rsi:.1f}, "
-                    f"VIX={vix:.1f}, session_pct={session_pct:+.2f}%, vwap_dist={dist_vwap:+.2f}%"
+                    f"CAS long (multi-signal): regime={regime}, ADX={adx:.2f}, "
+                    f"RSI={rsi:.1f}, VIX={vix:.1f}, session_pct={session_pct:+.2f}%, "
+                    f"vwap_dist={dist_vwap:+.2f}%"
                 ),
                 "strategy": "nifty_cash_long",
                 "underlying": "NIFTY",
@@ -425,12 +453,19 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 "target": 1.0,
                 "stop": 0.75,
             }
-        if regime in ("trending_down", "mild_down", "downtrend") and adx > ADX_TREND_THRESHOLD and rsi < RSI_SHORT_THRESHOLD:
+        short_confirmed = (
+            regime in ("trending_down", "mild_down", "downtrend")
+            and adx > 0.15  # raised from 0.10
+            and rsi < 45
+            and dist_vwap < -0.05  # NEW: must be below VWAP
+        )
+        if short_confirmed:
             return {
                 "action": "OPEN",
                 "rationale": (
-                    f"CAS short: regime={regime}, ADX={adx:.1f}, RSI={rsi:.1f}, "
-                    f"VIX={vix:.1f}, session_pct={session_pct:+.2f}%, vwap_dist={dist_vwap:+.2f}%"
+                    f"CAS short (multi-signal): regime={regime}, ADX={adx:.2f}, "
+                    f"RSI={rsi:.1f}, VIX={vix:.1f}, session_pct={session_pct:+.2f}%, "
+                    f"vwap_dist={dist_vwap:+.2f}%"
                 ),
                 "strategy": "nifty_cash_short",
                 "underlying": "NIFTY",
@@ -450,6 +485,49 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 f"session_pct={session_pct:+.2f}% vwap_dist={dist_vwap:+.2f}%"
             ),
         }
+
+    def _write_close_all(self, reason: str = "manual") -> bool:
+        """PHASE 6 FIX: write CLOSE_ALL action for the bridge to consume.
+
+        The bridge polls quant_actions.json. We write a CLOSE_ALL entry
+        (action=CLOSE_ALL, no legs). The bridge calls /api/close_all.
+
+        Idempotent: if a close_all was written within the last 5 minutes,
+        we skip (avoids duplicate calls).
+        """
+        try:
+            from ..common.atomic_io import read_json
+            existing = read_json(self.quant_actions_path, default={"actions": []})
+            if not isinstance(existing, dict):
+                existing = {"actions": []}
+            now = _now_ist()
+            for a in existing.get("actions", []):
+                if a.get("action") == "CLOSE_ALL":
+                    ts_str = a.get("ts", "")
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        if (now - ts.replace(tzinfo=IST)).total_seconds() < 300:
+                            logger.debug("CLOSE_ALL dedup: wrote within 5 min")
+                            return False
+                    except Exception:
+                        pass
+            existing.setdefault("actions", []).append({
+                "ts": now.isoformat(),
+                "action": "CLOSE_ALL",
+                "strategy": "force_square",
+                "underlying": "ALL",
+                "rationale": reason,
+                "brain_source": "system.brain.brain_daemon",
+            })
+            existing["actions"] = existing["actions"][-20:]
+            from ..common.atomic_io import write_json_atomic
+            ok = write_json_atomic(self.quant_actions_path, existing)
+            if ok:
+                logger.warning(f"[CLOSE_ALL] written: {reason}")
+            return ok
+        except Exception as e:
+            logger.error(f"write close_all failed: {e}")
+            return False
 
     def _write_quant_action(self, decision: dict, state: dict) -> bool:
         """Write decision to quant_actions.json for the bridge to pick up."""
@@ -519,23 +597,60 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         """Run one brain cycle. Returns decision."""
         self.stats["cycles"] += 1
         now = _now_ist()
+
+        # PHASE 6 FIX: daily reset at market open. Clear stale circuit-breaker
+        # so a new day starts clean. Multi-day runs no longer need manual reset.
+        global _last_reset_date
+        today_str = now.strftime("%Y-%m-%d")
+        if _last_reset_date != today_str and _is_market_open(now):
+            _last_reset_date = today_str
+            try:
+                cb = self.data_dir / "trading_halted.json"
+                if cb.exists():
+                    cb.unlink()
+                    logger.info(f"[daily-reset] cleared {cb.name} for {today_str}")
+            except Exception as e:
+                logger.debug(f"daily reset cleanup: {e}")
+
+        # PHASE 6 FIX 2026-09-30: EOD force-square at 15:15-15:25 IST.
+        # Close ALL open positions to prevent overnight gap risk.
+        if _is_eod_close_time(now):
+            self._write_close_all(reason="eod_force_square")
+            self.stats["close_all"] = self.stats.get("close_all", 0) + 1
+            return {"action": "CLOSE_ALL", "rationale": "eod_force_square 15:15 IST"}
+
         if not _is_market_open(now):
             return {"action": "HOLD", "rationale": "market_closed"}
         if _is_force_square_time(now):
             return {"action": "HOLD", "rationale": "force_square_time"}
+
         state = self._read_state()
+
+        # PHASE 6 FIX: daily P&L circuit breaker — if today's realized
+        # P&L is below -3% of starting capital, halt trading for the day.
+        cb_path = self.data_dir / "trading_halted.json"
+        try:
+            if cb_path.exists():
+                cb = json.loads(cb_path.read_text(encoding="utf-8"))
+                if cb.get("halted_until"):
+                    halt_until = datetime.fromisoformat(cb["halted_until"])
+                    if now < halt_until:
+                        return {"action": "HOLD", "rationale": f"daily_loss_circuit_breaker {cb.get('reason', '')}"}
+        except Exception:
+            pass
+
+        # PHASE 6 FIX: skip if already have open position (avoid piling on)
+        open_positions = state.get("open_positions", [])
+        if open_positions:
+            return {"action": "HOLD", "rationale": "have_open_position"}
+
         decision = await self._call_llm(state)
         self.stats["decisions"] += 1
         action = decision.get("action", "HOLD")
 
-        # PHASE 6 FIX 2026-09-30: counterfactual tracking. Records what
-        # we decided vs what we could have decided, so the brain prompt
-        # gets "lessons learned" and improves over time.
+        # PHASE 6 FIX 2026-09-30: counterfactual tracking.
         try:
             from .counterfactual import record_decision
-            # Heuristic counterfactual: if we HOLD but the signals were
-            # strong (high ADX, low VIX, regime matches trend direction),
-            # the counterfactual is "would have OPENed".
             regime = state.get("regime", "unknown")
             vix = float(state.get("vix", 0) or 0)
             adx = float(state.get("adx", 0) or 0)
@@ -573,6 +688,27 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 self.stats["errors"] += 1
         else:
             self.stats["hold"] += 1
+
+        # PHASE 6 FIX: daily P&L circuit breaker trigger. After every
+        # decision, check today's realized P&L. If below -3% halt for the day.
+        try:
+            realized = float(state.get("realized_pnl", 0) or 0)
+            starting = 100_000.0
+            if realized <= -0.03 * starting:
+                from datetime import timedelta
+                halt_until = now.replace(hour=15, minute=30, second=0, microsecond=0)
+                if halt_until <= now:
+                    halt_until = (now + timedelta(days=1)).replace(hour=9, minute=15, second=0, microsecond=0)
+                cb = {
+                    "halted_until": halt_until.isoformat(),
+                    "reason": f"daily_loss_{realized:.0f}_below_-3000",
+                    "ts": now.isoformat(),
+                }
+                cb_path.write_text(json.dumps(cb), encoding="utf-8")
+                logger.warning(f"[CIRCUIT-BREAKER] daily loss {realized:.0f} < -3000 → halt trading")
+        except Exception as e:
+            logger.debug(f"circuit breaker check failed: {e}")
+
         return decision
 
     async def run_forever(self):

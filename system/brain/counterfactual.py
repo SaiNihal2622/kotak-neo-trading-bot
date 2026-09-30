@@ -104,6 +104,8 @@ def record_decision(
     signal_strength: float = 0.0,
     would_have_action: Optional[str] = None,
     would_have_pnl_per_lot: float = 0.0,
+    # PHASE 6 FIX 2026-09-30: track whether the OPEN itself turned out to be a bad trade.
+    bad_open_pnl_per_lot: float = 0.0,
 ) -> None:
     """Append a counterfactual record. Called by brain daemon after each cycle.
 
@@ -113,20 +115,14 @@ def record_decision(
         regime: current market regime (trending_up, range_bound, etc.).
         vix: current India VIX.
         adx: current ADX value (proxy from session_pct).
-        signal_strength: 0..1 strength of the signal (how strongly indicators support a trade).
+        signal_strength: 0..1 strength of the signal.
         would_have_action: what the alternative decision was (None if N/A).
         would_have_pnl_per_lot: estimated P&L per lot if alternative was taken.
             Positive = would have profited; negative = would have lost.
+        bad_open_pnl_per_lot: actual P&L per lot if we OPENed and it was bad.
+            Negative = bad trade; positive = good trade.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Actual P&L so far (filled orders since the decision)
-    actual_pnl = 0.0
-    # If the brain decided OPEN, the position's current P&L IS the actual outcome.
-    # If HOLD, we record 0 actual_pnl since no trade was placed.
-    if decision == "OPEN":
-        # Will be updated later via update_outcome() once the position closes
-        pass
 
     record = {
         "ts": _now_ist().isoformat(),
@@ -141,10 +137,10 @@ def record_decision(
             "would_have_pnl_per_lot": would_have_pnl_per_lot,
         },
         "actual_outcome": {
-            "pnl_per_lot": actual_pnl,
+            "pnl_per_lot": bad_open_pnl_per_lot if decision == "OPEN" else 0.0,
         },
         "missed_pnl_per_lot": (
-            (would_have_pnl_per_lot - actual_pnl) if decision != "OPEN" else 0.0
+            would_have_pnl_per_lot if decision != "OPEN" else 0.0
         ),
         "regime": regime,
         "vix": vix,
@@ -209,6 +205,10 @@ def compute_daily_summary(target_date: Optional[str] = None) -> dict:
     trades_skipped = 0
     skipped_high_strength = 0
     skipped_high_strength_pnl = 0.0
+    bad_opens = 0
+    bad_opens_pnl = 0.0
+    good_opens = 0
+    good_opens_pnl = 0.0
 
     with open(CF_LOG, "r", encoding="utf-8") as f:
         for line in f:
@@ -223,7 +223,14 @@ def compute_daily_summary(target_date: Optional[str] = None) -> dict:
             decision = rec.get("decision")
             if decision == "OPEN":
                 trades_actual += 1
-                actual_pnl += float(rec.get("actual_outcome", {}).get("pnl_per_lot", 0))
+                pnl = float(rec.get("actual_outcome", {}).get("pnl_per_lot", 0))
+                actual_pnl += pnl
+                if pnl < 0:
+                    bad_opens += 1
+                    bad_opens_pnl += pnl
+                elif pnl > 0:
+                    good_opens += 1
+                    good_opens_pnl += pnl
             elif decision == "HOLD":
                 cf = rec.get("counterfactual", {})
                 wh = cf.get("would_have_action")
@@ -234,17 +241,23 @@ def compute_daily_summary(target_date: Optional[str] = None) -> dict:
                         skipped_high_strength += 1
                         skipped_high_strength_pnl += float(rec.get("missed_pnl_per_lot", 0))
 
-    # Build lessons
+    # Build lessons — PHASE 6 FIX: include bad OPEN analysis
     lessons = []
+    if bad_opens > 0:
+        lessons.append(
+            f"Lost Rs.{bad_opens_pnl:+.0f} on {bad_opens} bad OPENs — "
+            "review entry conditions + signal strength"
+        )
+    if good_opens > 0 and bad_opens > 0:
+        win_rate = good_opens / (good_opens + bad_opens) * 100
+        lessons.append(
+            f"Win rate today: {win_rate:.0f}% ({good_opens}W/{bad_opens}L) — "
+            f"net Rs.{actual_pnl:+.0f}"
+        )
     if skipped_high_strength > 0:
         lessons.append(
             f"Skipped {skipped_high_strength} high-strength signals "
             f"(strength≥0.6) that would have netted Rs.{skipped_high_strength_pnl:+.0f}"
-        )
-    if trades_actual > 0 and actual_pnl < 0:
-        lessons.append(
-            f"Today's {trades_actual} actual trades net Rs.{actual_pnl:+.0f} — "
-            "consider tightening entry conditions"
         )
     if missed_pnl > 1000:
         lessons.append(
@@ -257,6 +270,8 @@ def compute_daily_summary(target_date: Optional[str] = None) -> dict:
         "trades_actual": trades_actual,
         "trades_skipped": trades_skipped,
         "skipped_high_strength": skipped_high_strength,
+        "bad_opens": bad_opens,
+        "good_opens": good_opens,
         "actual_pnl": round(actual_pnl, 2),
         "missed_pnl": round(missed_pnl, 2),
         "missed_pct": round(100 * missed_pnl / max(1, abs(actual_pnl) + abs(missed_pnl)), 1),

@@ -214,6 +214,23 @@ class BrainBridge:
         return {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65,
                 "MIDCPNIFTY": 120, "SENSEX": 10}.get(underlying.upper(), 75)
 
+    def _submit_close_all(self, action: dict) -> dict:
+        """PHASE 6 FIX: post a CLOSE_ALL to /api/close_all.
+
+        Returns {ok, closed} where closed is the count of positions closed.
+        """
+        try:
+            r = self._http.post(
+                f"{self.core_url}/api/close_all",
+                json={"reason": str(action.get("rationale", "force_square"))[:200]},
+                timeout=15,
+            )
+            if r.status_code == 200:
+                return {"ok": True, **r.json()}
+            return {"ok": False, "reason": f"http {r.status_code}", "text": r.text[:200]}
+        except Exception as e:
+            return {"ok": False, "reason": f"exception: {e}"}
+
     def _submit_plan(self, action: dict) -> dict:
         """POST a plan to /api/plan. Returns the core's response."""
         legs = self._build_plan_legs(action)
@@ -258,6 +275,21 @@ class BrainBridge:
         submitted = 0
         for i, action in enumerate(actions):
             try:
+                # PHASE 6 FIX 2026-09-30: handle CLOSE_ALL specially.
+                # It calls /api/close_all instead of /api/plan.
+                if str(action.get("action", "")).upper() == "CLOSE_ALL":
+                    if action.get("bridge_consumed"):
+                        continue
+                    result = self._submit_close_all(action)
+                    if isinstance(doc, dict) and "actions" in doc and i < len(doc["actions"]):
+                        doc["actions"][i]["bridge_consumed"] = True
+                        doc["actions"][i]["bridge_result"] = result
+                    if result.get("ok"):
+                        submitted += 1
+                        self._last_stats["submitted"] += 1
+                        logger.warning(f"[BRIDGE] CLOSE_ALL executed: closed {result.get('closed', 0)} positions")
+                    continue
+
                 # PHASE 5 FIX 2026-09-29: use a more robust dedup key.
                 # The legacy brain may write actions with empty ts (older
                 # bots didn't always populate it). Combined with the same
