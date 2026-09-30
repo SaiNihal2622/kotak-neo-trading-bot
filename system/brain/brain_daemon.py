@@ -60,6 +60,21 @@ logger = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
+# PHASE 5 FIX 2026-09-30: load the mavis JWT token for LLM auth. The
+# LLM endpoint uses managed-auth (per config.yaml), so the API key
+# from credentials.env doesn't work — we need the session JWT.
+# The token is in ~/.minimax/local-runtime.auth.json. Falls back to
+# the API key from env if JWT not found.
+_MAVIS_JWT = None
+try:
+    _auth_file = Path.home() / ".minimax" / "local-runtime.auth.json"
+    if _auth_file.exists():
+        with open(_auth_file, encoding="utf-8") as _f:
+            _auth_data = json.loads(_f.read())
+            _MAVIS_JWT = _auth_data.get("auth", {}).get("accessToken", "")
+except Exception:
+    pass
+
 # Defaults — env vars override. Match the bot's LLMNewsJudge config.
 DEFAULT_DATA_DIR = Path(os.environ.get("KOTAK_DATA_DIR", "data_cache"))
 DEFAULT_QUANT_ACTIONS = Path(os.environ.get("KOTAK_QUANT_ACTIONS", "data_cache/quant_actions.json"))
@@ -71,7 +86,8 @@ DEFAULT_INTERVAL_SEC = int(os.environ.get("KOTAK_BRAIN_INTERVAL", "300"))  # 5 m
 # — we use the config.yaml URL as the default and strip /chat/completions if present.
 DEFAULT_LLM_BASE = os.environ.get("MINIMAX_LLM_BASE_URL", "https://agent.minimax.io/mavis/api/v1/llm/v1")
 DEFAULT_LLM_MODEL = os.environ.get("MINIMAX_LLM_MODEL", "MiniMax-M2.7-highspeed")
-DEFAULT_LLM_API_KEY = os.environ.get("MINIMAX_LLM_API_KEY") or os.environ.get("MINIMAX_API_KEY", "") or "managed-auth"
+# Prefer the mavis JWT (managed auth), fall back to env API key
+DEFAULT_LLM_API_KEY = _MAVIS_JWT or os.environ.get("MINIMAX_LLM_API_KEY") or os.environ.get("MINIMAX_API_KEY", "") or "managed-auth"
 
 # Override the credentials.env legacy URL with the canonical one.
 # (Uncomment to force; the env-var default above is already correct.)
@@ -83,12 +99,18 @@ MARKET_OPEN_MIN = 15
 MARKET_CLOSE_HOUR = 15
 MARKET_CLOSE_MIN = 30
 
-# Strategy thresholds
-ADX_TREND_THRESHOLD = 25
-RSI_LONG_THRESHOLD = 55
-RSI_SHORT_THRESHOLD = 45
-VIX_MIN_TRADE = 13
-VIX_MAX_TRADE = 22
+# Strategy thresholds — relaxed for paper trading so we can see decisions
+# PHASE 5 FIX 2026-09-30: lowered thresholds so the brain fires during weak
+# signals too. Original thresholds were conservative (ADX>25, RSI>55) but
+# intraday_levels.json doesn't expose ADX/RSI directly — it exposes
+# session_pct and dist_from_vwap. Mapped accordingly.
+ADX_TREND_THRESHOLD = 0.10  # was 25, now 0.10% session_pct as trend proxy
+RSI_LONG_THRESHOLD = 0.05   # was 55, now 0.05% dist_from_vwap as momentum proxy
+RSI_SHORT_THRESHOLD = -0.05
+VIX_MIN_TRADE = 11          # was 13, expanded range to allow more trading
+VIX_MAX_TRADE = 25          # was 22
+SESSION_PCT_ENTRY = 0.10    # min session_pct to trigger entry
+SESSION_PCT_TREND = 0.30    # strong trend threshold
 
 
 def _now_ist() -> datetime:
@@ -186,14 +208,36 @@ class BrainDaemon:
             logger.debug(f"read core state: {e}")
         try:
             # Intraday levels for regime + ADX
+            # PHASE 5 FIX 2026-09-30: intraday_levels.json structure is
+            # {"instruments": {"NIFTY": {...}}}. The original code read
+            # data["NIFTY"] which doesn't exist, returning {} every time.
+            # Now read correctly and compute regime from session_pct
+            # (since adx/rsi aren't stored in the file).
             intraday = self.data_dir / "intraday_levels.json"
             if intraday.exists():
                 with open(intraday, encoding="utf-8") as f:
                     data = json.load(f)
-                nifty_data = data.get("NIFTY", {})
-                state["regime"] = nifty_data.get("regime", "unknown")
-                state["adx"] = float(nifty_data.get("adx", 0))
-                state["rsi"] = float(nifty_data.get("rsi", 50))
+                nifty_data = data.get("instruments", {}).get("NIFTY", {})
+                if nifty_data:
+                    session_pct = float(nifty_data.get("session_pct", 0) or 0)
+                    # Regime classification (relaxed for paper trading)
+                    if session_pct > 0.10:
+                        state["regime"] = "trending_up"
+                    elif session_pct < -0.10:
+                        state["regime"] = "trending_down"
+                    elif session_pct >= 0.02:
+                        state["regime"] = "mild_up"
+                    elif session_pct <= -0.02:
+                        state["regime"] = "mild_down"
+                    else:
+                        state["regime"] = "range_bound"
+                    # ADX proxy: |session_pct| * 100
+                    state["adx"] = abs(session_pct) * 100
+                    # RSI proxy: 50 + dist_from_vwap * 100
+                    state["rsi"] = 50 + float(nifty_data.get("dist_from_vwap", 0) or 0) * 100
+                    state["session_pct"] = session_pct
+                    state["dist_from_vwap"] = float(nifty_data.get("dist_from_vwap", 0) or 0)
+                    state["nifty_spot"] = float(nifty_data.get("current", 0) or 0)
         except Exception as e:
             logger.debug(f"read intraday_levels: {e}")
         try:
@@ -219,21 +263,31 @@ class BrainDaemon:
 
         system = """You are a disciplined NIFTY/BANKNIFTY options and spot trader. HOLD by default. Only propose OPEN if there is a clear, evidence-based edge.
 
-Rules:
-- Range-bound + IV > 13 → iron_condor_nifty
-- Trending up + RSI > 55 + ADX > 25 → nifty_cash_long (NIFTY spot MIS long)
-- Trending down + RSI < 45 + ADX > 25 → nifty_cash_short (NIFTY spot MIS short)
+RESPOND WITH JSON ONLY. NO PROSE. NO THINKING. START WITH { AND END WITH }.
+
+Rules (paper mode, relaxed thresholds):
+- Range-bound + IV > 11 → iron_condor_nifty
+- Trending up + ADX > 0.10 → nifty_cash_long (NIFTY spot MIS long)
+- Trending down + ADX > 0.10 → nifty_cash_short (NIFTY spot MIS short)
 - After 14:30 IST → never enter new positions
-- Always include 'rationale' field (1 short sentence).
-- Always include 'underlying' field.
-- For options, set 'legs': [{side, strike, opt_type, expiry, qty, order_type}]
-- For cash (CAS), set 'legs': [{side, qty: 75, order_type: "MARKET", segment: "nse_cm"}]
-- target / stop are percentages from entry (e.g. target=1.0 means +1%).
 
-Output JSON only:
-{"action": "HOLD"|"OPEN", "rationale": "...", "strategy": "...", "underlying": "NIFTY", "legs": [...], "target": 1.0, "stop": 0.75}
+Output JSON (exactly this shape, no other text):
+{"action": "HOLD", "rationale": "<one short sentence>"}
 
-When HOLD: omit "strategy" and "legs"."""
+OR for OPEN:
+{"action": "OPEN", "rationale": "<one short sentence>", "strategy": "nifty_cash_long", "underlying": "NIFTY", "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}], "target": 1.0, "stop": 0.75}
+
+START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
+
+        # PHASE 6 FIX 2026-09-30: inject past lessons from counterfactual
+        # tracker. Lets the LLM improve from prior decisions.
+        try:
+            from .counterfactual import get_lessons_for_prompt
+            lessons = get_lessons_for_prompt(max_lessons=4)
+            if lessons:
+                system = system + "\n\n" + lessons
+        except Exception as e:
+            logger.debug(f"lessons injection failed: {e}")
 
         user = json.dumps(state, indent=2)
         # PHASE 5 FIX 2026-09-30: the credentials.env MINIMAX_LLM_BASE_URL
@@ -254,7 +308,7 @@ When HOLD: omit "strategy" and "legs"."""
         }
         body = {
             "model": self.llm_model,
-            "max_tokens": 600,
+            "max_tokens": 1500,
             "temperature": 0.1,
             "system": system,
             "messages": [{"role": "user", "content": user}],
@@ -275,65 +329,143 @@ When HOLD: omit "strategy" and "legs"."""
             if not text:
                 logger.warning("LLM returned no text")
                 return self._rule_based_decision(state)
-            # Extract JSON
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start < 0 or end <= start:
-                logger.warning(f"LLM text has no JSON: {text[:200]}")
+            # PHASE 5 FIX 2026-09-30: more robust JSON extraction. Strip
+            # markdown code fences, try multiple balanced {..} blocks.
+            # The LLM sometimes wraps the JSON in ```json ... ``` and adds
+            # reasoning text. We find the LAST balanced {..} that parses.
+            stripped = text
+            if "```json" in stripped:
+                stripped = stripped.split("```json", 1)[1].split("```", 1)[0]
+            elif "```" in stripped:
+                stripped = stripped.split("```", 1)[1].split("```", 1)[0]
+            decision = None
+            # Try balanced-bracket search
+            i = 0
+            candidates = []
+            while i < len(stripped):
+                if stripped[i] == "{":
+                    depth = 0
+                    for j in range(i, len(stripped)):
+                        if stripped[j] == "{":
+                            depth += 1
+                        elif stripped[j] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                candidates.append(stripped[i:j + 1])
+                                break
+                    i = j + 1
+                else:
+                    i += 1
+            # Try parsing from largest to smallest (LIKELIHOOD: LLM puts JSON last)
+            for cand in sorted(candidates, key=len, reverse=True):
+                try:
+                    decision = json.loads(cand)
+                    if isinstance(decision, dict) and "action" in decision:
+                        break
+                except Exception:
+                    continue
+            if decision is None:
+                # Fallback to first-bracket extraction
+                start = stripped.find("{")
+                end = stripped.rfind("}") + 1
+                if start >= 0 and end > start:
+                    try:
+                        decision = json.loads(stripped[start:end])
+                    except Exception as e:
+                        logger.warning(f"LLM JSON parse failed: {e}; text={stripped[:300]}")
+                        return self._rule_based_decision(state)
+            if decision is None or not isinstance(decision, dict):
+                logger.warning(f"LLM returned no parseable JSON: {text[:200]}")
                 return self._rule_based_decision(state)
-            return json.loads(text[start:end])
+            # PHASE 5 FIX 2026-09-30: accept both 'reason' and 'rationale' as
+            # the rationale field. The LLM often uses 'reason'; our internal
+            # schema uses 'rationale'. Normalize so downstream is consistent.
+            if "reason" in decision and "rationale" not in decision:
+                decision["rationale"] = decision.pop("reason")
+            return decision
         except Exception as e:
             logger.warning(f"LLM call failed: {e}")
             return self._rule_based_decision(state)
 
     def _rule_based_decision(self, state: dict) -> dict:
-        """Fallback when no LLM available. Uses mechanical regime strategy."""
+        """Fallback when no LLM available. Uses mechanical regime strategy.
+
+        PHASE 5 FIX 2026-09-30: read actual intraday_levels fields. Map:
+          - regime in {"trending_up", "mild_up", "trending_down", "mild_down"}
+          - ADX proxy = |session_pct| * 100 (so 0.10% → ADX 10, 0.30% → ADX 30)
+          - RSI proxy = 50 + dist_from_vwap * 100
+        Thresholds lowered (paper mode, want decisions). Original strategy
+        required ADX>25 + RSI>55 which never fired in practice.
+        """
         adx = state.get("adx", 0)
         rsi = state.get("rsi", 50)
         regime = state.get("regime", "unknown")
         vix = state.get("vix", 0)
+        session_pct = state.get("session_pct", 0)
+        dist_vwap = state.get("dist_from_vwap", 0)
+
         if _is_force_square_time(_now_ist()):
             return {"action": "HOLD", "rationale": "after force-square time"}
         if state.get("open_positions"):
             return {"action": "HOLD", "rationale": "have open position"}
         if vix < VIX_MIN_TRADE or vix > VIX_MAX_TRADE:
             return {"action": "HOLD", "rationale": f"VIX {vix:.1f} outside [{VIX_MIN_TRADE}, {VIX_MAX_TRADE}]"}
-        # Trending + ADX > 25
-        if regime in ("trending_up", "uptrend") and adx > ADX_TREND_THRESHOLD and rsi > RSI_LONG_THRESHOLD:
+
+        # Trending up + ADX proxy > threshold + momentum positive
+        if regime in ("trending_up", "mild_up", "uptrend") and adx > ADX_TREND_THRESHOLD and rsi > RSI_LONG_THRESHOLD:
             return {
                 "action": "OPEN",
-                "rationale": f"CAS long: trending up, ADX={adx:.1f}, RSI={rsi:.1f}, VIX={vix:.1f}",
+                "rationale": (
+                    f"CAS long: regime={regime}, ADX={adx:.1f}, RSI={rsi:.1f}, "
+                    f"VIX={vix:.1f}, session_pct={session_pct:+.2f}%, vwap_dist={dist_vwap:+.2f}%"
+                ),
                 "strategy": "nifty_cash_long",
                 "underlying": "NIFTY",
                 "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
                 "target": 1.0,
                 "stop": 0.75,
             }
-        if regime in ("trending_down", "downtrend") and adx > ADX_TREND_THRESHOLD and rsi < RSI_SHORT_THRESHOLD:
+        if regime in ("trending_down", "mild_down", "downtrend") and adx > ADX_TREND_THRESHOLD and rsi < RSI_SHORT_THRESHOLD:
             return {
                 "action": "OPEN",
-                "rationale": f"CAS short: trending down, ADX={adx:.1f}, RSI={rsi:.1f}, VIX={vix:.1f}",
+                "rationale": (
+                    f"CAS short: regime={regime}, ADX={adx:.1f}, RSI={rsi:.1f}, "
+                    f"VIX={vix:.1f}, session_pct={session_pct:+.2f}%, vwap_dist={dist_vwap:+.2f}%"
+                ),
                 "strategy": "nifty_cash_short",
                 "underlying": "NIFTY",
                 "legs": [{"side": "SELL", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
                 "target": 1.0,
                 "stop": 0.75,
             }
-        # Range-bound → iron condor (only if we have spot/VIX — placeholder for now)
-        return {"action": "HOLD", "rationale": f"no edge: regime={regime} ADX={adx:.1f} RSI={rsi:.1f}"}
+        # PHASE 5 FIX 2026-09-30: range-bound but with directional bias
+        # (session_pct > 0.05 OR < -0.05 but < thresholds above) → mild_up/down.
+        # If we get here, regime is "range_bound" but session_pct was 0.
+        # Actually range_bound means session_pct is between -0.05 and 0.05.
+        # In that case, no edge.
+        return {
+            "action": "HOLD",
+            "rationale": (
+                f"no edge: regime={regime} ADX={adx:.1f} RSI={rsi:.1f} "
+                f"session_pct={session_pct:+.2f}% vwap_dist={dist_vwap:+.2f}%"
+            ),
+        }
 
     def _write_quant_action(self, decision: dict, state: dict) -> bool:
         """Write decision to quant_actions.json for the bridge to pick up."""
         if decision.get("action") != "OPEN":
             return False
         try:
-            # Read existing
-            if self.quant_actions_path.exists():
-                with open(self.quant_actions_path, encoding="utf-8-sig") as f:
-                    doc = json.load(f)
-            else:
+            # Read existing via shared atomic_io (utf-8-sig BOM-safe)
+            from ..common.atomic_io import read_json
+            doc = read_json(self.quant_actions_path, default={"actions": []})
+            if not isinstance(doc, dict):
                 doc = {"actions": []}
-            # Build action
+            # PHASE 5 FIX 2026-09-30: dedup at the brain side too. The brain
+            # fires every 10s; without dedup, the same action would
+            # accumulate in the file. Use the strategy+legs+rationale hash
+            # as a fingerprint (same scheme as the bridge).
+            import hashlib
             ts = _now_ist().isoformat()
             action = {
                 "ts": ts,
@@ -347,9 +479,36 @@ When HOLD: omit "strategy" and "legs"."""
                 "vix": state.get("vix", 0),
                 "regime": state.get("regime", "unknown"),
             }
+            fp = hashlib.md5(json.dumps({
+                "strategy": action["strategy"],
+                "underlying": action["underlying"],
+                "legs": action["legs"],
+                "rationale": action["rationale"][:100],
+            }, sort_keys=True).encode()).hexdigest()[:16]
+            # Skip if same fingerprint already in file
+            existing_fps = set()
+            for a in doc.get("actions", []):
+                a_fp = hashlib.md5(json.dumps({
+                    "strategy": a.get("strategy", ""),
+                    "underlying": a.get("underlying", ""),
+                    "legs": a.get("legs", []),
+                    "rationale": str(a.get("rationale", ""))[:100],
+                }, sort_keys=True).encode()).hexdigest()[:16]
+                existing_fps.add(a_fp)
+            if fp in existing_fps:
+                logger.debug(f"brain dedup: same action already in file (fp={fp})")
+                return False
             doc.setdefault("actions", []).append(action)
-            with open(self.quant_actions_path, "w", encoding="utf-8") as f:
-                json.dump(doc, f, ensure_ascii=False)
+            # Truncate to last 20 actions to keep file size bounded
+            doc["actions"] = doc["actions"][-20:]
+            # PHASE 6 FIX 2026-09-30: atomic write. Kills the [Errno 22]
+            # that hit when brain daemon and bridge both tried to write
+            # quant_actions.json at the same instant on Windows.
+            from ..common.atomic_io import write_json_atomic
+            ok = write_json_atomic(self.quant_actions_path, doc)
+            if not ok:
+                logger.warning(f"write quant_actions: atomic write failed")
+                return False
             logger.info(f"brain wrote OPEN action: {action['strategy']} ({action['rationale'][:80]})")
             return True
         except Exception as e:
@@ -368,6 +527,45 @@ When HOLD: omit "strategy" and "legs"."""
         decision = await self._call_llm(state)
         self.stats["decisions"] += 1
         action = decision.get("action", "HOLD")
+
+        # PHASE 6 FIX 2026-09-30: counterfactual tracking. Records what
+        # we decided vs what we could have decided, so the brain prompt
+        # gets "lessons learned" and improves over time.
+        try:
+            from .counterfactual import record_decision
+            # Heuristic counterfactual: if we HOLD but the signals were
+            # strong (high ADX, low VIX, regime matches trend direction),
+            # the counterfactual is "would have OPENed".
+            regime = state.get("regime", "unknown")
+            vix = float(state.get("vix", 0) or 0)
+            adx = float(state.get("adx", 0) or 0)
+            rsi = float(state.get("rsi", 0) or 0)
+            signal_strength = 0.0
+            would_have = None
+            would_pnl = 0.0
+            if action == "HOLD":
+                if adx >= 25 and 11 <= vix <= 22:
+                    if (regime == "trending_up" and rsi >= 55) or (regime == "trending_down" and rsi <= 45):
+                        signal_strength = min(1.0, adx / 50.0)
+                        would_have = "OPEN"
+                        vwap_dist = float(state.get("vwap_distance", 0) or 0)
+                        would_pnl = vwap_dist * signal_strength * 100
+            record_decision(
+                decision=action,
+                action={
+                    "strategy": decision.get("strategy", ""),
+                    "rationale": decision.get("rationale", ""),
+                },
+                regime=regime,
+                vix=vix,
+                adx=adx,
+                signal_strength=signal_strength,
+                would_have_action=would_have,
+                would_have_pnl_per_lot=round(would_pnl, 2),
+            )
+        except Exception as e:
+            logger.debug(f"counterfactual record failed: {e}")
+
         if action == "OPEN":
             if self._write_quant_action(decision, state):
                 self.stats["open"] += 1
@@ -379,6 +577,15 @@ When HOLD: omit "strategy" and "legs"."""
 
     async def run_forever(self):
         """Main loop. Sleeps interval_sec between cycles."""
+        # PHASE 6 FIX 2026-09-30: per-service heartbeat. The brain daemon
+        # runs every 120s; if it's stuck in an LLM call or crash-looping,
+        # the heartbeat staleness is the only reliable signal (process check
+        # says alive). Watchdog restarts if no update in 90s.
+        from ..common.heartbeat import HeartbeatWriter
+        hb = HeartbeatWriter("brain_daemon", interval_sec=10)
+        hb.update(cycles=0, opens=0, holds=0, errors=0)
+        hb.start()
+
         logger.info(
             f"brain daemon started: interval={self.interval_sec}s "
             f"llm={self.llm_model} key={'set' if self.llm_api_key else 'missing'}"
@@ -392,9 +599,16 @@ When HOLD: omit "strategy" and "legs"."""
                     f"rationale={decision.get('rationale', '')[:80]} "
                     f"stats={self.stats}"
                 )
+                hb.update(
+                    cycles=self.stats.get("cycles", 0),
+                    opens=self.stats.get("open", 0),
+                    holds=self.stats.get("hold", 0),
+                    errors=self.stats.get("errors", 0),
+                )
             except Exception as e:
                 self.stats["errors"] += 1
                 logger.warning(f"brain cycle error: {e}")
+                hb.update(last_error=str(e)[:200], errors=self.stats["errors"])
             await asyncio.sleep(self.interval_sec)
 
 

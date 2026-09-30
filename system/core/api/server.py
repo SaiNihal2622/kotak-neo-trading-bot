@@ -97,6 +97,16 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
     app.state.projection = app.state.store.build_state_projection()
     app.state.preflight = PreFlight()
     app.state.ws_clients = set()
+
+    # PHASE 6 FIX 2026-09-30: per-service heartbeat writer. Updates
+    # data_cache/heartbeat_core_api.json every 10s with event count +
+    # projection status. The 247_watchdog (cron + NSSM-aware) checks this
+    # and restarts the service if the heartbeat is stale.
+    from ...common.heartbeat import HeartbeatWriter
+    _heartbeat = HeartbeatWriter("core_api", interval_sec=10)
+    _heartbeat.update(events_in_log=0, ws_clients=0)
+    _heartbeat.start()
+    app.state.heartbeat = _heartbeat
     # FIX 2026-09-29 21:15: use asyncio.Lock (async-safe) instead of threading.Lock.
     # A threading lock inside async code blocks the event loop, stalling all other
     # coroutines (including health checks and other HTTP requests).

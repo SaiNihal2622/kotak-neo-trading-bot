@@ -106,28 +106,22 @@ class BrainBridge:
             return False
 
     def _read_json(self, path: Path, default=None):
-        try:
-            # PHASE 5 FIX 2026-09-29: use utf-8-sig to handle BOM
-            # (PowerShell's Out-File -Encoding utf8 writes a BOM).
-            # The legacy bot writes JSON without BOM, but our bridge is
-            # sometimes called from PowerShell scripts that write with
-            # BOM — without this fix, the file is unreadable.
-            with open(path, "r", encoding="utf-8-sig") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return default
-        except Exception as e:
-            logger.debug(f"read {path}: {e}")
-            return default
+        # PHASE 6 FIX 2026-09-30: delegate to system.common.atomic_io
+        # for the BOM-safe utf-8-sig read. Behavior unchanged from caller
+        # perspective (returns default on any read error).
+        from ..common.atomic_io import read_json
+        return read_json(path, default)
 
     def _write_json(self, path: Path, data: dict) -> None:
-        try:
-            # Use utf-8 (no BOM) for compatibility with the legacy bot's
-            # JSON parser which doesn't strip BOM.
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-        except Exception as e:
-            logger.warning(f"write {path}: {e}")
+        # PHASE 6 FIX 2026-09-30: atomic write via system.common.atomic_io.
+        # Kills the intermittent [Errno 22] Invalid argument we saw when
+        # brain daemon + bridge hit the same file at the same instant on
+        # Windows. Uses os.replace() (Windows MoveFileEx REPLACE_EXISTING)
+        # so readers never see a half-written file.
+        from ..common.atomic_io import write_json_atomic
+        ok = write_json_atomic(path, data)
+        if not ok:
+            logger.warning(f"write {path}: atomic write failed")
 
     def _build_plan_legs(self, action: dict) -> list[dict]:
         """Convert a quant_actions.json action into /api/plan legs."""
@@ -360,6 +354,13 @@ class BrainBridge:
 
     def run_forever(self):
         """Poll loop."""
+        # PHASE 6 FIX 2026-09-30: per-service heartbeat. Catches a stuck
+        # bridge (alive process but stuck on /api/plan POST forever).
+        from ..common.heartbeat import HeartbeatWriter
+        hb = HeartbeatWriter("brain_bridge", interval_sec=10)
+        hb.update(core_reachable=False, submitted=0, rejected=0)
+        hb.start()
+
         logger.info(
             f"Brain bridge started: core={self.core_url} "
             f"quant={self.quant_actions_path} "
@@ -368,10 +369,16 @@ class BrainBridge:
         while True:
             try:
                 n = self.run_once()
+                hb.update(
+                    core_reachable=True,
+                    submitted=self._last_stats.get("submitted", 0),
+                    rejected=self._last_stats.get("rejected", 0),
+                )
                 if n > 0:
                     logger.info(f"[BRIDGE] cycle: submitted={n}, stats={self._last_stats}")
             except Exception as e:
                 logger.warning(f"bridge cycle error: {e}")
+                hb.update(last_error=str(e)[:200])
             time.sleep(self.interval)
 
 

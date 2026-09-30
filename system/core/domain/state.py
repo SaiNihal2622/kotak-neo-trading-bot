@@ -23,6 +23,26 @@ from typing import Optional
 from .events import Event, EventType
 
 
+def _parse_iso(s: str) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp into a datetime. Returns None on failure.
+
+    Accepts the 'Z' suffix for UTC. Naive timestamps are treated as UTC.
+    Used by StateProjection to age out stale PROPOSED orders without
+    having to import dateutil or external libraries.
+    """
+    if not s:
+        return None
+    try:
+        cleaned = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(cleaned)
+        if dt.tzinfo is None:
+            from datetime import timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
 @dataclass
 class Position:
     symbol: str
@@ -63,6 +83,11 @@ class Order:
     filled_at: str = ""
     rejection_reason: str = ""
     plan_id: str = ""
+    # PHASE 6 FIX 2026-09-30: track when the order was proposed so the
+    # StateProjection can drop stale PROPOSED orders (orders whose exec
+    # path never reached ORDER_PLACED/FILLED). This is what stops 634+
+    # ghost "open orders" from accumulating in /api/state.
+    proposed_at: str = ""
 
 
 @dataclass
@@ -142,6 +167,8 @@ class StateProjection:
                 expiry=p.get("expiry", ""),
                 exchange=p.get("exchange", "NFO"),
                 plan_id=event.correlation_id,
+                # PHASE 6 FIX: capture proposal timestamp for stale-filter.
+                proposed_at=event.ts,
             )
 
         elif et == EventType.ORDER_REJECTED:
@@ -378,8 +405,47 @@ class StateProjection:
         pos.pnl = (fill_price - pos.avg_price) * pos.qty if pos.qty else 0.0
 
     def snapshot(self) -> dict:
-        """Serialize current state for API responses."""
-        return {
+        """Serialize current state for API responses.
+
+        PHASE 6 FIX 2026-09-30: filter out "ghost" PROPOSED orders — those whose
+        exec path never produced ORDER_PLACED/FILLED/REJECTED. Without this,
+        634+ legacy orders accumulate from dead brain runs and pollute the
+        dashboard. The event log itself is preserved (event-sourcing purity);
+        only the API output is filtered.
+
+        Age threshold is configurable via KOTAK_STALE_ORDER_SEC env var,
+        default 1 hour. Orders with status=PROPOSED AND proposed_at older
+        than the threshold are excluded from `open_orders`.
+        """
+        import os
+        from datetime import datetime, timezone
+
+        try:
+            stale_sec = int(os.environ.get("KOTAK_STALE_ORDER_SEC", "3600"))
+        except ValueError:
+            stale_sec = 3600
+
+        now = datetime.now(timezone.utc)
+        ghost_count = 0
+
+        def _is_fresh_proposal(o) -> bool:
+            nonlocal ghost_count
+            if o.status != "PROPOSED":
+                return True
+            if not o.proposed_at:
+                return True  # unknown age → keep (newly added fields)
+            ts = _parse_iso(o.proposed_at)
+            if ts is None:
+                return True
+            age = (now - ts).total_seconds()
+            if age > stale_sec:
+                ghost_count += 1
+                return False
+            return True
+
+        live_orders = [o for o in self.orders.values() if _is_fresh_proposal(o)]
+
+        snap = {
             "ts": self.last_brain_decision_ts,
             "account": {
                 "cash": self.account.cash,
@@ -389,10 +455,14 @@ class StateProjection:
                 "pause_reason": self.account.pause_reason,
             },
             "positions": {sym: vars(p) for sym, p in self.positions.items() if p.qty != 0},
-            "open_orders": [vars(o) for o in self.orders.values() if o.status in ("PROPOSED", "PLACED")],
+            "open_orders": [vars(o) for o in live_orders if o.status in ("PROPOSED", "PLACED")],
             "open_plans": [vars(p) for p in self.plans.values() if p.status in ("EXECUTING", "PROPOSED")],
             "recent_rejections": self.rejected_orders[-10:],
             "risk_breaches_today": len(self.risk_breaches),
             "ticks_known": len(self.ticks),
             "ticks": {sym: vars(t) for sym, t in self.ticks.items()},
         }
+        # Surface the ghost count for observability — counts how many PROPOSED
+        # orders we filtered out as stale. Useful for dashboard / debugging.
+        snap["_stale_orders_filtered"] = ghost_count
+        return snap

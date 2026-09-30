@@ -73,13 +73,17 @@ class ExecGateway:
             self.broker = None
         return self.broker
 
-    async def _post_fill(self, order_id: str, fill_price: float, filled_qty: int, status: str = "FILLED"):
+    async def _post_fill(self, order_id: str, fill_price: float, filled_qty: int, status: str = "FILLED") -> bool:
         """Emit an ORDER_FILLED event back to the core.
 
         The order_id must be the client_order_id (or broker_order_id) that
         the core's StateProjection can resolve via _find_order(). Pass
         client_order_id by default — that's what OrderProposal sets in the
         ORDER_PROPOSED event.
+
+        Returns True if the fill was emitted successfully, False otherwise.
+        Callers can use the return value to decide whether to fall back to
+        the legacy broker path (PHASE 6 FIX 2026-09-30).
         """
         try:
             payload = {
@@ -94,12 +98,13 @@ class ExecGateway:
             )
             if r.status_code == 200:
                 logger.info(f"fill emitted for {order_id}: {fill_price}×{filled_qty}")
-            else:
-                logger.warning(
-                    f"fill emission failed for {order_id}: {r.status_code} {r.text[:200]}"
-                )
+                return True
+            logger.warning(
+                f"fill emission failed for {order_id}: {r.status_code} {r.text[:200]}"
+            )
         except Exception as e:
             logger.error(f"fill emission failed for {order_id}: {e}")
+        return False
 
     async def _handle_order_event(self, event: dict):
         """Process an ORDER_PROPOSED event by placing the order."""
@@ -146,29 +151,35 @@ class ExecGateway:
                 expiry=payload.get("expiry", ""),
                 underlying=payload.get("underlying", ""),
             )
+
+            # PHASE 6 FIX 2026-09-30: shared tick lookup for both DRY-RUN
+            # and LIVE. The brain's CAS-long legs come through as MARKET
+            # with price=0 — without this lookup, the paper client would
+            # fall through to its "no chain, no tick" last-resort fill at
+            # Rs.1.00. Instead, ask the core's tick store and use ask/bid.
+            def _resolve_fill_price(o: Order) -> float:
+                if o.price > 0:
+                    return float(o.price)
+                try:
+                    r = self._http.get(f"{self.core_url}/api/state", timeout=3)
+                    state = r.json()
+                    ticks = state.get("ticks", {}) or {}
+                    # Try symbol first, then underlying (CAS uses NIFTY
+                    # cash symbol, but tick may be keyed as "NIFTY" too).
+                    for candidate in (o.symbol, o.underlying):
+                        tick = ticks.get(candidate) or {}
+                        if tick:
+                            if o.side.value == "BUY":
+                                return float(tick.get("ask", 0) or tick.get("ltp", 0) or 0)
+                            else:
+                                return float(tick.get("bid", 0) or tick.get("ltp", 0) or 0)
+                except Exception:
+                    pass
+                return 0.0
+
             if self.dry_run:
                 logger.info(f"[DRY-RUN] would place: {order.symbol} {order.side.value} {order.qty}")
-                # PHASE 5 FIX 2026-09-29: dry-run now emits fills even without
-                # a tick price (uses the order's price, or 0 as last resort).
-                # The whole point of dry-run is to validate the integration
-                # end-to-end without market exposure — skipping fills defeats it.
-                # Try to fetch a tick price for more realistic fills.
-                fill_price = float(order.price) if order.price > 0 else 0.0
-                if fill_price <= 0:
-                    try:
-                        r = self._http.get(f"{self.core_url}/api/state", timeout=3)
-                        state = r.json()
-                        # Look up the tick for this symbol
-                        ticks = state.get("ticks", {})
-                        tick = ticks.get(order.symbol, {})
-                        if tick:
-                            # Use bid for SELL (we sell at bid), ask for BUY
-                            if order.side.value == "BUY":
-                                fill_price = float(tick.get("ask", 0) or tick.get("ltp", 0) or 0)
-                            else:
-                                fill_price = float(tick.get("bid", 0) or tick.get("ltp", 0) or 0)
-                    except Exception:
-                        pass
+                fill_price = _resolve_fill_price(order)
                 if fill_price <= 0:
                     logger.debug(
                         f"DRY-RUN: no tick price for {order.symbol}, emitting fill @ 0.0"
@@ -178,9 +189,36 @@ class ExecGateway:
                 await self._post_fill(client_order_id or eid, fill_price, order.qty)
                 return
 
+            # LIVE path — fetch tick and turn MARKET into LIMIT @ tick.
+            # PHASE 6 FIX 2026-09-30: if we have a tick from the core, post
+            # the fill DIRECTLY to /api/order_fill and skip the legacy broker
+            # entirely. The broker's paper client falls back to Rs.1.00
+            # for cash-underlying symbols it can't price (NIFTY spot, etc.)
+            # because its `self._ticks` only carries options. The core's tick
+            # store (built from market.tick events) has the cash underlyings,
+            # so we trust that as the source of truth.
+            live_price = _resolve_fill_price(order)
+
+            if live_price > 0:
+                # Direct-fill path: we have a tick → emit fill event directly.
+                # The order record is captured via ORDER_PROPOSED + ORDER_FILLED
+                # events in the core's event log.
+                if await self._post_fill(client_order_id or eid, live_price, order.qty):
+                    logger.info(
+                        f"DIRECT-FILL {order.symbol} {order.side.value} "
+                        f"{order.qty} @ {live_price} (from core tick)"
+                    )
+                    return
+                # else: direct fill failed (core down?), fall through to broker path
+                logger.warning(
+                    f"direct fill failed for {order.symbol}; falling back to broker"
+                )
+
+            # Fallback: no tick available, try the legacy broker path
+            # (it's the only way to fill orders for symbols we don't have
+            # a core tick for, e.g. obscure weekly options).
             filled = broker.place_order(order)
             if filled.status.value in ("complete", "filled", "open"):
-                # Use client_order_id so the projection can resolve the order
                 await self._post_fill(
                     client_order_id or eid,
                     float(filled.avg_fill_price or order.price),
@@ -189,7 +227,6 @@ class ExecGateway:
                 logger.info(f"placed {symbol}: status={filled.status.value} fill={filled.avg_fill_price}")
             else:
                 logger.warning(f"order rejected: {filled.rejection_reason}")
-                # Emit a rejection event so the core records it
                 try:
                     self._http.post(
                         f"{self.core_url}/api/order_reject",
@@ -203,6 +240,13 @@ class ExecGateway:
 
     async def run_forever(self):
         """Subscribe to /ws, process order events forever."""
+        # PHASE 6 FIX 2026-09-30: per-service heartbeat. Lets the
+        # 247_watchdog detect a stuck gateway (alive process but no fills).
+        from ..common.heartbeat import HeartbeatWriter
+        hb = HeartbeatWriter("exec_gateway", interval_sec=10)
+        hb.update(ws_connected=False, fills=0, rejects=0, dry_run=self.dry_run)
+        hb.start()
+
         ws_uri = self.core_url.replace("http://", "ws://") + "/ws"
         backoff = 1.0
         while True:
@@ -211,6 +255,7 @@ class ExecGateway:
                 async with websockets.connect(ws_uri) as ws:
                     logger.info(f"connected: {ws_uri}")
                     backoff = 1.0
+                    hb.update(ws_connected=True)
                     # First message is snapshot; drain it
                     await ws.recv()
                     # Then process events
@@ -222,11 +267,17 @@ class ExecGateway:
                                 for event in data.get("data", []):
                                     if event.get("type") == "order.proposed":
                                         await self._handle_order_event(event)
+                                        hb.update(
+                                            ws_connected=True,
+                                            fills=len(self.processed_orders),
+                                        )
                         except Exception as inner:
                             logger.warning(f"inner error: {inner}")
+                            hb.update(last_error=str(inner)[:200])
                             break
             except Exception as e:
                 logger.error(f"WS connection failed: {e}, retrying in {backoff}s")
+                hb.update(ws_connected=False, last_error=str(e)[:200])
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
