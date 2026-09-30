@@ -458,6 +458,31 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         except Exception as e:
             logger.debug(f"lessons injection failed: {e}")
 
+        # PHASE 7 FINAL 2026-10-01: inject Bayesian EV context. This is
+        # the final layer of "data-driven, not template" — give the LLM
+        # the EMPIRICAL expected value per action computed from
+        # yfinance historical NIFTY data + local trade_journal outcomes
+        # (Bayesian-merged). The LLM is told to PREFER the action with
+        # max positive EV, but still has final say.
+        try:
+            from .bayesian_decision import get_decision_context_for_prompt
+            bayes_ctx = get_decision_context_for_prompt()
+            if bayes_ctx:
+                system = system + "\n" + bayes_ctx
+        except Exception as e:
+            logger.debug(f"bayesian context injection failed: {e}")
+
+        # PHASE 7 FINAL 2026-10-01: inject regime-shift context. If the
+        # detector flags a regime change, the LLM must know — historical
+        # priors may not apply in a new regime.
+        try:
+            from .regime_detector import get_regime_shift_context
+            shift_ctx = get_regime_shift_context()
+            if shift_ctx:
+                system = system + "\n" + shift_ctx
+        except Exception as e:
+            logger.debug(f"regime shift context injection failed: {e}")
+
         user = json.dumps(state, indent=2)
         # PHASE 5 FIX 2026-09-30: the credentials.env MINIMAX_LLM_BASE_URL
         # ends with "/chat/completions" (OpenAI-style endpoint). The
@@ -619,7 +644,7 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 and dist_vwap > DIST_VWAP_SWING_LONG  # 0.10
             )
             if swing_long:
-                return {
+                return self._bayesian_suppress({
                     "action": "OPEN",
                     "rationale": (
                         f"SWING long: regime={regime}, ADX={adx:.2f}, "
@@ -635,7 +660,7 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                     "stop": SWING_STOP_PCT,
                     "swing": True,
                     "hold_days": SWING_HOLD_DAYS,
-                }
+                })
             swing_short = (
                 regime in ("trending_down", "downtrend")
                 and adx > ADX_SWING_THRESHOLD
@@ -643,7 +668,7 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 and dist_vwap < DIST_VWAP_SWING_SHORT
             )
             if swing_short:
-                return {
+                return self._bayesian_suppress({
                     "action": "OPEN",
                     "rationale": (
                         f"SWING short: regime={regime}, ADX={adx:.2f}, "
@@ -659,7 +684,7 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                     "stop": SWING_STOP_PCT,
                     "swing": True,
                     "hold_days": SWING_HOLD_DAYS,
-                }
+                })
 
         # Intraday strategies (fall through after swing if swing didn't fire).
         # Trending up + ADX proxy > threshold + momentum positive.
@@ -673,7 +698,7 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
             and dist_vwap > 0.05  # NEW: must be above VWAP
         )
         if long_confirmed:
-            return {
+            return self._bayesian_suppress({
                 "action": "OPEN",
                 "rationale": (
                     f"CAS long (multi-signal): regime={regime}, ADX={adx:.2f}, "
@@ -686,7 +711,7 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 "legs": [{"side": "BUY", "qty": scaled_qty, "order_type": "MARKET", "segment": "nse_cm"}],
                 "target": 1.0,
                 "stop": 0.75,
-            }
+            })
         short_confirmed = (
             regime in ("trending_down", "mild_down", "downtrend")
             and adx > 0.15  # raised from 0.10
@@ -694,7 +719,7 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
             and dist_vwap < -0.05  # NEW: must be below VWAP
         )
         if short_confirmed:
-            return {
+            return self._bayesian_suppress({
                 "action": "OPEN",
                 "rationale": (
                     f"CAS short (multi-signal): regime={regime}, ADX={adx:.2f}, "
@@ -707,7 +732,7 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 "legs": [{"side": "SELL", "qty": scaled_qty, "order_type": "MARKET", "segment": "nse_cm"}],
                 "target": 1.0,
                 "stop": 0.75,
-            }
+            })
 
         # PHASE 5 FIX 2026-09-30: range-bound but with directional bias
         # (session_pct > 0.05 OR < -0.05 but < thresholds above) → mild_up/down.
@@ -721,6 +746,44 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 f"session_pct={session_pct:+.2f}% vwap_dist={dist_vwap:+.2f}%"
             ),
         }
+
+    def _bayesian_suppress(self, decision: dict) -> dict:
+        """Apply Bayesian EV suppression to a rule-based OPEN decision.
+
+        Same logic as the LLM-path guard: if empirical EV is strongly
+        negative with enough samples, convert OPEN → HOLD. Returns the
+        (possibly suppressed) decision.
+        """
+        if decision.get("action") != "OPEN":
+            return decision
+        try:
+            from .bayesian_decision import decide
+            first_leg = (decision.get("legs", [{}]) or [{}])[0]
+            side = (first_leg.get("side") or "BUY").upper()
+            seg = first_leg.get("segment") or "nse_cm"
+            ev_d = decide(segment=seg)
+            if side == "BUY":
+                ev = ev_d.get("ev_long", 0)
+                n_p = ev_d.get("n_prior_long", 0)
+                win = ev_d.get("win_rate_long", 0)
+            else:
+                ev = ev_d.get("ev_short", 0)
+                n_p = ev_d.get("n_prior_short", 0)
+                win = ev_d.get("win_rate_short", 0)
+            if n_p >= 30 and ev < -0.05 and win < 0.45:
+                decision["action"] = "HOLD"
+                decision["rationale"] = (
+                    f"[BAYESIAN SUPPRESSED] EV={ev:+.3f}% win={win*100:.1f}% "
+                    f"n={n_p} — historically losing"
+                )
+                decision["_bayesian_suppressed"] = True
+                logger.warning(
+                    f"[BAYESIAN-GUARD rule-path] suppressed {side}: "
+                    f"EV={ev:+.3f}% win={win*100:.1f}% n={n_p}"
+                )
+        except Exception as e:
+            logger.debug(f"bayesian suppress failed: {e}")
+        return decision
 
     def _write_close_all(self, reason: str = "manual", skip_swing: bool = False) -> bool:
         """PHASE 6 FIX: write CLOSE_ALL action for the bridge to consume.
@@ -902,6 +965,71 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         decision = await self._call_llm(state)
         self.stats["decisions"] += 1
         action = decision.get("action", "HOLD")
+
+        # PHASE 7 FINAL 2026-10-01: Bayesian EV guard. If the LLM wants
+        # to OPEN, we cross-check with empirical EV computed from
+        # yfinance history + local journal. If EV is NEGATIVE and the
+        # sample size is high (≥30 prior samples), we SUPPRESS the
+        # trade — the LLM was about to repeat a known-losing pattern.
+        # The rationale is preserved so the LLM can learn next time.
+        # This is the SAFETY NET below the LLM's intent.
+        if action == "OPEN":
+            try:
+                from .bayesian_decision import decide
+                bayes_seg = "nfo" if any(
+                    leg.get("segment") == "nfo" for leg in decision.get("legs", [])
+                ) else "nse_cm"
+                # Infer side from first leg
+                first_side = (decision.get("legs", [{}])[0] or {}).get("side", "BUY").upper()
+                ev_d = decide(segment=bayes_seg)
+                if first_side == "BUY":
+                    ev = ev_d.get("ev_long", 0)
+                    n_p = ev_d.get("n_prior_long", 0)
+                    win = ev_d.get("win_rate_long", 0)
+                else:
+                    ev = ev_d.get("ev_short", 0)
+                    n_p = ev_d.get("n_prior_short", 0)
+                    win = ev_d.get("win_rate_short", 0)
+                # Only suppress when sample is meaningful AND EV strongly
+                # negative. Allow low-confidence HOLD from data when n<10.
+                if n_p >= 30 and ev < -0.05 and win < 0.45:
+                    original = action
+                    action = "HOLD"
+                    decision["action"] = "HOLD"
+                    decision["rationale"] = (
+                        f"[BAYESIAN SUPPRESSED] EV={ev:+.3f}% win={win*100:.1f}% "
+                        f"n={n_p} — historically losing trade"
+                    )
+                    decision["_bayesian_suppressed_from"] = original
+                    self.stats["bayes_suppressed"] = self.stats.get("bayes_suppressed", 0) + 1
+                    logger.warning(
+                        f"[BAYESIAN-GUARD] suppressed OPEN: side={first_side} "
+                        f"EV={ev:+.3f}% win={win*100:.1f}% n={n_p}"
+                    )
+                else:
+                    # DOWN-SIZE if EV mildly negative but sample is large
+                    if n_p >= 30 and ev < 0 and win < 0.50:
+                        legs = decision.get("legs", [])
+                        if legs:
+                            try:
+                                orig_qty = legs[0].get("qty", 75)
+                                # Half the size — empirical edge weak
+                                legs[0]["qty"] = max(1, orig_qty // 2)
+                                decision["legs"] = legs
+                                decision["rationale"] = (
+                                    decision.get("rationale", "") +
+                                    f" [bayesian downsize: EV={ev:+.3f}%, win={win*100:.1f}%]"
+                                ).strip()
+                                self.stats["bayes_downsized"] = self.stats.get("bayes_downsized", 0) + 1
+                                logger.info(
+                                    f"[BAYESIAN-DOWNSIZE] {first_side} qty {orig_qty} → "
+                                    f"{legs[0]['qty']} (EV={ev:+.3f}% win={win*100:.1f}%)"
+                                )
+                            except Exception:
+                                pass
+                    self.stats["bayes_passed"] = self.stats.get("bayes_passed", 0) + 1
+            except Exception as e:
+                logger.debug(f"bayesian guard failed: {e}")
 
         # PHASE 6 FIX 2026-09-30: counterfactual tracking.
         try:

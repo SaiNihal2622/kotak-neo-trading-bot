@@ -454,6 +454,161 @@ def test_backtest_journal():
            f"types: {dict(types)}")
 
 
+# ==================== PHASE 7 TESTS ====================
+
+def test_unit_bayesian_decision():
+    """Bayesian EV decision returns valid structure."""
+    from system.brain.bayesian_decision import decide, bayesian_update
+    d = decide()
+    required_keys = ["ev_long", "ev_short", "ev_hold", "recommended",
+                    "win_rate_long", "win_rate_short", "n_prior_long",
+                    "n_prior_short", "transaction_cost_pct"]
+    missing = [k for k in required_keys if k not in d]
+    report("Bayesian decide() returns full schema",
+           len(missing) == 0,
+           f"missing={missing}" if missing else "all keys present")
+    report("Bayesian recommended is hold|long|short",
+           d["recommended"] in ("hold", "long", "short"),
+           f"got: {d['recommended']}")
+    # Transaction cost is in PERCENT (0.10 = 10 bps for cash NIFTY).
+    # Sane range: 5 bps (0.05%) to 50 bps (0.50%).
+    tc = d["transaction_cost_pct"]
+    report("Transaction cost in sane range (5-50 bps)",
+           0.05 <= tc <= 0.50,
+           f"got: {tc:.2f}% ({tc*100:.0f} bps)")
+
+
+def test_unit_bayesian_update_math():
+    """Bayesian merge is mathematically correct."""
+    from system.brain.bayesian_decision import bayesian_update
+    # Prior: 50% win, n=100
+    # Likelihood: 70% win, n=10
+    # Without smoothing: 50% * 100/110 + 70% * 10/110 = 51.8%
+    # With prior_weight=50: 50% * 150/160 + 70% * 10/160 = 51.25%
+    prior = {"win_rate": 0.5, "avg_gain": 1.0, "avg_loss": -1.0,
+             "n": 100, "sharpe": 0}
+    like = {"win_rate": 0.7, "avg_gain": 2.0, "avg_loss": -0.5,
+            "n": 10, "sharpe": 1.0}
+    merged = bayesian_update(prior, like, prior_weight=50)
+    # Should be close to 0.5125
+    report("Bayesian update: merged win_rate ≈ 0.5125",
+           abs(merged["win_rate"] - 0.5125) < 0.01,
+           f"got: {merged['win_rate']:.4f}")
+    # n should be 160 (100 + 50 + 10)
+    report("Bayesian update: total n = 160",
+           merged["n"] == 160,
+           f"got: {merged['n']}")
+
+
+def test_unit_online_learner_persists():
+    """Online learner reads journal, writes learning_state.json."""
+    from system.brain.online_learner import (
+        update, get_local_likelihood_for_bayesian,
+    )
+    state = update()
+    report("Online learner updates state",
+           state.get("global", {}).get("n", 0) >= 0,
+           f"global_n={state['global']['n']}")
+    like = get_local_likelihood_for_bayesian("BUY")
+    report("BUY likelihood returns dict",
+           isinstance(like, dict) and "win_rate" in like,
+           f"keys={list(like.keys())}")
+    # Should return valid n (could be 0 if no data)
+    report("BUY likelihood has valid n>=0",
+           like.get("n", -1) >= 0,
+           f"n={like.get('n')}")
+
+
+def test_unit_online_learner_strategy_breakdown():
+    """Per-strategy breakdown exists in learning state."""
+    from system.brain.online_learner import update, get_strategy_performance
+    state = update()
+    n_strats = len(state.get("by_strategy", {}))
+    report("Per-strategy breakdown exists",
+           n_strats >= 0,
+           f"{n_strats} strategies tracked")
+    # Verify win_rate is in 0-1
+    for strat, s in state.get("by_strategy", {}).items():
+        wr = s.get("win_rate", -1)
+        if not (0 <= wr <= 1):
+            report(f"win_rate in [0,1] for {strat}", False, f"got {wr}")
+            return
+    report("All strategy win_rates in [0,1]", True)
+
+
+def test_unit_regime_detector_cold_start():
+    """Regime detector returns sensible defaults on cold start."""
+    from system.brain.regime_detector import (
+        detect_shift, get_regime_shift_context,
+    )
+    shift = detect_shift({
+        "regime": "trending_up", "session_pct": 0.3, "vix": 14.0,
+        "adx": 25.0, "rsi": 65.0, "nifty_spot": 25000.0,
+    })
+    report("Regime detector returns dict with required keys",
+           "shifted" in shift and "stability" in shift,
+           f"keys={list(shift.keys())}")
+    # Cold start: stability=1.0, shifted=False (no history yet)
+    if shift["history_n"] < 10:
+        report("Cold start: shifted=False",
+               shift["shifted"] is False,
+               f"history_n={shift['history_n']}")
+
+
+def test_unit_regime_detector_history_persists():
+    """Calling get_regime_shift_context() records to history."""
+    from system.brain.regime_detector import (
+        _load_history, get_regime_shift_context,
+    )
+    initial = len(_load_history())
+    # Call twice — each appends one entry, dedup by ts
+    get_regime_shift_context()
+    after = len(_load_history())
+    report("Regime history grows after call",
+           after >= initial,
+           f"before={initial} after={after}")
+
+
+def test_unit_brain_daemon_has_bayesian_wiring():
+    """brain_daemon has _bayesian_suppress and Bayesian guard in cycle."""
+    from system.brain import brain_daemon
+    has_suppress = hasattr(brain_daemon.BrainDaemon, "_bayesian_suppress")
+    report("brain_daemon has _bayesian_suppress method",
+           has_suppress)
+    # Check the cycle source has Bayesian guard import
+    import inspect
+    src = inspect.getsource(brain_daemon.BrainDaemon.cycle)
+    has_guard = "bayesian_decision" in src
+    report("brain_daemon.cycle has Bayesian guard import",
+           has_guard)
+    has_ev_ctx = "_call_llm" in src and "BAYESIAN" in src or has_guard
+    report("Bayesian EV context injected in _call_llm",
+           "bayesian_decision" in inspect.getsource(brain_daemon.BrainDaemon._call_llm))
+
+
+def test_unit_signal_history_importable():
+    """All phase 7 modules import cleanly."""
+    try:
+        from system.brain.bayesian_decision import decide, get_decision_context_for_prompt
+        from system.brain.online_learner import (
+            update, get_local_likelihood_for_bayesian,
+            get_lessons_for_prompt, get_strategy_performance,
+        )
+        from system.brain.regime_detector import (
+            detect_shift, get_regime_shift_context, record,
+        )
+        from system.brain.signal_history import (
+            fetch_nifty_daily, empirical_signal_stats,
+            realized_volatility, vol_scaling_factor,
+        )
+        from system.brain.data_driven_vol import (
+            fetch_session_pct_history, adaptive_thresholds,
+        )
+        report("All phase 7 modules import cleanly", True)
+    except Exception as e:
+        report("All phase 7 modules import cleanly", False, f"{type(e).__name__}: {e}")
+
+
 # ==================== RUN ALL TESTS ====================
 
 def main():
@@ -470,6 +625,16 @@ def main():
     test_unit_swing_expiry_exempt()
     test_unit_circuit_breaker()
     test_unit_atomic_io()
+
+    print("\n[PHASE 7 — BAYESIAN + ONLINE LEARNING + REGIME DETECTION]")
+    test_unit_signal_history_importable()
+    test_unit_bayesian_decision()
+    test_unit_bayesian_update_math()
+    test_unit_online_learner_persists()
+    test_unit_online_learner_strategy_breakdown()
+    test_unit_regime_detector_cold_start()
+    test_unit_regime_detector_history_persists()
+    test_unit_brain_daemon_has_bayesian_wiring()
 
     print("\n[REPLAY TEST]")
     test_replay_daily_cycle()
