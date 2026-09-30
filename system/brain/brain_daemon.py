@@ -112,6 +112,68 @@ VIX_MAX_TRADE = 25          # was 22
 SESSION_PCT_ENTRY = 0.10    # min session_pct to trigger entry
 SESSION_PCT_TREND = 0.30    # strong trend threshold
 
+# PHASE 6 FIX 2026-09-30 (swing mode): swing strategy uses STRONGER thresholds
+# because it holds multi-day — wrong call costs more than intraday.
+ADX_SWING_THRESHOLD = 0.25   # |session_pct|*100 must be > 25 (strong trend)
+RSI_SWING_LONG = 60          # RSI must be > 60 (overbought-leaning bullish)
+RSI_SWING_SHORT = 40         # RSI must be < 40 (oversold-leaning bearish)
+DIST_VWAP_SWING_LONG = 0.10  # must be > 0.10% above VWAP
+DIST_VWAP_SWING_SHORT = -0.10
+# Swing hold period (days). Auto-close if held > this many days.
+SWING_HOLD_DAYS = int(os.environ.get("KOTAK_SWING_HOLD_DAYS", "5"))
+SWING_TARGET_PCT = 0.02     # +2% target
+SWING_STOP_PCT = 0.015      # -1.5% stop
+
+# PHASE 6 FIX 2026-09-30 (expiry blackout): how many days before expiry we
+# refuse to open new option positions. Weekly options expire Thursday,
+# so default=2 means we won't open new weekly positions on Wed/Thu.
+# For monthly (last Thu of month), the swing strategy uses cash so no
+# blackout applies; intraday weekly options still respect this.
+EXPIRY_BLACKOUT_DAYS = int(os.environ.get("KOTAK_EXPIRY_BLACKOUT_DAYS", "2"))
+
+# PHASE 6 FIX 2026-09-30 (swing enable): opt-in flag. Set to 1 to enable
+# swing strategies alongside the intraday ones.
+ENABLE_SWING = os.environ.get("KOTAK_ENABLE_SWING", "0") == "1"
+
+
+def _next_weekly_expiry(now: datetime) -> datetime:
+    """Return the next Thursday after `now` at 15:30 IST (option expiry time).
+
+    Thursday is weekday() == 3.
+    """
+    days_ahead = (3 - now.weekday()) % 7
+    if days_ahead == 0:
+        # Today is Thursday — expiry is TODAY (15:30)
+        days_ahead = 0
+    return (now + timedelta(days=days_ahead)).replace(
+        hour=15, minute=30, second=0, microsecond=0
+    )
+
+
+def _days_to_expiry(now: datetime) -> int:
+    """Calendar days until the next weekly expiry (Thursday 15:30).
+
+    Used to enforce KOTAK_EXPIRY_BLACKOUT_DAYS — refuse new option opens
+    within N days of expiry to avoid the accelerating theta decay window.
+    Returns 0 on expiry day, 1 on Wednesday, etc.
+    """
+    expiry = _next_weekly_expiry(now)
+    delta = expiry.date() - now.date()
+    return delta.days
+
+
+def _is_expiry_blackout(now: datetime) -> bool:
+    """PHASE 6 FIX: True if we're within the blackout window before expiry.
+
+    Default: refuse new option opens within 2 days of weekly expiry
+    (Wed + Thu). Monthly options handled separately (swing uses cash,
+    so no blackout applies to swing_cash_long/short).
+
+    For swing: still applies to swing_option_* if any option-based swing
+    is added later. Cash-based swing is exempt (no expiry).
+    """
+    return _days_to_expiry(now) < EXPIRY_BLACKOUT_DAYS
+
 
 def _now_ist() -> datetime:
     return datetime.now(IST)
@@ -301,12 +363,20 @@ Rules (paper mode, relaxed thresholds):
 - Trending up + ADX > 0.10 → nifty_cash_long (NIFTY spot MIS long)
 - Trending down + ADX > 0.10 → nifty_cash_short (NIFTY spot MIS short)
 - After 14:30 IST → never enter new positions
+- PHASE 6 FIX: within 2 days of weekly expiry (Wed/Thu) → HOLD (expiry blackout).
+  Weekly options theta accelerates Wed+Thu — new opens on those days lose.
+- Swing mode (KOTAK_ENABLE_SWING=1): for STRONG trends (ADX>0.25, RSI>60/<40<40),
+  can open nifty_swing_long/short with target=+2%, stop=-1.5%, hold_days=5.
+  Swing bypasses EOD close (cash NIFTY, multi-day hold).
 
 Output JSON (exactly this shape, no other text):
 {"action": "HOLD", "rationale": "<one short sentence>"}
 
 OR for OPEN:
 {"action": "OPEN", "rationale": "<one short sentence>", "strategy": "nifty_cash_long", "underlying": "NIFTY", "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}], "target": 1.0, "stop": 0.75}
+
+OR for SWING (when KOTAK_ENABLE_SWING=1):
+{"action": "OPEN", "rationale": "<swing rationale>", "strategy": "nifty_swing_long", "underlying": "NIFTY", "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}], "target": 0.02, "stop": 0.015, "swing": true, "hold_days": 5}
 
 START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
 
@@ -442,6 +512,25 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         if vix < VIX_MIN_TRADE or vix > VIX_MAX_TRADE:
             return {"action": "HOLD", "rationale": f"VIX {vix:.1f} outside [{VIX_MIN_TRADE}, {VIX_MAX_TRADE}]"}
 
+        # PHASE 6 FIX 2026-09-30 (expiry blackout): refuse new option opens
+        # within EXPIRY_BLACKOUT_DAYS of the next weekly expiry (Thursday).
+        # For weekly options, Wed+Thu are dangerous because:
+        #  - theta accelerates (final day decay is ~50% of week's time value)
+        #  - gamma risk spikes (small moves = big P&L swings)
+        #  - liquidity thins on Thursday afternoon
+        # Swing_cash_* strategies are exempt (no options = no expiry).
+        days_to_exp = _days_to_expiry(_now_ist())
+        if days_to_exp < EXPIRY_BLACKOUT_DAYS:
+            # Allow swing cash entries even during blackout (no expiry)
+            if not ENABLE_SWING:
+                return {
+                    "action": "HOLD",
+                    "rationale": (
+                        f"expiry_blackout: {days_to_exp}d to weekly expiry "
+                        f"(min={EXPIRY_BLACKOUT_DAYS}d)"
+                    ),
+                }
+
         # Trending up + ADX proxy > threshold + momentum positive
         # PHASE 6 FIX 2026-09-30: tightened to require MULTI-SIGNAL confirmation
         # (regime + ADX + RSI + VWAP alignment). Single-signal triggers caused
@@ -486,6 +575,61 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 "target": 1.0,
                 "stop": 0.75,
             }
+
+        # PHASE 6 FIX 2026-09-30 (swing mode): swing strategies.
+        # Only fires when KOTAK_ENABLE_SWING=1. Uses STRONGER thresholds than
+        # intraday (multi-day hold costs more if wrong). Always uses cash
+        # NIFTY (no expiry risk, no theta). Bypasses EOD close via the
+        # `swing: true` flag in the action — EOD close skips swing positions.
+        if ENABLE_SWING:
+            swing_long = (
+                regime in ("trending_up", "uptrend")
+                and adx > ADX_SWING_THRESHOLD  # 0.25
+                and rsi > RSI_SWING_LONG        # 60
+                and dist_vwap > DIST_VWAP_SWING_LONG  # 0.10
+            )
+            if swing_long:
+                return {
+                    "action": "OPEN",
+                    "rationale": (
+                        f"SWING long: regime={regime}, ADX={adx:.2f}, "
+                        f"RSI={rsi:.1f}, dist_vwap={dist_vwap:+.2f}%, "
+                        f"hold={SWING_HOLD_DAYS}d, target={SWING_TARGET_PCT*100:.1f}%, "
+                        f"stop={SWING_STOP_PCT*100:.1f}%"
+                    ),
+                    "strategy": "nifty_swing_long",
+                    "underlying": "NIFTY",
+                    "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
+                    "target": SWING_TARGET_PCT,
+                    "stop": SWING_STOP_PCT,
+                    # PHASE 6 FIX: marker that EOD close should skip this
+                    "swing": True,
+                    "hold_days": SWING_HOLD_DAYS,
+                }
+            swing_short = (
+                regime in ("trending_down", "downtrend")
+                and adx > ADX_SWING_THRESHOLD
+                and rsi < RSI_SWING_SHORT        # 40
+                and dist_vwap < DIST_VWAP_SWING_SHORT  # -0.10
+            )
+            if swing_short:
+                return {
+                    "action": "OPEN",
+                    "rationale": (
+                        f"SWING short: regime={regime}, ADX={adx:.2f}, "
+                        f"RSI={rsi:.1f}, dist_vwap={dist_vwap:+.2f}%, "
+                        f"hold={SWING_HOLD_DAYS}d, target={SWING_TARGET_PCT*100:.1f}%, "
+                        f"stop={SWING_STOP_PCT*100:.1f}%"
+                    ),
+                    "strategy": "nifty_swing_short",
+                    "underlying": "NIFTY",
+                    "legs": [{"side": "SELL", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
+                    "target": SWING_TARGET_PCT,
+                    "stop": SWING_STOP_PCT,
+                    "swing": True,
+                    "hold_days": SWING_HOLD_DAYS,
+                }
+
         # PHASE 5 FIX 2026-09-30: range-bound but with directional bias
         # (session_pct > 0.05 OR < -0.05 but < thresholds above) → mild_up/down.
         # If we get here, regime is "range_bound" but session_pct was 0.
@@ -499,11 +643,15 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
             ),
         }
 
-    def _write_close_all(self, reason: str = "manual") -> bool:
+    def _write_close_all(self, reason: str = "manual", skip_swing: bool = False) -> bool:
         """PHASE 6 FIX: write CLOSE_ALL action for the bridge to consume.
 
         The bridge polls quant_actions.json. We write a CLOSE_ALL entry
         (action=CLOSE_ALL, no legs). The bridge calls /api/close_all.
+
+        PHASE 6 FIX 2026-09-30 (swing mode): skip_swing=True excludes swing
+        positions from the close. Default skip_swing=False (close everything
+        for the default intraday-only behavior).
 
         Idempotent: if a close_all was written within the last 5 minutes,
         we skip (avoids duplicate calls).
@@ -530,13 +678,14 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 "strategy": "force_square",
                 "underlying": "ALL",
                 "rationale": reason,
+                "skip_swing": skip_swing,  # PHASE 6 FIX
                 "brain_source": "system.brain.brain_daemon",
             })
             existing["actions"] = existing["actions"][-20:]
             from ..common.atomic_io import write_json_atomic
             ok = write_json_atomic(self.quant_actions_path, existing)
             if ok:
-                logger.warning(f"[CLOSE_ALL] written: {reason}")
+                logger.warning(f"[CLOSE_ALL] written: {reason} (skip_swing={skip_swing})")
             return ok
         except Exception as e:
             logger.error(f"write close_all failed: {e}")
@@ -627,8 +776,22 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
 
         # PHASE 6 FIX 2026-09-30: EOD force-square at 15:15-15:25 IST.
         # Close ALL open positions to prevent overnight gap risk.
+        # Skip SWING positions (they intentionally hold overnight).
         if _is_eod_close_time(now):
-            self._write_close_all(reason="eod_force_square")
+            skip_swing = False
+            if ENABLE_SWING:
+                try:
+                    from .swing_tracker import get_open_swings
+                    open_swings = get_open_swings()
+                    if open_swings:
+                        skip_swing = True
+                        logger.info(
+                            f"[EOD-CLOSE] skipping {len(open_swings)} swing position(s) "
+                            f"(intraday-only mode disabled for swing)"
+                        )
+                except Exception:
+                    pass
+            self._write_close_all(reason="eod_force_square", skip_swing=skip_swing)
             self.stats["close_all"] = self.stats.get("close_all", 0) + 1
             return {"action": "CLOSE_ALL", "rationale": "eod_force_square 15:15 IST"}
 
@@ -694,11 +857,69 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         except Exception as e:
             logger.debug(f"counterfactual record failed: {e}")
 
+        # PHASE 6 FIX 2026-09-30 (swing mode): track swing positions + check exits
+        try:
+            if ENABLE_SWING:
+                from .swing_tracker import (
+                    add_swing_position,
+                    update_swing_prices,
+                    check_swing_exits,
+                    close_swing,
+                )
+                from ..common.atomic_io import read_json, write_json_atomic
+                # Update prices from core's tick store
+                ltp_map = {"NIFTY": float(state.get("nifty_spot", 0) or 0)}
+                update_swing_prices(ltp_map)
+                # Check if any open swing should be closed
+                to_close = check_swing_exits()
+                if to_close:
+                    swing_close_action = {
+                        "ts": _now_ist().isoformat(),
+                        "action": "SWING_CLOSE",
+                        "strategy": to_close[0].get("strategy", "swing"),
+                        "underlying": to_close[0].get("underlying", "NIFTY"),
+                        "exit_reason": to_close[0].get("exit_reason", ""),
+                        "rationale": f"swing exit: {to_close[0].get('exit_reason', '')}",
+                        "brain_source": "system.brain.brain_daemon",
+                    }
+                    existing_qa = read_json(self.quant_actions_path, default={"actions": []})
+                    if not isinstance(existing_qa, dict):
+                        existing_qa = {"actions": []}
+                    existing_qa.setdefault("actions", []).append(swing_close_action)
+                    existing_qa["actions"] = existing_qa["actions"][-20:]
+                    write_json_atomic(self.quant_actions_path, existing_qa)
+                    logger.warning(f"[SWING-EXIT] {to_close[0].get('exit_reason')}")
+                    return {"action": "SWING_CLOSE", "rationale": str(to_close[0].get('exit_reason', ''))}
+        except Exception as e:
+            logger.debug(f"swing tracker failed: {e}")
+
         if action == "OPEN":
             if self._write_quant_action(decision, state):
                 self.stats["open"] += 1
+                # PHASE 6 FIX: if swing position opened, register it
+                try:
+                    if ENABLE_SWING and decision.get("swing"):
+                        from .swing_tracker import add_swing_position
+                        nifty_spot = float(state.get("nifty_spot", 0) or 0)
+                        if nifty_spot > 0:
+                            leg = decision.get("legs", [{}])[0]
+                            add_swing_position(
+                                strategy=decision.get("strategy", ""),
+                                underlying="NIFTY",
+                                side=leg.get("side", "BUY"),
+                                qty=leg.get("qty", 75),
+                                entry_price=nifty_spot,
+                                target_pct=float(decision.get("target", 0.02)),
+                                stop_pct=float(decision.get("stop", 0.015)),
+                                hold_days=int(decision.get("hold_days", 5)),
+                            )
+                            logger.warning(f"[SWING-OPEN] {decision.get('strategy')} @ {nifty_spot}")
+                except Exception as e:
+                    logger.debug(f"swing registration failed: {e}")
             else:
                 self.stats["errors"] += 1
+        elif action == "SWING_CLOSE":
+            self.stats["swing_close"] = self.stats.get("swing_close", 0) + 1
         else:
             self.stats["hold"] += 1
 

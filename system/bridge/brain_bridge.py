@@ -277,7 +277,8 @@ class BrainBridge:
             try:
                 # PHASE 6 FIX 2026-09-30: handle CLOSE_ALL specially.
                 # It calls /api/close_all instead of /api/plan.
-                if str(action.get("action", "")).upper() == "CLOSE_ALL":
+                action_kind = str(action.get("action", "")).upper()
+                if action_kind == "CLOSE_ALL":
                     if action.get("bridge_consumed"):
                         continue
                     result = self._submit_close_all(action)
@@ -288,6 +289,24 @@ class BrainBridge:
                         submitted += 1
                         self._last_stats["submitted"] += 1
                         logger.warning(f"[BRIDGE] CLOSE_ALL executed: closed {result.get('closed', 0)} positions")
+                    continue
+
+                # PHASE 6 FIX 2026-09-30 (swing mode): SWING_CLOSE = close swing
+                # position. Currently reuses close_all; in future could filter by
+                # underlying. For now swing holds at most one position at a time
+                # (the strategy itself, not other underlyings), so /api/close_all
+                # is fine.
+                if action_kind == "SWING_CLOSE":
+                    if action.get("bridge_consumed"):
+                        continue
+                    result = self._submit_close_all(action)
+                    if isinstance(doc, dict) and "actions" in doc and i < len(doc["actions"]):
+                        doc["actions"][i]["bridge_consumed"] = True
+                        doc["actions"][i]["bridge_result"] = result
+                    if result.get("ok"):
+                        submitted += 1
+                        self._last_stats["submitted"] += 1
+                        logger.warning(f"[BRIDGE] SWING_CLOSE executed: {action.get('exit_reason', 'manual')}")
                     continue
 
                 # PHASE 5 FIX 2026-09-29: use a more robust dedup key.
