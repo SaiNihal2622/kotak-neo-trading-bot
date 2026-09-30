@@ -144,11 +144,24 @@ def _is_eod_close_time(d: datetime) -> bool:
     At 15:15 we close ALL open positions for the day. This prevents
     overnight gap risk and ensures the day's P&L is realized before
     market close at 15:30.
+
+    CONFIGURABLE via KOTAK_EOD_CLOSE_TIME env var (HH:MM). Default = 15:15.
+    Set to "15:30" to disable EOD close (allow overnight — for swing
+    strategies only). For weekly-options intraday, keep the default.
     """
+    # Allow disable via env var (overnight mode for swing strategies)
+    eod_time_str = os.environ.get("KOTAK_EOD_CLOSE_TIME", "15:15")
+    if eod_time_str.lower() in ("off", "disabled", "none", "no"):
+        return False
     if not _is_weekday(d):
         return False
+    try:
+        hh, mm = eod_time_str.split(":")
+        eod_hm = int(hh) * 60 + int(mm)
+    except Exception:
+        eod_hm = 15 * 60 + 15  # default
     hm = d.hour * 60 + d.minute
-    return (15 * 60 + 15) <= hm < (15 * 60 + 25)
+    return eod_hm <= hm < eod_hm + 10  # 10-min window
 
 
 # PHASE 6 FIX 2026-09-30: tracks the last reset date so we only

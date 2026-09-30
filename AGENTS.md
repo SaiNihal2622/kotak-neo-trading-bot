@@ -1828,3 +1828,72 @@ After Phase 6 (this commit):
 - Atomic JSON writes fix the race.
 - NSSM install script ready (admin install needed for full 24/7).
 
+
+## EOD close at 15:15 — why intraday is the right default
+
+This system force-closes ALL positions at 15:15-15:25 IST daily.
+Decided 2026-09-30; the reasoning and how to override.
+
+### Why intraday-only is the right default for THIS system
+
+1. **Weekly options have accelerating theta decay** — last 1h of trading
+   is ~50% of the day's time-value loss. Holding overnight NIFTY weekly
+   options = guaranteed loss to theta even if direction is right.
+
+2. **Overnight gap risk in India is material** — RBI policy, US Fed,
+   China data can move NIFTY -2% at 9:00 IST open before any signal
+   fires. The 
+ifty_cash_long strategy (CAS) is cash, not options, but
+   the gap-down risk still applies.
+
+3. **Live-go readiness tracker wants clean daily P&L** — the 10-consecutive-
+   green-days check needs each day's P&L isolated. Multi-day carry
+   makes green-streak detection noisy.
+
+4. **Quant-fund convention** — most NSE F&O quant shops run intraday-only
+   on weekly options for the above reasons.
+
+5. **MIS → NRML conversion penalty** — if you don't square off by 15:30,
+   NSE auto-converts your positions to delivery with extra margin
+   requirements. Trading without intending delivery = a mistake.
+
+### When overnight WOULD be better (not currently supported)
+
+- Swing strategies with multi-day holding period
+- Cash equity with strong directional thesis (the system runs CAS weekly, not swing)
+- Strategies that explicitly capture overnight gap moves
+
+### How to override (per-strategy)
+
+The brain daemon checks KOTAK_EOD_CLOSE_TIME env var:
+- Default 15:15 → close at 15:15 (current behavior)
+- Set to 15:30 → close at market close (last possible square-off)
+- Set to off / disabled / 
+one → **disable EOD close entirely** (overnight mode)
+
+For mixed strategies, the override is all-or-none. Per-strategy
+overnight would require separate brain instances or a strategy-aware
+EOD scheduler. Not implemented because no overnight strategy is currently
+trading.
+
+### Verifying EOD close works
+
+Run scripts/reset_state.py --dry-run first (counts only), then run
+data_cache/_eod_test.py (manual smoke test). The smoke test:
+1. Reads current positions from /api/state
+2. Calls BrainDaemon._write_close_all() to write CLOSE_ALL to
+   data_cache/quant_actions.json
+3. Waits 8s for bridge to consume
+4. Re-reads positions — should be 0
+
+Verified working on 2026-09-30 21:00 IST — positions 1 → 0 after close.
+
+### Apply when
+
+- Adding a swing strategy: set KOTAK_EOD_CLOSE_TIME=disabled for that
+  brain instance (run a separate daemon with different env)
+- Live-trading prep: keep KOTAK_EOD_CLOSE_TIME=15:15 (matches industry
+  convention for NSE F&O)
+- Backtesting multi-day strategies: disable EOD close in the backtest
+  harness (different from live; see scripts/backtest_30d.py)
+
