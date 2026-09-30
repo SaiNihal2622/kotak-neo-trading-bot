@@ -1702,3 +1702,129 @@ Type: lesson
   - Killing a parent process that has children on Windows: ALWAYS
     verify the children are disposable first. \	askkill /F\ on a
     parent often cascades to children via job objects.
+
+## PHASE 6 (2026-09-30): Non-glued 24/7 + learning system
+
+This phase shipped a 24/7 self-healing, self-improving paper trading system.
+
+**The 4 subsystems are now NSSM-installable + heartbeat-monitored:**
+
+`
+KotakCoreAPI      --port 8510     (state projection + REST + WS)
+KotakBrainBridge  --interval 5    (polls quant_actions.json → /api/plan)
+KotakBrainDaemon  --interval 120  (LLM decision every 2 min)
+KotakExecGateway  --live          (proposed → filled via /api/order_fill)
+`
+
+Each writes data_cache/heartbeat_<name>.json every 10s. scripts/watchdog_247.py
+checks heartbeats every 30s; restarts any service whose heartbeat is >90s old.
+
+**Key files added:**
+
+- system/common/atomic_io.py — atomic JSON writes (write_json_atomic),
+  kills the [Errno 22] Invalid argument race that hit when brain daemon +
+  bridge both wrote quant_actions.json at the same instant.
+- system/common/heartbeat.py — HeartbeatWriter (per-service background
+  thread) + HeartbeatWatchdog (checks + restarts via 
+ssm restart <svc>
+  with Start-Process fallback).
+- system/brain/counterfactual.py — records every brain decision vs the
+  counterfactual ("would have OPENed if signal was strong enough") to
+  data_cache/counterfactual_log.jsonl. Aggregates to
+  data_cache/missed_profit_summary.json. get_lessons_for_prompt()
+  returns a <200-char block the brain injects into its LLM prompt so the
+  next decision learns from prior misses.
+- scripts/watchdog_247.py — single-cycle or --loop 30 watchdog.
+  Logs to data_cache/watchdog_log.jsonl. Sends Telegram on restart
+  (when KOTAK_WATCHDOG_TG=1).
+- scripts/cleanup_stuck_orders.py — rejects 634+ ghost PROPOSED orders
+  older than 1 hour. Safe to re-run.
+- scripts/daily_missed_profit.py — runs at 15:30 IST (cron-driven).
+  Aggregates today's counterfactual → Telegram summary with actual P&L
+  vs missed P&L + lessons.
+- scripts/install_247_services.py — registers the 4 NSSM services.
+  Idempotent. Logs to Logs/<svc>.{out,err}.log. Sets
+  AppExit=Default Restart so NSSM auto-restarts on process exit.
+
+**Key file modifications:**
+
+- system/core/domain/state.py — StateProjection.snapshot() now drops
+  PROPOSED orders older than KOTAK_STALE_ORDER_SEC (default 3600s = 1h).
+  Filter does NOT delete from event log (event-sourcing purity); only the
+  API output is filtered. The new proposed_at field on Order records
+  the proposal timestamp. Returns _stale_orders_filtered count for
+  observability.
+- system/exec/exec_gateway.py — in LIVE mode, fetches tick from
+  /api/state, and if a tick exists for the symbol, posts the fill
+  DIRECTLY to /api/order_fill (skipping the legacy broker's
+  _force_fill_market_like Rs.1.00 fallback for cash underlyings like
+  NIFTY spot). Falls back to broker path if no tick.
+- system/bridge/brain_bridge.py + system/brain/brain_daemon.py — use
+  system.common.atomic_io.write_json_atomic for quant_actions.json
+  writes. Kills the intermittent [Errno 22].
+- All 4 services instantiate HeartbeatWriter(<service_name>) and call
+  hb.update(...) with their own counters (cycles, opens, fills, etc.).
+- system/brain/brain_daemon.py::cycle() records a counterfactual entry
+  every cycle. _call_llm() injects get_lessons_for_prompt() into the
+  system prompt before sending.
+
+**Operational model after Phase 6:**
+
+- Services auto-restart on crash via NSSM (built-in).
+- Stuck services (alive but not progressing) get restarted by
+  watchdog_247.py when heartbeat is stale (>90s).
+- kotak-bot-watchdog cron (every 5 min Mon-Sat) verifies
+  NSSM-managed services and re-restarts dead ones.
+- kotak-self-monitor cron (every 15 min) runs the system audit and
+  sends Telegram on anomalies (with 30-min cooldown).
+- Brain records every decision + counterfactual; lessons injected into
+  next prompt.
+- Daily missed-profit summary at 15:30 IST.
+- Live-go readiness tracked daily by existing scripts/live_go_tracker.py
+  (5 criteria; alerts on first transition to ready).
+
+**Apply when:**
+
+- Adding a new subsystem — register it in install_247_services.py +
+  add to scripts/watchdog_247.py::SERVICE_CONFIGS + add heartbeat to
+  the service's un_forever().
+- Brain keeps HOLDing on weak signals — check
+  data_cache/counterfactual_log.jsonl for the last few HOLDs to see if
+  the heuristic missed something the LLM should consider.
+- "Real fills not happening" — check heartbeat_exec_gateway.json's
+  ills counter. If zero, the WS isn't subscribed (no market data) or the
+  core API is down. Verify with curl http://127.0.0.1:8510/healthz.
+- "Service stuck" — watchdog_247.py should catch it within 90s and
+  restart. If it doesn't, check data_cache/watchdog_log.jsonl.
+
+## Known-issues register (durable findings) — additions this phase
+
+### 2026-09-30: Phase 6 — Non-glued 24/7 + learning system
+
+- Commit: a95accc (this work).
+- The data_cache/_stale_order_proposed.json / similar leftovers are
+  NOT problems — they're filtered by StateProjection (cleaned view),
+  preserved in event log (audit trail). Never delete from
+  data_cache/state.db (event-sourcing purity).
+- The pre-commit hook scripts/lint_no_shadowing.py emits
+  SyntaxWarning: invalid escape sequence for \S, \T etc. in
+  docstrings (treated as regex meta but aren't). This is harmless but
+  makes pre-commit hook output look scary. Safe to ignore — the
+  actual lint runs PASS.
+
+## Pre-Phase 6 context
+
+The system before Phase 6:
+- LLM brain daemon only made 1-3 decisions per session (auth issues).
+- DRY-RUN mode meant no real fills — positions were projections only.
+- 634+ ghost PROPOSED orders polluted /api/state.
+- All Mavis crons paused → no 24/7 auto-restart.
+- Bridge wrote with non-atomic open(path, 'w') → [Errno 22] race.
+
+After Phase 6 (this commit):
+- 4 services running with heartbeats, real fills at live prices.
+- 638 ghost orders filtered from API view (event log preserved).
+- 2 critical crons enabled (watchdog + self-monitor).
+- Atomic JSON writes fix the race.
+- NSSM install script ready (admin install needed for full 24/7).
+
