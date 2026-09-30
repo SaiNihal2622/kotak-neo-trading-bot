@@ -483,6 +483,26 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         except Exception as e:
             logger.debug(f"regime shift context injection failed: {e}")
 
+        # PHASE 8 (2026-10-01): inject data-driven strategy selector + Kelly
+        # sizer + adaptive exits. The LLM sees ALL of these and can pick,
+        # override, or augment. The selector/sizer/exits provide the
+        # DATA — the LLM provides the REASONING.
+        try:
+            from .strategy_selector import get_selection_context_for_prompt
+            from .adaptive_sizer import get_sizer_context_for_prompt
+            from .adaptive_exits import get_exits_context_for_prompt
+            sel_ctx = get_selection_context_for_prompt(state)
+            sz_ctx = get_sizer_context_for_prompt(state)
+            ex_ctx = get_exits_context_for_prompt(state)
+            if sel_ctx:
+                system = system + "\n" + sel_ctx
+            if sz_ctx:
+                system = system + "\n" + sz_ctx
+            if ex_ctx:
+                system = system + "\n" + ex_ctx
+        except Exception as e:
+            logger.debug(f"phase 8 context injection failed: {e}")
+
         user = json.dumps(state, indent=2)
         # PHASE 5 FIX 2026-09-30: the credentials.env MINIMAX_LLM_BASE_URL
         # ends with "/chat/completions" (OpenAI-style endpoint). The
@@ -567,10 +587,12 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                         decision = json.loads(stripped[start:end])
                     except Exception as e:
                         logger.warning(f"LLM JSON parse failed: {e}; text={stripped[:300]}")
-                        return self._rule_based_decision(state)
+                        # PHASE 8: data-driven fallback before hard rules
+                        return self._data_driven_decision(state)
             if decision is None or not isinstance(decision, dict):
                 logger.warning(f"LLM returned no parseable JSON: {text[:200]}")
-                return self._rule_based_decision(state)
+                # PHASE 8: data-driven fallback before hard rules
+                return self._data_driven_decision(state)
             # PHASE 5 FIX 2026-09-30: accept both 'reason' and 'rationale' as
             # the rationale field. The LLM often uses 'reason'; our internal
             # schema uses 'rationale'. Normalize so downstream is consistent.
@@ -579,7 +601,8 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
             return decision
         except Exception as e:
             logger.warning(f"LLM call failed: {e}")
-            return self._rule_based_decision(state)
+            # PHASE 8: try data-driven first, then rule-based as deepest fallback
+            return self._data_driven_decision(state)
 
     def _rule_based_decision(self, state: dict) -> dict:
         """Fallback when no LLM available. Uses mechanical regime strategy.
@@ -746,6 +769,110 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 f"session_pct={session_pct:+.2f}% vwap_dist={dist_vwap:+.2f}%"
             ),
         }
+
+    def _data_driven_decision(self, state: dict) -> dict:
+        """PHASE 8 (2026-10-01): PRIMARY decision path. Uses data-driven
+        strategy selector + Kelly sizer + adaptive exits.
+
+        This is the brain's "intelligent system" — no hardcoded strategy
+        rules, no template thresholds. Strategy selection comes from
+        historical performance per (regime, strategy), position size from
+        Kelly criterion, and exit levels from empirical gain/loss.
+
+        Falls back to _rule_based_decision if modules unavailable.
+        """
+        regime = state.get("regime", "unknown")
+        vix = state.get("vix", 0)
+        session_pct = state.get("session_pct", 0)
+        dist_vwap = state.get("dist_from_vwap", 0)
+        adx = state.get("adx", 0)
+        rsi = state.get("rsi", 50)
+        cash = state.get("cash", 100_000.0)
+        realized_vol_pct = state.get("realized_vol_pct", 10.0) or 10.0
+
+        # Pre-trade safety gates (same as rule-based)
+        if _is_force_square_time(_now_ist()):
+            return {"action": "HOLD", "rationale": "after force-square time"}
+        if state.get("open_positions"):
+            return {"action": "HOLD", "rationale": "have open position"}
+        if vix < VIX_MIN_TRADE or vix > VIX_MAX_TRADE:
+            return {"action": "HOLD", "rationale": f"VIX {vix:.1f} outside [{VIX_MIN_TRADE}, {VIX_MAX_TRADE}]"}
+
+        days_to_exp = _days_to_expiry(_now_ist())
+        if days_to_exp < EXPIRY_BLACKOUT_DAYS and not ENABLE_SWING:
+            return {
+                "action": "HOLD",
+                "rationale": (f"expiry_blackout: {days_to_exp}d to weekly expiry "
+                             f"(min={EXPIRY_BLACKOUT_DAYS}d)"),
+            }
+
+        # PHASE 8: Use strategy_selector to pick the best strategy from data
+        try:
+            from .strategy_selector import select_strategy
+            from .adaptive_sizer import size_for_strategy
+            from .adaptive_exits import exits_for_strategy
+
+            sel = select_strategy(state)
+            if sel["recommended"] == "hold":
+                # Data-driven HOLD — no edge in current regime
+                return {
+                    "action": "HOLD",
+                    "rationale": sel["reason"],
+                    "selector": sel,
+                }
+
+            # We have a recommended strategy. Compute Kelly size + adaptive exits.
+            strategy = sel["recommended"]
+            is_swing = "swing" in strategy
+            sizing = size_for_strategy(
+                regime, strategy,
+                realized_vol_pct=realized_vol_pct, cash=cash,
+            )
+            exits = exits_for_strategy(
+                regime, strategy,
+                realized_vol_pct=realized_vol_pct, is_swing=is_swing,
+            )
+
+            # If Kelly says 0 lots, no edge
+            if sizing["lots"] == 0:
+                return {
+                    "action": "HOLD",
+                    "rationale": (f"data-driven: Kelly=0 for {strategy} "
+                                  f"(win={sizing['win_rate']*100:.1f}%, "
+                                  f"full_kelly={sizing['full_kelly']:.3f})"),
+                    "selector": sel, "sizing": sizing, "exits": exits,
+                }
+
+            # Build the OPEN decision
+            leg = {
+                "side": sel["side"],
+                "qty": sizing["qty"],
+                "order_type": "MARKET",
+                "segment": sel["segment"],
+            }
+            decision = {
+                "action": "OPEN",
+                "rationale": sel["reason"],
+                "strategy": strategy,
+                "underlying": "NIFTY",
+                "legs": [leg],
+                "target": exits["target_pct"] / 100,
+                "stop": exits["stop_pct"] / 100,
+                "_selector_score": sel["score"],
+                "_kelly_lots": sizing["lots"],
+                "_exit_source": exits["source"],
+            }
+            if is_swing:
+                decision["swing"] = True
+                decision["hold_days"] = SWING_HOLD_DAYS
+
+            # Apply Bayesian guard on top
+            decision = self._bayesian_suppress(decision)
+            return decision
+
+        except Exception as e:
+            logger.warning(f"data-driven decision failed: {e}; falling back to rules")
+            return self._rule_based_decision(state)
 
     def _bayesian_suppress(self, decision: dict) -> dict:
         """Apply Bayesian EV suppression to a rule-based OPEN decision.

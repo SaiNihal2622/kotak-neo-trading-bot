@@ -609,6 +609,151 @@ def test_unit_signal_history_importable():
         report("All phase 7 modules import cleanly", False, f"{type(e).__name__}: {e}")
 
 
+# ==================== PHASE 8 TESTS — DATA-DRIVEN BRAIN ====================
+
+def test_unit_strategy_selector_importable():
+    """Strategy selector module imports + has required functions."""
+    from system.brain.strategy_selector import (
+        select_strategy, get_selection_context_for_prompt,
+    )
+    report("strategy_selector module imports", True)
+
+
+def test_unit_strategy_selector_returns_valid_structure():
+    """select_strategy returns dict with recommended + candidates."""
+    from system.brain.strategy_selector import select_strategy
+    sel = select_strategy({"regime": "trending_up", "adx": 30, "rsi": 65})
+    required = ["recommended", "reason", "regime", "candidates"]
+    missing = [k for k in required if k not in sel]
+    report("select_strategy returns full schema",
+           len(missing) == 0,
+           f"missing={missing}" if missing else "")
+    report("recommended is hold|strategy name",
+           isinstance(sel["recommended"], str) and len(sel["recommended"]) > 0)
+    report("candidates is a list",
+           isinstance(sel["candidates"], list),
+           f"got {type(sel['candidates']).__name__}")
+
+
+def test_unit_strategy_selector_regime_aware():
+    """Different regimes produce different candidate sets."""
+    from system.brain.strategy_selector import (
+        select_strategy, CANDIDATES_BY_REGIME,
+    )
+    sel_up = select_strategy({"regime": "trending_up"})
+    sel_down = select_strategy({"regime": "trending_down"})
+    sel_range = select_strategy({"regime": "range_bound"})
+    up_strats = [c["strategy"] for c in sel_up["candidates"]]
+    down_strats = [c["strategy"] for c in sel_down["candidates"]]
+    range_strats = [c["strategy"] for c in sel_range["candidates"]]
+    report("trending_up candidates are bullish",
+           any("long" in s or "call" in s for s in up_strats),
+           f"got {up_strats}")
+    report("trending_down candidates are bearish",
+           any("short" in s or "put" in s for s in down_strats),
+           f"got {down_strats}")
+    report("range_bound candidates are vol-sellers",
+           any("condor" in s or "straddle" in s for s in range_strats),
+           f"got {range_strats}")
+
+
+def test_unit_kelly_math():
+    """Kelly formula correctness."""
+    from system.brain.adaptive_sizer import kelly_fraction, fractional_kelly
+    # 60% win, 1.5% gain, 1.0% loss → b=1.5, f=(0.6*1.5-0.4)/1.5=0.333
+    k = kelly_fraction(0.60, 1.5, 1.0)
+    report("Kelly(60%/1.5/1.0) ≈ 0.333",
+           abs(k - 0.333) < 0.01,
+           f"got {k:.3f}")
+    # No edge
+    k_no = kelly_fraction(0.40, 1.0, 1.0)
+    report("Kelly(40%/1/1) = 0 (no edge)",
+           k_no == 0,
+           f"got {k_no:.3f}")
+    # Fractional
+    fk = fractional_kelly(0.60, 1.5, 1.0, fraction=0.25)
+    report("Fractional Kelly = full * 0.25",
+           abs(fk - 0.0833) < 0.01,
+           f"got {fk:.3f}")
+
+
+def test_unit_position_sizing_caps():
+    """Position sizing respects caps and floors."""
+    from system.brain.adaptive_sizer import compute_position_size
+    # Strong edge but small capital → many lots but capped
+    s1 = compute_position_size(win_rate=0.70, avg_win_pct=2.0, avg_loss_pct=0.5,
+                               realized_vol_pct=10.0, cash=100_000.0, max_lots=10)
+    report("Strong edge: lots > 0",
+           s1["lots"] >= 1,
+           f"got {s1['lots']}")
+    report("Strong edge: lots <= max_lots",
+           s1["lots"] <= 10,
+           f"got {s1['lots']}")
+    # No edge
+    s2 = compute_position_size(win_rate=0.40, avg_win_pct=1.0, avg_loss_pct=1.0,
+                               realized_vol_pct=10.0, cash=100_000.0)
+    report("No edge: lots = 0",
+           s2["lots"] == 0,
+           f"got {s2['lots']}")
+
+
+def test_unit_adaptive_exits_math():
+    """Adaptive exits derive target/stop from empirical gain/loss."""
+    from system.brain.adaptive_exits import compute_exits
+    # avg_gain=1500, avg_loss=1000, vol=10% → target ≈ 0.96%, stop ≈ 1.10%
+    ex = compute_exits(avg_gain_rupees=1500, avg_loss_rupees=1000,
+                       realized_vol_pct=10.0)
+    report("Exits: target in 0.5-1.5%",
+           0.5 <= ex["target_pct"] <= 1.5,
+           f"got {ex['target_pct']:.2f}%")
+    report("Exits: stop in 0.5-1.5%",
+           0.5 <= ex["stop_pct"] <= 1.5,
+           f"got {ex['stop_pct']:.2f}%")
+    # Defaults when no data
+    ex_d = compute_exits(avg_gain_rupees=0, avg_loss_rupees=0)
+    report("Defaults: target=0.8% (intraday)",
+           ex_d["target_pct"] == 0.8,
+           f"got {ex_d['target_pct']:.2f}%")
+    # Swing has different defaults
+    ex_s = compute_exits(avg_gain_rupees=0, avg_loss_rupees=0, is_swing=True)
+    report("Swing defaults: target=2.0%",
+           ex_s["target_pct"] == 2.0,
+           f"got {ex_s['target_pct']:.2f}%")
+
+
+def test_unit_online_learner_per_regime_strategy():
+    """Online learner has (regime, strategy) breakdown."""
+    from system.brain.online_learner import (
+        update, get_regime_strategy_stats,
+    )
+    state = update()
+    has_breakdown = "by_regime_strategy" in state
+    report("Learning state has by_regime_strategy",
+           has_breakdown,
+           f"keys: {list(state.keys())}")
+    # Lookup function works
+    s = get_regime_strategy_stats("unknown", "QUANT-bear_put_v")
+    report("Lookup returns dict with win_rate",
+           "win_rate" in s,
+           f"got {s}")
+
+
+def test_unit_brain_daemon_has_data_driven_decision():
+    """brain_daemon has _data_driven_decision method wired."""
+    from system.brain import brain_daemon
+    has_method = hasattr(brain_daemon.BrainDaemon, "_data_driven_decision")
+    report("brain_daemon has _data_driven_decision", has_method)
+    # Verify it imports the new modules in _call_llm
+    import inspect
+    src = inspect.getsource(brain_daemon.BrainDaemon._call_llm)
+    has_selector = "strategy_selector" in src
+    has_sizer = "adaptive_sizer" in src
+    has_exits = "adaptive_exits" in src
+    report("_call_llm injects strategy_selector", has_selector)
+    report("_call_llm injects adaptive_sizer", has_sizer)
+    report("_call_llm injects adaptive_exits", has_exits)
+
+
 # ==================== RUN ALL TESTS ====================
 
 def main():
@@ -635,6 +780,16 @@ def main():
     test_unit_regime_detector_cold_start()
     test_unit_regime_detector_history_persists()
     test_unit_brain_daemon_has_bayesian_wiring()
+
+    print("\n[PHASE 8 — DATA-DRIVEN STRATEGY SELECTION + KELLY + ADAPTIVE EXITS]")
+    test_unit_strategy_selector_importable()
+    test_unit_strategy_selector_returns_valid_structure()
+    test_unit_strategy_selector_regime_aware()
+    test_unit_kelly_math()
+    test_unit_position_sizing_caps()
+    test_unit_adaptive_exits_math()
+    test_unit_online_learner_per_regime_strategy()
+    test_unit_brain_daemon_has_data_driven_decision()
 
     print("\n[REPLAY TEST]")
     test_replay_daily_cycle()

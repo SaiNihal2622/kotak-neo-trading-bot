@@ -90,7 +90,7 @@ def _load_state() -> dict:
         except Exception:
             pass
     return {
-        "version": 1,
+        "version": 2,
         "ts": _now_ist().isoformat(),
         "by_strategy": {},   # strategy → outcome counts
         "by_side": {"BUY": {"wins": 0, "losses": 0, "n": 0,
@@ -100,6 +100,8 @@ def _load_state() -> dict:
                              "sum_pnl": 0.0, "sum_win_pnl": 0.0,
                              "sum_loss_pnl": 0.0}},
         "by_regime": {},     # regime → outcome counts
+        "by_regime_strategy": {},  # regime → strategy → counts (KEY for selector)
+        "by_strategy_side": {},   # strategy → side → counts
         "global": {"wins": 0, "losses": 0, "n": 0,
                    "sum_pnl": 0.0, "sharpe_estimate": 0.0,
                    "last_5_pnl": []},   # rolling for stability
@@ -202,6 +204,8 @@ def recompute(state: dict) -> dict:
                         "sum_pnl": 0.0, "sum_win_pnl": 0.0,
                         "sum_loss_pnl": 0.0}}
     by_regime = {}
+    by_regime_strategy = {}  # regime → strategy → counts (for selector)
+    by_strategy_side = {}    # strategy → side → counts
     global_w = global_l = global_n = 0
     global_sum_pnl = 0.0
     rolling_5 = []
@@ -252,6 +256,41 @@ def recompute(state: dict) -> dict:
         elif outcome == "loss":
             r["losses"] += 1
 
+        # Per-(regime, strategy) — KEY for the strategy_selector
+        # This is the data that lets the brain pick "in trending_up,
+        # nifty_cash_long has 60% win rate but nifty_long_put has 30%"
+        rs = by_regime_strategy.setdefault(regime, {})
+        rs_s = rs.setdefault(strat, {
+            "wins": 0, "losses": 0, "breakevens": 0, "n": 0,
+            "sum_pnl": 0.0, "sum_win_pnl": 0.0, "sum_loss_pnl": 0.0,
+        })
+        rs_s["n"] += 1
+        rs_s["sum_pnl"] += pnl
+        if outcome == "win":
+            rs_s["wins"] += 1
+            rs_s["sum_win_pnl"] += pnl
+        elif outcome == "loss":
+            rs_s["losses"] += 1
+            rs_s["sum_loss_pnl"] += pnl
+        else:
+            rs_s["breakevens"] += 1
+
+        # Per-(strategy, side) — useful for selector when strategy name
+        # is shared but direction differs (e.g. nifty_long_call vs nifty_short_straddle)
+        ss = by_strategy_side.setdefault(strat, {})
+        ss_sd = ss.setdefault(side, {
+            "wins": 0, "losses": 0, "n": 0,
+            "sum_pnl": 0.0, "sum_win_pnl": 0.0, "sum_loss_pnl": 0.0,
+        })
+        ss_sd["n"] += 1
+        ss_sd["sum_pnl"] += pnl
+        if outcome == "win":
+            ss_sd["wins"] += 1
+            ss_sd["sum_win_pnl"] += pnl
+        elif outcome == "loss":
+            ss_sd["losses"] += 1
+            ss_sd["sum_loss_pnl"] += pnl
+
         # Global
         if outcome == "win":
             global_w += 1
@@ -294,9 +333,25 @@ def recompute(state: dict) -> dict:
         r["win_rate"] = round(r["wins"] / r["n"], 4) if r["n"] else 0
         r["avg_pnl"] = round(r["sum_pnl"] / r["n"], 2) if r["n"] else 0
 
+    # Per-(regime, strategy) win rates — for strategy_selector
+    for regime, strat_dict in by_regime_strategy.items():
+        for strat, s in strat_dict.items():
+            s["win_rate"] = round(s["wins"] / s["n"], 4) if s["n"] else 0
+            s["avg_pnl"] = round(s["sum_pnl"] / s["n"], 2) if s["n"] else 0
+            s["avg_win"] = round(s["sum_win_pnl"] / s["wins"], 2) if s["wins"] else 0
+            s["avg_loss"] = round(s["sum_loss_pnl"] / s["losses"], 2) if s["losses"] else 0
+
+    # Per-(strategy, side) win rates
+    for strat, side_dict in by_strategy_side.items():
+        for side, sd in side_dict.items():
+            sd["win_rate"] = round(sd["wins"] / sd["n"], 4) if sd["n"] else 0
+            sd["avg_pnl"] = round(sd["sum_pnl"] / sd["n"], 2) if sd["n"] else 0
+
     state["by_strategy"] = by_strategy
     state["by_side"] = by_side
     state["by_regime"] = by_regime
+    state["by_regime_strategy"] = by_regime_strategy
+    state["by_strategy_side"] = by_strategy_side
     state["global"] = {
         "wins": global_w,
         "losses": global_l,
@@ -308,6 +363,51 @@ def recompute(state: dict) -> dict:
     }
     state["last_update"] = _now_ist().isoformat()
     return state
+
+
+def get_regime_strategy_stats(regime: str, strategy: str) -> dict:
+    """Look up historical performance for a specific (regime, strategy).
+
+    Returns:
+        {"win_rate": float (0-1), "n": int, "avg_pnl": float,
+         "avg_win": float, "avg_loss": float, "has_data": bool}
+
+    Used by strategy_selector to score candidates.
+    """
+    state = _load_state()
+    if not state.get("last_update") or state["global"]["n"] == 0:
+        state = recompute(state)
+        _save_state(state)
+    rs_dict = state.get("by_regime_strategy", {}).get(regime, {})
+    s = rs_dict.get(strategy, {})
+    n = s.get("n", 0)
+    if n == 0:
+        # Fallback: try the strategy's overall stats (any regime)
+        strat_overall = state.get("by_strategy", {}).get(strategy, {})
+        n2 = strat_overall.get("n", 0)
+        if n2 > 0:
+            return {
+                "win_rate": strat_overall.get("win_rate", 0.5),
+                "n": n2,
+                "avg_pnl": strat_overall.get("avg_pnl", 0),
+                "avg_win": strat_overall.get("avg_win", 0),
+                "avg_loss": strat_overall.get("avg_loss", 0),
+                "has_data": True,
+                "fallback": "strategy_overall",
+            }
+        return {
+            "win_rate": 0.5, "n": 0, "avg_pnl": 0.0,
+            "avg_win": 0.0, "avg_loss": 0.0,
+            "has_data": False,
+        }
+    return {
+        "win_rate": s.get("win_rate", 0.5),
+        "n": n,
+        "avg_pnl": s.get("avg_pnl", 0),
+        "avg_win": s.get("avg_win", 0),
+        "avg_loss": s.get("avg_loss", 0),
+        "has_data": True,
+    }
 
 
 def get_local_likelihood_for_bayesian(side: str) -> dict:
