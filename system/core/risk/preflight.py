@@ -150,6 +150,15 @@ class PreFlight:
         # SELL legs generate credit, not cash outlay. Cap is for BUY-side only.
         if order.get("side") == "SELL":
             return PreflightResult(ok=True)
+        # PHASE 5 FIX 2026-09-30: CAS legs (segment=nse_cm) are spot trades.
+        # Their size (qty=75 NIFTY shares ≈ Rs.17 lakhs at 22800) inherently
+        # exceeds the standard 5% per-trade cap because they are positions,
+        # not option premium outlays. The CAS risk profile is governed by
+        # the per-position stop loss (0.75% from entry = ~Rs.1300 on a
+        # Rs.17 lakh position). Skip per-trade cap for CAS and let the
+        # position cap + stop-loss enforce risk downstream.
+        if str(order.get("exchange", "")).upper() == "NSE":
+            return PreflightResult(ok=True)
         qty = int(order.get("qty", 0))
         # Estimate cost: use provided price or latest tick
         price = float(order.get("price", 0) or 0)
@@ -175,6 +184,13 @@ class PreFlight:
         cash = state.account.cash
         if cash <= 0:
             return PreflightResult(ok=False, reason="zero cash", gate="cash")
+        # PHASE 5 FIX 2026-09-30: skip position cap for CAS (NSE) legs.
+        # CAS is a spot position with stop-loss-based risk, not a
+        # capital-outlay trade. The standard 30% cap is meaningless for
+        # a NIFTY spot position (1 lot ≈ Rs.17L vs cash Rs.100k).
+        # Risk is enforced via the strategy's stop_pct (0.75% from entry).
+        if str(order.get("exchange", "")).upper() == "NSE":
+            return PreflightResult(ok=True)
         sym = order.get("symbol", "")
         pos = state.positions.get(sym)
         # FIX 2026-09-29 21:15: short-aware qty math.

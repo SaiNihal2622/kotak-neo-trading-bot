@@ -162,8 +162,34 @@ class BrainBridge:
             opt = str(leg.get("opt_type", "")).upper()
             expiry = str(leg.get("expiry", ""))
             order_type = str(leg.get("order_type", "MARKET")).upper()
+            # PHASE 5 FIX 2026-09-30: detect CAS legs (segment="nse_cm") —
+            # for CAS, qty is already in shares (e.g., 75 = 1 lot of NIFTY),
+            # so we must NOT multiply by lot size again. The strategy_library
+            # writes CAS legs with `qty=75` (shares) not `qty=1` (lots).
+            _is_cash_leg = str(leg.get("segment", "")).lower() == "nse_cm"
             price = leg.get("price")
             qty_lots = int(leg.get("qty", 1) or 1)
+            if _is_cash_leg:
+                # CAS: qty is already in shares, no multiplier
+                if qty_lots < 1:
+                    continue
+                _l_qty = qty_lots
+                sym = underlying  # NIFTY spot, no strike suffix
+                legs.append({
+                    "symbol": sym,
+                    "underlying": underlying,
+                    "side": side,
+                    "qty": _l_qty,
+                    "order_type": order_type,
+                    "product": "MIS",
+                    "price": float(price) if price else 0.0,
+                    "tag": f"BRAIN-{str(action.get('strategy','?'))[:10]}"[:30],
+                    "strike": 0.0,
+                    "option_type": "",
+                    "expiry": "",
+                    "exchange": leg.get("exchange", "NSE"),
+                })
+                continue
             if not strike or not opt:
                 # Skip malformed leg
                 continue
