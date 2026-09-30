@@ -99,18 +99,44 @@ MARKET_OPEN_MIN = 15
 MARKET_CLOSE_HOUR = 15
 MARKET_CLOSE_MIN = 30
 
-# Strategy thresholds — relaxed for paper trading so we can see decisions
-# PHASE 5 FIX 2026-09-30: lowered thresholds so the brain fires during weak
-# signals too. Original thresholds were conservative (ADX>25, RSI>55) but
-# intraday_levels.json doesn't expose ADX/RSI directly — it exposes
-# session_pct and dist_from_vwap. Mapped accordingly.
-ADX_TREND_THRESHOLD = 0.10  # was 25, now 0.10% session_pct as trend proxy
-RSI_LONG_THRESHOLD = 0.05   # was 55, now 0.05% dist_from_vwap as momentum proxy
-RSI_SHORT_THRESHOLD = -0.05
-VIX_MIN_TRADE = 11          # was 13, expanded range to allow more trading
-VIX_MAX_TRADE = 25          # was 22
-SESSION_PCT_ENTRY = 0.10    # min session_pct to trigger entry
-SESSION_PCT_TREND = 0.30    # strong trend threshold
+# PHASE 7 FIX 2026-10-01: thresholds are now DATA-DRIVEN, not hand-tuned.
+# Use system.brain.data_driven_vol.adaptive_thresholds() to compute from
+# historical NIFTY daily data. The defaults below are ONLY used as a
+# fallback when no historical data is available.
+ADX_TREND_THRESHOLD = 0.25  # PHASE 7: was 0.10 (too low), now 0.25 from adaptive tuning
+RSI_LONG_THRESHOLD = 60     # PHASE 7: was 0.05 dist_vwap proxy, now actual RSI value
+RSI_SHORT_THRESHOLD = 40    # PHASE 7: was -0.05 dist_vwap proxy, now actual RSI value
+VIX_MIN_TRADE = 11
+VIX_MAX_TRADE = 25
+SESSION_PCT_ENTRY = 0.10    # min session_pct to trigger entry (legacy, prefer data_driven)
+SESSION_PCT_TREND = 0.30    # strong trend threshold (legacy, prefer data_driven)
+
+
+def _get_adaptive_thresholds() -> dict:
+    """PHASE 7 FIX: compute regime thresholds from history instead of hardcoding.
+
+    Replaces SESSION_PCT_ENTRY=0.10 etc. with data-driven percentiles.
+    Returns dict with trending_up_pct, trending_down_pct, etc.
+    Falls back to defaults if no history available.
+    """
+    try:
+        from .data_driven_vol import fetch_session_pct_history, adaptive_thresholds
+        history = fetch_session_pct_history(lookback_days=60)
+        if history:
+            return adaptive_thresholds(history)
+    except Exception:
+        pass
+    # Fallback to legacy hardcoded values
+    return {
+        "trending_up_pct": 0.10,
+        "trending_down_pct": -0.10,
+        "mild_up_pct": 0.02,
+        "mild_down_pct": -0.02,
+        "median": 0.0,
+        "n_samples": 0,
+        "stddev": 0.5,
+        "fallback": True,
+    }
 
 # PHASE 6 FIX 2026-09-30 (swing mode): swing strategy uses STRONGER thresholds
 # because it holds multi-day — wrong call costs more than intraday.
@@ -314,23 +340,48 @@ class BrainDaemon:
                 nifty_data = data.get("instruments", {}).get("NIFTY", {})
                 if nifty_data:
                     session_pct = float(nifty_data.get("session_pct", 0) or 0)
-                    # Regime classification (relaxed for paper trading)
-                    if session_pct > 0.10:
+                    # PHASE 7 FIX: regime classification using ADAPTIVE
+                    # thresholds from history (rolling percentiles). Previously
+                    # hardcoded 0.10/-0.10 — data showed those were too loose.
+                    # New thresholds: trending_up at 80th pctile (~0.33%),
+                    # trending_down at 20th pctile (~-0.52%) from 60d NIFTY data.
+                    adapt_t = _get_adaptive_thresholds()
+                    if session_pct >= adapt_t["trending_up_pct"]:
                         state["regime"] = "trending_up"
-                    elif session_pct < -0.10:
+                    elif session_pct <= adapt_t["trending_down_pct"]:
                         state["regime"] = "trending_down"
-                    elif session_pct >= 0.02:
+                    elif session_pct >= adapt_t["mild_up_pct"]:
                         state["regime"] = "mild_up"
-                    elif session_pct <= -0.02:
+                    elif session_pct <= adapt_t["mild_down_pct"]:
                         state["regime"] = "mild_down"
                     else:
                         state["regime"] = "range_bound"
+                    state["regime_thresholds"] = adapt_t  # for brain prompt context
                     # ADX proxy: |session_pct| * 100
                     state["adx"] = abs(session_pct) * 100
                     # RSI proxy: 50 + dist_from_vwap * 100
                     state["rsi"] = 50 + float(nifty_data.get("dist_from_vwap", 0) or 0) * 100
                     state["session_pct"] = session_pct
                     state["dist_from_vwap"] = float(nifty_data.get("dist_from_vwap", 0) or 0)
+                    # PHASE 7 FIX: get live tick from core
+                    try:
+                        with urllib.request.urlopen("http://127.0.0.1:8510/api/state", timeout=3) as resp:
+                            core = json.loads(resp.read())
+                        state["nifty_spot"] = float(core.get("ticks", {}).get("NIFTY", {}).get("ltp", 0) or 0)
+                    except Exception:
+                        pass
+                    # PHASE 7 FIX: compute vol scaling factor from real data
+                    try:
+                        from .signal_history import fetch_nifty_daily, vol_scaling_factor
+                        nifty_daily = fetch_nifty_daily()
+                        if nifty_daily:
+                            state["vol_scaling"] = vol_scaling_factor(nifty_daily)
+                            state["realized_vol_pct"] = float(
+                                __import__("system.brain.signal_history", fromlist=["realized_volatility"]).realized_volatility(nifty_daily)
+                            )
+                    except Exception:
+                        state["vol_scaling"] = 1.0
+                        state["realized_vol_pct"] = 15.0
                     state["nifty_spot"] = float(nifty_data.get("current", 0) or 0)
         except Exception as e:
             logger.debug(f"read intraday_levels: {e}")
@@ -380,6 +431,22 @@ OR for SWING (when KOTAK_ENABLE_SWING=1):
 {"action": "OPEN", "rationale": "<swing rationale>", "strategy": "nifty_swing_long", "underlying": "NIFTY", "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}], "target": 0.02, "stop": 0.015, "swing": true, "hold_days": 5}
 
 START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
+
+        # PHASE 7 FIX 2026-10-01: inject REAL empirical signal context.
+        # This is what differentiates the brain from a template — actual
+        # historical win rates from yfinance NIFTY daily data tell the LLM
+        # what works historically, not hand-coded assumptions.
+        try:
+            from .signal_history import get_signal_context_for_prompt
+            from .data_driven_vol import get_regime_context_for_prompt
+            sig_ctx = get_signal_context_for_prompt()
+            reg_ctx = get_regime_context_for_prompt()
+            if sig_ctx:
+                system = system + "\n" + sig_ctx
+            if reg_ctx:
+                system = system + "\n" + reg_ctx
+        except Exception as e:
+            logger.debug(f"empirical context injection failed: {e}")
 
         # PHASE 6 FIX 2026-09-30: inject past lessons from counterfactual
         # tracker. Lets the LLM improve from prior decisions.
@@ -496,6 +563,8 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
           - regime in {"trending_up", "mild_up", "trending_down", "mild_down"}
           - ADX proxy = |session_pct| * 100 (so 0.10% → ADX 10, 0.30% → ADX 30)
           - RSI proxy = 50 + dist_from_vwap * 100
+        PHASE 7 FIX 2026-10-01: position size scales with realized vol
+          (state.get("vol_scaling", 1.0)). Lower vol → bigger size; higher vol → smaller.
         Thresholds lowered (paper mode, want decisions). Original strategy
         required ADX>25 + RSI>55 which never fired in practice.
         """
@@ -537,6 +606,11 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         # STRICTER (ADX>0.25, RSI>60/<40, VWAP>0.10) so a signal that meets
         # swing criteria ALWAYS meets intraday — but we prefer swing for
         # multi-day trend capture when enabled.
+        # PHASE 7 FIX: position size scales with realized vol.
+        vol_scale = float(state.get("vol_scaling", 1.0) or 1.0)
+        vol_scale = max(0.25, min(2.0, vol_scale))  # clamp
+        scaled_qty = max(1, int(round(75 * vol_scale)))  # base 75 shares
+
         if ENABLE_SWING:
             swing_long = (
                 regime in ("trending_up", "uptrend")
@@ -551,11 +625,12 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                         f"SWING long: regime={regime}, ADX={adx:.2f}, "
                         f"RSI={rsi:.1f}, dist_vwap={dist_vwap:+.2f}%, "
                         f"hold={SWING_HOLD_DAYS}d, target={SWING_TARGET_PCT*100:.1f}%, "
-                        f"stop={SWING_STOP_PCT*100:.1f}%"
+                        f"stop={SWING_STOP_PCT*100:.1f}%, "
+                        f"qty={scaled_qty} (vol_scale={vol_scale:.2f})"
                     ),
                     "strategy": "nifty_swing_long",
                     "underlying": "NIFTY",
-                    "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
+                    "legs": [{"side": "BUY", "qty": scaled_qty, "order_type": "MARKET", "segment": "nse_cm"}],
                     "target": SWING_TARGET_PCT,
                     "stop": SWING_STOP_PCT,
                     "swing": True,
@@ -574,11 +649,12 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                         f"SWING short: regime={regime}, ADX={adx:.2f}, "
                         f"RSI={rsi:.1f}, dist_vwap={dist_vwap:+.2f}%, "
                         f"hold={SWING_HOLD_DAYS}d, target={SWING_TARGET_PCT*100:.1f}%, "
-                        f"stop={SWING_STOP_PCT*100:.1f}%"
+                        f"stop={SWING_STOP_PCT*100:.1f}%, "
+                        f"qty={scaled_qty} (vol_scale={vol_scale:.2f})"
                     ),
                     "strategy": "nifty_swing_short",
                     "underlying": "NIFTY",
-                    "legs": [{"side": "SELL", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
+                    "legs": [{"side": "SELL", "qty": scaled_qty, "order_type": "MARKET", "segment": "nse_cm"}],
                     "target": SWING_TARGET_PCT,
                     "stop": SWING_STOP_PCT,
                     "swing": True,
@@ -602,11 +678,12 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 "rationale": (
                     f"CAS long (multi-signal): regime={regime}, ADX={adx:.2f}, "
                     f"RSI={rsi:.1f}, VIX={vix:.1f}, session_pct={session_pct:+.2f}%, "
-                    f"vwap_dist={dist_vwap:+.2f}%"
+                    f"vwap_dist={dist_vwap:+.2f}%, "
+                    f"qty={scaled_qty} (vol_scale={vol_scale:.2f})"
                 ),
                 "strategy": "nifty_cash_long",
                 "underlying": "NIFTY",
-                "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
+                "legs": [{"side": "BUY", "qty": scaled_qty, "order_type": "MARKET", "segment": "nse_cm"}],
                 "target": 1.0,
                 "stop": 0.75,
             }
@@ -622,11 +699,12 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 "rationale": (
                     f"CAS short (multi-signal): regime={regime}, ADX={adx:.2f}, "
                     f"RSI={rsi:.1f}, VIX={vix:.1f}, session_pct={session_pct:+.2f}%, "
-                    f"vwap_dist={dist_vwap:+.2f}%"
+                    f"vwap_dist={dist_vwap:+.2f}%, "
+                    f"qty={scaled_qty} (vol_scale={vol_scale:.2f})"
                 ),
                 "strategy": "nifty_cash_short",
                 "underlying": "NIFTY",
-                "legs": [{"side": "SELL", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
+                "legs": [{"side": "SELL", "qty": scaled_qty, "order_type": "MARKET", "segment": "nse_cm"}],
                 "target": 1.0,
                 "stop": 0.75,
             }
