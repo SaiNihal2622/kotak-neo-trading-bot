@@ -432,7 +432,52 @@ Format: one entry per finding, dated, with the rule + the evidence +
 when it applies. Don't add one-off trivia. Don't add stuff that's
 already in code or git history.
 
-Last reviewed: 2026-10-01 01:55 IST (this chat — phase 7 final: data-driven brain, 60-test proof harness, Bayesian EV + online learner + regime detector)
+Last reviewed: 2026-10-01 02:50 IST (this chat — phase 8: data-driven brain — strategy selector + Kelly sizer + adaptive exits + per-(regime, strategy) learning)
+
+## Phase 8 brain architecture (added 2026-10-01)
+
+The brain is no longer template-driven. Three more modules replace
+hardcoded if-then-else with data-driven decisions:
+
+| Module | Purpose | When it runs |
+|---|---|---|
+| `strategy_selector.py` | Scores all candidate strategies per regime; picks max-EV | Every cycle (when LLM fallback path) |
+| `adaptive_sizer.py` | Kelly criterion position sizing from empirical win/loss | Every cycle (in _data_driven_decision) |
+| `adaptive_exits.py` | target/stop derived from avg_gain/avg_loss (not hardcoded) | Every cycle |
+
+**Decision flow** (in `brain_daemon._data_driven_decision`):
+1. Strategy selector pulls candidate set for current regime:
+   - trending_up → nifty_cash_long, nifty_swing_long, nifty_long_call
+   - trending_down → nifty_cash_short, nifty_swing_short, nifty_long_put
+   - range_bound → nifty_iron_condor, nifty_short_straddle
+2. Each candidate scored from (regime, strategy) historical data in `online_learner.by_regime_strategy`
+3. Best strategy with positive EV → recommended
+4. Kelly sizing: f* = (p*b - q)/b, fractional (1/4) for safety, vol-adjusted
+5. Adaptive exits: target = avg_gain * 0.7, stop = avg_loss * 1.2, vol-scaled
+6. Bayesian guard on top (suppress if EV<-0.05, downsize if EV<0)
+7. LLM still has override authority (it sees selector/sizer/exits in prompt)
+
+**Cold start**: when no local (regime, strategy) data, selector falls
+back to Bayesian EV from `signal_history`. Kelly returns 0 lots when no
+edge. Exits use defaults (intraday 0.8%/0.6%, swing 2.0%/1.5%).
+
+**Unit convention**: 
+- Local P&L in online_learner: RUPEES
+- Bayesian prior in bayesian_decision: PERCENT
+- ASSUMED_NOTIONAL = Rs.100,000 (paper_capital) — converts between them
+- Strategy selector also uses this: avg_gain_rupees / ASSUMED_NOTIONAL * 100 = percent
+
+**Apply when**:
+- Adding a new strategy: add to `strategy_selector.CANDIDATES_BY_REGIME`
+- Brain takes a losing trade: check `learning_state.json` for (regime, strategy) win rate — was it actually positive in past?
+- Brain keeps HOLDing: check `learning_state.json` global win_rate + Kelly outputs. If 0 lots and 0 EV, system is being honest.
+- Want to override Kelly cap: edit `MAX_LOTS` in adaptive_sizer.py
+- Want to override target/stop scaling: edit `TARGET_SCALE`/`STOP_SCALE` in adaptive_exits.py
+
+**Proof harness**: 83/83 tests pass (was 60/60). Added 8 phase 8 tests:
+strategy selector schema/regime-awareness, Kelly math correctness, position
+sizing caps, adaptive exits math, online learner per-(regime, strategy)
+breakdown, brain_daemon wiring.
 
 ## Phase 7 brain architecture (added 2026-10-01)
 
