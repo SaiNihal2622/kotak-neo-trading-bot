@@ -223,7 +223,8 @@ def _is_eod_close_time(d: datetime) -> bool:
     except Exception:
         eod_hm = 15 * 60 + 15  # default
     hm = d.hour * 60 + d.minute
-    return eod_hm <= hm < eod_hm + 10  # 10-min window
+    # 11-min window inclusive of both endpoints (15:15, 15:16, ..., 15:25 = 11 minutes)
+    return eod_hm <= hm <= eod_hm + 10
 
 
 # PHASE 6 FIX 2026-09-30: tracks the last reset date so we only
@@ -531,7 +532,61 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                     ),
                 }
 
-        # Trending up + ADX proxy > threshold + momentum positive
+        # PHASE 6 FIX (swing takes priority over intraday): if swing criteria met,
+        # swing fires. Otherwise fall through to intraday. SWING thresholds are
+        # STRICTER (ADX>0.25, RSI>60/<40, VWAP>0.10) so a signal that meets
+        # swing criteria ALWAYS meets intraday — but we prefer swing for
+        # multi-day trend capture when enabled.
+        if ENABLE_SWING:
+            swing_long = (
+                regime in ("trending_up", "uptrend")
+                and adx > ADX_SWING_THRESHOLD  # 0.25
+                and rsi > RSI_SWING_LONG        # 60
+                and dist_vwap > DIST_VWAP_SWING_LONG  # 0.10
+            )
+            if swing_long:
+                return {
+                    "action": "OPEN",
+                    "rationale": (
+                        f"SWING long: regime={regime}, ADX={adx:.2f}, "
+                        f"RSI={rsi:.1f}, dist_vwap={dist_vwap:+.2f}%, "
+                        f"hold={SWING_HOLD_DAYS}d, target={SWING_TARGET_PCT*100:.1f}%, "
+                        f"stop={SWING_STOP_PCT*100:.1f}%"
+                    ),
+                    "strategy": "nifty_swing_long",
+                    "underlying": "NIFTY",
+                    "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
+                    "target": SWING_TARGET_PCT,
+                    "stop": SWING_STOP_PCT,
+                    "swing": True,
+                    "hold_days": SWING_HOLD_DAYS,
+                }
+            swing_short = (
+                regime in ("trending_down", "downtrend")
+                and adx > ADX_SWING_THRESHOLD
+                and rsi < RSI_SWING_SHORT
+                and dist_vwap < DIST_VWAP_SWING_SHORT
+            )
+            if swing_short:
+                return {
+                    "action": "OPEN",
+                    "rationale": (
+                        f"SWING short: regime={regime}, ADX={adx:.2f}, "
+                        f"RSI={rsi:.1f}, dist_vwap={dist_vwap:+.2f}%, "
+                        f"hold={SWING_HOLD_DAYS}d, target={SWING_TARGET_PCT*100:.1f}%, "
+                        f"stop={SWING_STOP_PCT*100:.1f}%"
+                    ),
+                    "strategy": "nifty_swing_short",
+                    "underlying": "NIFTY",
+                    "legs": [{"side": "SELL", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
+                    "target": SWING_TARGET_PCT,
+                    "stop": SWING_STOP_PCT,
+                    "swing": True,
+                    "hold_days": SWING_HOLD_DAYS,
+                }
+
+        # Intraday strategies (fall through after swing if swing didn't fire).
+        # Trending up + ADX proxy > threshold + momentum positive.
         # PHASE 6 FIX 2026-09-30: tightened to require MULTI-SIGNAL confirmation
         # (regime + ADX + RSI + VWAP alignment). Single-signal triggers caused
         # 56 OPENs/2hrs — over-trading.
@@ -575,60 +630,6 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 "target": 1.0,
                 "stop": 0.75,
             }
-
-        # PHASE 6 FIX 2026-09-30 (swing mode): swing strategies.
-        # Only fires when KOTAK_ENABLE_SWING=1. Uses STRONGER thresholds than
-        # intraday (multi-day hold costs more if wrong). Always uses cash
-        # NIFTY (no expiry risk, no theta). Bypasses EOD close via the
-        # `swing: true` flag in the action — EOD close skips swing positions.
-        if ENABLE_SWING:
-            swing_long = (
-                regime in ("trending_up", "uptrend")
-                and adx > ADX_SWING_THRESHOLD  # 0.25
-                and rsi > RSI_SWING_LONG        # 60
-                and dist_vwap > DIST_VWAP_SWING_LONG  # 0.10
-            )
-            if swing_long:
-                return {
-                    "action": "OPEN",
-                    "rationale": (
-                        f"SWING long: regime={regime}, ADX={adx:.2f}, "
-                        f"RSI={rsi:.1f}, dist_vwap={dist_vwap:+.2f}%, "
-                        f"hold={SWING_HOLD_DAYS}d, target={SWING_TARGET_PCT*100:.1f}%, "
-                        f"stop={SWING_STOP_PCT*100:.1f}%"
-                    ),
-                    "strategy": "nifty_swing_long",
-                    "underlying": "NIFTY",
-                    "legs": [{"side": "BUY", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
-                    "target": SWING_TARGET_PCT,
-                    "stop": SWING_STOP_PCT,
-                    # PHASE 6 FIX: marker that EOD close should skip this
-                    "swing": True,
-                    "hold_days": SWING_HOLD_DAYS,
-                }
-            swing_short = (
-                regime in ("trending_down", "downtrend")
-                and adx > ADX_SWING_THRESHOLD
-                and rsi < RSI_SWING_SHORT        # 40
-                and dist_vwap < DIST_VWAP_SWING_SHORT  # -0.10
-            )
-            if swing_short:
-                return {
-                    "action": "OPEN",
-                    "rationale": (
-                        f"SWING short: regime={regime}, ADX={adx:.2f}, "
-                        f"RSI={rsi:.1f}, dist_vwap={dist_vwap:+.2f}%, "
-                        f"hold={SWING_HOLD_DAYS}d, target={SWING_TARGET_PCT*100:.1f}%, "
-                        f"stop={SWING_STOP_PCT*100:.1f}%"
-                    ),
-                    "strategy": "nifty_swing_short",
-                    "underlying": "NIFTY",
-                    "legs": [{"side": "SELL", "qty": 75, "order_type": "MARKET", "segment": "nse_cm"}],
-                    "target": SWING_TARGET_PCT,
-                    "stop": SWING_STOP_PCT,
-                    "swing": True,
-                    "hold_days": SWING_HOLD_DAYS,
-                }
 
         # PHASE 5 FIX 2026-09-30: range-bound but with directional bias
         # (session_pct > 0.05 OR < -0.05 but < thresholds above) → mild_up/down.
