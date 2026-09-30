@@ -432,7 +432,38 @@ Format: one entry per finding, dated, with the rule + the evidence +
 when it applies. Don't add one-off trivia. Don't add stuff that's
 already in code or git history.
 
-Last reviewed: 2026-09-02 01:00 IST (this chat — pre-market audit + 3 new feature modules + session watcher)
+Last reviewed: 2026-10-01 01:55 IST (this chat — phase 7 final: data-driven brain, 60-test proof harness, Bayesian EV + online learner + regime detector)
+
+## Phase 7 brain architecture (added 2026-10-01)
+
+The brain is no longer a template. Three new modules in `system/brain/`
+replace boolean threshold checks with probabilistic, learning, regime-aware
+decisions:
+
+| Module | Purpose | When it runs |
+|---|---|---|
+| `bayesian_decision.py` | Computes E[LONG], E[SHORT], E[HOLD] from empirical data; picks max EV | Every LLM call (prompt context + post-call guard) |
+| `online_learner.py` | Recomputes per-strategy/side/regime win rates from `trade_journal.jsonl` | Every Bayesian call (cached in `learning_state.json`) |
+| `regime_detector.py` | Detects regime SHIFTS vs 60d baseline (vol spike, trend break) | Every LLM call (prompt context) |
+
+**Bayesian guard semantics** (in `brain_daemon._bayesian_suppress()`):
+- LLM says OPEN, EV strongly negative (n>=30, EV<-0.05%, win<45%) → **SUPPRESS to HOLD**
+- LLM says OPEN, EV mildly negative (n>=30, EV<0, win<50%) → **DOWN-SIZE 50%**
+
+**Unit convention** (CRITICAL): `bayesian_decision` ASSUMED_NOTIONAL = Rs.100,000
+(paper_capital). Local journal P&L is in RUPEES; yfinance prior is in PERCENT.
+Module divides by ASSUMED_NOTIONAL before Bayesian merge to keep units consistent.
+
+**Apply when**:
+- Adding a new data source for the brain: extend `signal_history.empirical_signal_stats()` so Bayesian EV incorporates it
+- Brain keeps HOLDing: check `learning_state.json` global win_rate + Bayesian EV sign — if both negative, brain correctly chose HOLD
+- LLM takes a trade that loses: check `regime_history.jsonl` for shift detection — if it fired, the LLM was warned
+- Force-restart brain_daemon: write `mavis_force_action.json` with `action=RUN_COMMAND`, `command=[taskkill, /PID, <pid>, /F]`. The legacy bot (SYSTEM context) executes it; NSSM auto-respawns.
+
+**Proof harness**: 60/60 tests pass (was 43/43). Added 10 phase 7 tests covering:
+imports, decide() schema, Bayesian merge math, online learner persistence,
+strategy breakdown, regime detector cold-start, history persistence, and
+brain_daemon wiring verification.
 
 ## Known-issues register (durable findings)
 
@@ -1787,7 +1818,8 @@ ssm restart <svc>
 
 - Adding a new subsystem — register it in install_247_services.py +
   add to scripts/watchdog_247.py::SERVICE_CONFIGS + add heartbeat to
-  the service's un_forever().
+  the service's 
+un_forever().
 - Brain keeps HOLDing on weak signals — check
   data_cache/counterfactual_log.jsonl for the last few HOLDs to see if
   the heuristic missed something the LLM should consider.
