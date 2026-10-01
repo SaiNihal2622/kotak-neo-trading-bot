@@ -1931,6 +1931,32 @@ un_forever().
 
 ## Known-issues register (durable findings) — additions this phase
 
+### 2026-10-02: Phase 12 — proof_harness self-pollution + ENABLE_SWING isolation
+
+- Commit: 800b6ca.
+- `test_unit_knowledge_graph_atomically_persists` previously called
+  `_save(graph)` directly on the production GRAPH_PATH, overwriting
+  the seeded demo data (12 Trade entities + 27 relations) with a
+  single TestEntity_xyz. Downstream test
+  `recall trending_down returns trades: got 0` would fail on every
+  run. **Always fix**: snapshot production graph → run save/reload
+  test against tmp file via monkey-patched GRAPH_PATH → restore in
+  `finally:`. Zero production pollution.
+- `test_unit_signal_confirmation` only set
+  `os.environ["KOTAK_ENABLE_SWING"]="0"` but `bd_mod.ENABLE_SWING`
+  was already True at module load (set by an earlier test's import
+  side-effect). Swing branch fired first and returned
+  nifty_swing_long instead of expected nifty_cash_long. **Always fix**:
+  in any test that depends on ENABLE_SWING, do BOTH
+  `os.environ["..."]="0"` AND `import system.brain.brain_daemon as
+  _bd; _bd.ENABLE_SWING = False`. Test isolation cannot rely on env-
+  var-only flips once the module is in sys.modules.
+- **Apply when**: knowledge graph shows only TestEntity_xyz after
+  proof_harness runs → `python scripts\_scratch\reseed2.py` to
+  restore 24 entities. Any new test for a module-level flag like
+  ENABLE_SWING needs the belt-and-suspenders pattern (env var +
+  module attr).
+
 ### 2026-09-30: Phase 6 — Non-glued 24/7 + learning system
 
 - Commit: a95accc (this work).
