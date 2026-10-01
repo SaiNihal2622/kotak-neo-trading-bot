@@ -1496,7 +1496,11 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 "heartbeat-only. Brain cycles are run by Mavis cron via "
                 "system.brain.mavis_brain (which uses REAL MCP plugins)."
             )
-            self.stats["watchdog_mode"] = True
+            # Ensure stats dict exists (for tests / __new__ path)
+            if not hasattr(self, "stats") or self.stats is None:
+                self.stats = {"watchdog_mode": True, "cycles": 0}
+            else:
+                self.stats["watchdog_mode"] = True
             while True:
                 try:
                     # Check that Mavis session heartbeat is fresh
@@ -1530,10 +1534,13 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                         hb.update(
                             last_error="watchdog; mavis_brain not yet started",
                         )
-                    await asyncio.sleep(self.interval_sec)
+                    # Use interval_sec if set, else default 60s
+                    sleep_sec = getattr(self, "interval_sec", 60)
+                    await asyncio.sleep(sleep_sec)
                 except Exception as e:
                     logger.warning(f"watchdog loop error: {e}")
-                    await asyncio.sleep(self.interval_sec)
+                    sleep_sec = getattr(self, "interval_sec", 60)
+                    await asyncio.sleep(sleep_sec)
             return  # never reached
 
         logger.info(
