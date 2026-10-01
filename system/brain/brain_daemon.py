@@ -1472,7 +1472,13 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         return decision
 
     async def run_forever(self):
-        """Main loop. Sleeps interval_sec between cycles."""
+        """Main loop. Sleeps interval_sec between cycles.
+
+        PHASE 12 (2026-10-01): BRAIN_DAEMON_MODE env var controls behavior:
+        - "cycle" (default): run brain cycles with local fallbacks
+        - "watchdog": only write heartbeat, never run cycles. Mavis
+          cron handles the actual brain work via mavis_brain.py.
+        """
         # PHASE 6 FIX 2026-09-30: per-service heartbeat. The brain daemon
         # runs every 120s; if it's stuck in an LLM call or crash-looping,
         # the heartbeat staleness is the only reliable signal (process check
@@ -1482,8 +1488,56 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         hb.update(cycles=0, opens=0, holds=0, errors=0)
         hb.start()
 
+        # PHASE 12: watchdog mode = no cycle logic, just heartbeat
+        brain_mode = os.environ.get("BRAIN_DAEMON_MODE", "cycle").lower()
+        if brain_mode == "watchdog":
+            logger.warning(
+                "[PHASE12] BRAIN_DAEMON_MODE=watchdog — NSSM daemon is now "
+                "heartbeat-only. Brain cycles are run by Mavis cron via "
+                "system.brain.mavis_brain (which uses REAL MCP plugins)."
+            )
+            self.stats["watchdog_mode"] = True
+            while True:
+                try:
+                    # Check that Mavis session heartbeat is fresh
+                    mavis_hb = self.data_dir / "heartbeat_mavis_brain.json"
+                    if mavis_hb.exists():
+                        mavis_data = json.loads(
+                            mavis_hb.read_text(encoding="utf-8")
+                        )
+                        mavis_ts = datetime.fromisoformat(
+                            mavis_data.get("ts", "")
+                        )
+                        mavis_age = (
+                            _now_ist() - mavis_ts.replace(tzinfo=IST)
+                        ).total_seconds()
+                        hb.update(
+                            cycles=self.stats.get("cycles", 0),
+                            opens=self.stats.get("open", 0),
+                            holds=self.stats.get("hold", 0),
+                            errors=self.stats.get("errors", 0),
+                            last_error=(
+                                f"watchdog; mavis_brain_age={int(mavis_age)}s"
+                            ),
+                        )
+                        if mavis_age > 600:  # 10 min stale
+                            logger.warning(
+                                f"[PHASE12-WATCHDOG] Mavis brain heartbeat "
+                                f"is {int(mavis_age)}s old (cycle should be "
+                                f"every 5 min). Cron may have stalled."
+                            )
+                    else:
+                        hb.update(
+                            last_error="watchdog; mavis_brain not yet started",
+                        )
+                    await asyncio.sleep(self.interval_sec)
+                except Exception as e:
+                    logger.warning(f"watchdog loop error: {e}")
+                    await asyncio.sleep(self.interval_sec)
+            return  # never reached
+
         logger.info(
-            f"brain daemon started: interval={self.interval_sec}s "
+            f"brain daemon started: mode={brain_mode} interval={self.interval_sec}s "
             f"llm={self.llm_model} key={'set' if self.llm_api_key else 'missing'}"
         )
         while True:

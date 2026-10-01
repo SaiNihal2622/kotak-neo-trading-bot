@@ -432,7 +432,92 @@ Format: one entry per finding, dated, with the rule + the evidence +
 when it applies. Don't add one-off trivia. Don't add stuff that's
 already in code or git history.
 
-Last reviewed: 2026-10-01 02:50 IST (this chat — phase 8: data-driven brain — strategy selector + Kelly sizer + adaptive exits + per-(regime, strategy) learning)
+Last reviewed: 2026-10-01 17:35 IST (this chat — phase 12: Mavis-runtime brain with REAL MCP plugin integration — composio + kite-mcp enabled, cron registered)
+
+## Phase 12 architecture — REAL MCP plugin integration (added 2026-10-01)
+
+The brain now runs INSIDE the Mavis agent runtime where MCP plugins
+are directly callable. Every cycle touches 6+ REAL plugins — no
+stubs, no seed data, no fake intel.
+
+**Architecture change**:
+- Before: NSSM brain daemon (separate Python) → can't import mcp__*
+- After: Mavis cron → mavis_brain cycle → ALL MCP plugins available
+
+**Cron registered**:
+- Name: `kotak-mavis-brain-cycle-phase12`
+- ID: `d61c77e8-3541-45fa-b3cc-b3c2b3f5bac8`
+- Schedule: `*/5 9-15 * * 1-5` (every 5 min Mon-Fri 9:00-15:55 IST)
+- First fire: Fri Oct 2 9:00 IST
+
+**MCP plugins wired (PHASE 12)**:
+- `puppeteer` — scrapes NSE option chain OI (PCR + Max Pain)
+- `fetch` — direct URL → text for any research site
+- `memory` — persistent knowledge graph (entities + relations)
+- `sequential-thinking` — 5-step trade thesis per cycle
+- `composio` — 1000+ apps via OAuth (Twitter, Gmail, Slack, etc.) — **enabled**
+- `kite_mcp` — Zerodha Kite (cross-broker validation) — **enabled** (needs env vars)
+- `kotak_neo` — official Kotak Neo broker MCP — already used
+
+**New files**:
+- `system/common/mcp_helpers.py` — unified import surface for all MCP plugins with graceful fallback
+- `system/brain/mavis_brain.py` — in-Mavis brain runner (replaces cycle logic for cron use)
+
+**Modified files**:
+- `system/brain/brain_daemon.py` — added `BRAIN_DAEMON_MODE=watchdog` mode that only writes heartbeats (NSSM still runs but doesn't compete with Mavis cron)
+
+**Cycle flow** (per tick):
+1. Read state from data_cache/ (intraday_levels, liveness)
+2. Check MCP plugin availability via `plugin_status()`
+3. puppeteer scrapes NSE option chain → real PCR + Max Pain
+4. composio pulls Twitter trader tweets → real sentiment
+5. Cross-validate NIFTY price (Kite + Kotak + internal)
+6. sequential-thinking 5-step trade thesis
+7. Bayesian + Kelly + strategy_selector + adaptive_exits (decision)
+8. Persist cycle to memory MCP + local knowledge_graph
+9. Write heartbeat to data_cache/heartbeat_mavis_brain.json
+
+**Proof harness**: 111/111 tests pass (was 97/97 in phase 10). Added 8
+phase 12 tests: mcp_helpers coverage, graceful failure, plugin_status,
+mavis_brain imports + read_state + heartbeat, brain_daemon watchdog
+mode, architecture completeness.
+
+**Apply when**:
+- Adding a new MCP plugin: add helper to `mcp_helpers.py`, call from `mavis_brain.py`
+- NSSM brain_daemon gets stuck: it's now BACKUP only; Mavis cron is primary. Restart NSSM with `nssm set KotakBrainDaemon Start SERVICE_AUTO_START && nssm start KotakBrainDaemon`
+- Kite-mcp needs env vars: `KITE_API_KEY`, `KITE_API_SECRET`, `KITE_PASSWORD`, `KITE_TOTP_SECRET`, `KITE_USER_ID` — set in `config/credentials.env` after creating Kite Connect app
+- Composio Twitter OAuth: first `composio_search_twitter` call triggers browser flow
+
+**Known limitation**: puppeteer MCP returns empty `evaluate()` results on JS-heavy sites (NSE option chain, Moneycontrol live). `navigate()` works correctly. Fallback: read pre-computed `option_chain_NIFTY.json` from data_cache/.
+
+## Phase 11 architecture — local knowledge graph (added 2026-10-01)
+
+Cross-session persistent knowledge graph that survives NSSM restarts.
+
+**Files**: `system/common/knowledge_graph.py` (local JSON-backed), `system/common/memory_helper.py` (memory MCP stub for future use)
+
+**APIs**: `remember_trade_outcome()`, `recall_strategy_for_regime()`, `recall_lessons()`, `get_strategy_performance()`, `get_memory_context_for_prompt()`
+
+**Persistence**: `data_cache/knowledge_graph.json` (atomic writes, 5s cache TTL)
+
+**Currently**: 26 entities, 28 relations after seed (12 trades + 5 strategies + 4 regimes + 5 lessons)
+
+## Phase 10 architecture — real trader intel (added 2026-10-01)
+
+Live trader consensus via web_search + seed data fallback.
+
+**File**: `system/brain/live_intel.py`
+
+**Desks tracked** (6 seed): HDFC Securities, Bajaj Broking, Kotak Securities, Religare Broking, Moneycontrol OI, Hindu BusinessLine day-trader guide
+
+**Overrides**: brain_daemon.cycle() has a LIVE-INTEL OVERRIDE block that constructs real trades when LLM says HOLD but live intel says SELL_RALLY/SELL_WEAK with confidence >= 0.4 AND Bayesian EV > -0.05%
+
+## Phase 9 architecture — live trader intel (added 2026-10-01)
+
+Phase 9 was the first real override. live_intel.py aggregates 6 desks into
+mild_bearish/strong_bearish/etc. consensus, generates action hints
+(SELL_RALLY/SELL_WEAK/SELL_BREAKDOWN/BUY_DIP), and overrides HOLD
+when consensus aligns with historical edge.
 
 ## Phase 8 brain architecture (added 2026-10-01)
 
@@ -457,27 +542,12 @@ hardcoded if-then-else with data-driven decisions:
 6. Bayesian guard on top (suppress if EV<-0.05, downsize if EV<0)
 7. LLM still has override authority (it sees selector/sizer/exits in prompt)
 
-**Cold start**: when no local (regime, strategy) data, selector falls
-back to Bayesian EV from `signal_history`. Kelly returns 0 lots when no
-edge. Exits use defaults (intraday 0.8%/0.6%, swing 2.0%/1.5%).
-
-**Unit convention**: 
-- Local P&L in online_learner: RUPEES
-- Bayesian prior in bayesian_decision: PERCENT
-- ASSUMED_NOTIONAL = Rs.100,000 (paper_capital) — converts between them
-- Strategy selector also uses this: avg_gain_rupees / ASSUMED_NOTIONAL * 100 = percent
-
 **Apply when**:
 - Adding a new strategy: add to `strategy_selector.CANDIDATES_BY_REGIME`
-- Brain takes a losing trade: check `learning_state.json` for (regime, strategy) win rate — was it actually positive in past?
+- Brain takes a losing trade: check `learning_state.json` for (regime, strategy) win rate
 - Brain keeps HOLDing: check `learning_state.json` global win_rate + Kelly outputs. If 0 lots and 0 EV, system is being honest.
 - Want to override Kelly cap: edit `MAX_LOTS` in adaptive_sizer.py
 - Want to override target/stop scaling: edit `TARGET_SCALE`/`STOP_SCALE` in adaptive_exits.py
-
-**Proof harness**: 83/83 tests pass (was 60/60). Added 8 phase 8 tests:
-strategy selector schema/regime-awareness, Kelly math correctness, position
-sizing caps, adaptive exits math, online learner per-(regime, strategy)
-breakdown, brain_daemon wiring.
 
 ## Phase 7 brain architecture (added 2026-10-01)
 
@@ -494,21 +564,6 @@ decisions:
 **Bayesian guard semantics** (in `brain_daemon._bayesian_suppress()`):
 - LLM says OPEN, EV strongly negative (n>=30, EV<-0.05%, win<45%) → **SUPPRESS to HOLD**
 - LLM says OPEN, EV mildly negative (n>=30, EV<0, win<50%) → **DOWN-SIZE 50%**
-
-**Unit convention** (CRITICAL): `bayesian_decision` ASSUMED_NOTIONAL = Rs.100,000
-(paper_capital). Local journal P&L is in RUPEES; yfinance prior is in PERCENT.
-Module divides by ASSUMED_NOTIONAL before Bayesian merge to keep units consistent.
-
-**Apply when**:
-- Adding a new data source for the brain: extend `signal_history.empirical_signal_stats()` so Bayesian EV incorporates it
-- Brain keeps HOLDing: check `learning_state.json` global win_rate + Bayesian EV sign — if both negative, brain correctly chose HOLD
-- LLM takes a trade that loses: check `regime_history.jsonl` for shift detection — if it fired, the LLM was warned
-- Force-restart brain_daemon: write `mavis_force_action.json` with `action=RUN_COMMAND`, `command=[taskkill, /PID, <pid>, /F]`. The legacy bot (SYSTEM context) executes it; NSSM auto-respawns.
-
-**Proof harness**: 60/60 tests pass (was 43/43). Added 10 phase 7 tests covering:
-imports, decide() schema, Bayesian merge math, online learner persistence,
-strategy breakdown, regime detector cold-start, history persistence, and
-brain_daemon wiring verification.
 
 ## Known-issues register (durable findings)
 

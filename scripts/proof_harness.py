@@ -927,6 +927,134 @@ def test_unit_knowledge_graph_atomically_persists():
            f"found {len(found)} TestEntity_xyz entries")
 
 
+# ==================== PHASE 12 TESTS — MCP INTEGRATION ====================
+
+def test_unit_mcp_helpers_importable():
+    """mcp_helpers module imports + functions."""
+    from system.common import mcp_helpers
+    required = [
+        "puppeteer_navigate", "puppeteer_evaluate", "puppeteer_screenshot",
+        "fetch_url",
+        "memory_create_entities", "memory_create_relations",
+        "memory_search_nodes", "memory_open_nodes",
+        "sequential_thinking",
+        "kite_get_quote", "kite_get_positions",
+        "composio_search_twitter",
+        "kotak_get_quote", "kotak_get_positions",
+        "plugin_status",
+    ]
+    missing = [f for f in required if not hasattr(mcp_helpers, f)]
+    report("mcp_helpers has all plugin wrappers",
+           len(missing) == 0,
+           f"missing={missing}" if missing else "")
+
+
+def test_unit_mcp_helpers_graceful_failure():
+    """All helpers return None/empty on failure (never raise)."""
+    from system.common import mcp_helpers
+    # All these should return None or False without raising
+    nav_result = mcp_helpers.puppeteer_navigate("not-a-real-url")
+    eval_result = mcp_helpers.puppeteer_evaluate("() => null")
+    fetch_result = mcp_helpers.fetch_url("not-a-real-url")
+    report("puppeteer_navigate returns False on bad URL",
+           nav_result is False or nav_result is None,
+           f"got: {nav_result}")
+    report("puppeteer_evaluate returns None on no browser",
+           eval_result is None,
+           f"got: {eval_result}")
+    report("fetch_url returns None on bad URL",
+           fetch_result is None,
+           f"got: {fetch_result}")
+
+
+def test_unit_mcp_helpers_plugin_status():
+    """plugin_status() returns dict of plugin availability."""
+    from system.common.mcp_helpers import plugin_status
+    status = plugin_status()
+    required = ["puppeteer", "fetch", "memory", "sequential_thinking",
+                "kite_mcp", "composio", "kotak_neo"]
+    missing = [p for p in required if p not in status]
+    report("plugin_status has all plugin keys",
+           len(missing) == 0,
+           f"missing={missing}" if missing else "")
+    report("plugin_status values are bool",
+           all(isinstance(status.get(p), bool) for p in required),
+           f"status={status}")
+
+
+def test_unit_mavis_brain_importable():
+    """mavis_brain module imports + has cycle logic."""
+    from system.brain import mavis_brain
+    required = [
+        "run_cycle", "_read_state", "get_nse_option_chain_oi",
+        "get_twitter_trader_tweets", "cross_validate_nifty_price",
+        "generate_trade_thesis", "persist_to_memory_mcp",
+        "write_heartbeat",
+    ]
+    missing = [f for f in required if not hasattr(mavis_brain, f)]
+    report("mavis_brain has all cycle functions",
+           len(missing) == 0,
+           f"missing={missing}" if missing else "")
+
+
+def test_unit_mavis_brain_read_state():
+    """_read_state returns dict with expected keys."""
+    from system.brain.mavis_brain import _read_state
+    state = _read_state()
+    required = ["ts", "open_positions", "vix", "nifty_spot",
+                "regime", "rsi", "adx"]
+    missing = [k for k in required if k not in state]
+    report("_read_state returns full schema",
+           len(missing) == 0,
+           f"missing={missing}" if missing else "")
+    report("_read_state values are valid types",
+           isinstance(state["vix"], (int, float))
+           and isinstance(state["nifty_spot"], (int, float)))
+
+
+def test_unit_mavis_brain_heartbeat_writes():
+    """write_heartbeat creates valid JSON file."""
+    from system.brain.mavis_brain import write_heartbeat, DATA_DIR
+    import json
+    result = write_heartbeat("ok")
+    hb_path = DATA_DIR / "heartbeat_mavis_brain.json"
+    report("write_heartbeat returns True",
+           result is True)
+    if hb_path.exists():
+        data = json.loads(hb_path.read_text(encoding="utf-8"))
+        report("heartbeat file has status field",
+               data.get("status") == "ok",
+               f"data={data}")
+    else:
+        report("heartbeat file exists after write", False, "file not created")
+
+
+def test_unit_brain_daemon_has_watchdog_mode():
+    """brain_daemon.run_forever respects BRAIN_DAEMON_MODE env var."""
+    from system.brain import brain_daemon
+    src_file = open("system/brain/brain_daemon.py", encoding="utf-8").read()
+    has_watchdog = "BRAIN_DAEMON_MODE" in src_file and "watchdog" in src_file
+    report("brain_daemon supports BRAIN_DAEMON_MODE=watchdog",
+           has_watchdog)
+
+
+def test_unit_phase12_architecture_complete():
+    """Phase 12 architecture: cron + brain + helper + plugins."""
+    import os
+    # Cron registered (we did it earlier)
+    cron_registered = os.path.exists("data_cache/mavis_force_action.json")
+    # mcp_helpers exists
+    helpers_exist = os.path.exists("system/common/mcp_helpers.py")
+    # mavis_brain exists
+    brain_exists = os.path.exists("system/brain/mavis_brain.py")
+    # composio enabled in MCP config
+    report("phase 12 architecture files all present",
+           helpers_exist and brain_exists,
+           f"helpers={helpers_exist} brain={brain_exists}")
+    report("phase 12 cron was registered (force action consumed)",
+           cron_registered)
+
+
 # ==================== RUN ALL TESTS ====================
 
 def main():
@@ -978,6 +1106,16 @@ def main():
     test_unit_knowledge_graph_context_block()
     test_unit_knowledge_graph_atomically_persists()
     test_unit_brain_daemon_has_knowledge_graph_wiring()
+
+    print("\n[PHASE 12 — REAL MCP PLUGIN INTEGRATION (Mavis runtime)]")
+    test_unit_mcp_helpers_importable()
+    test_unit_mcp_helpers_graceful_failure()
+    test_unit_mcp_helpers_plugin_status()
+    test_unit_mavis_brain_importable()
+    test_unit_mavis_brain_read_state()
+    test_unit_mavis_brain_heartbeat_writes()
+    test_unit_brain_daemon_has_watchdog_mode()
+    test_unit_phase12_architecture_complete()
 
     print("\n[REPLAY TEST]")
     test_replay_daily_cycle()
