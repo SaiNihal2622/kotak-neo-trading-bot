@@ -126,6 +126,8 @@ def test_unit_signal_confirmation():
     """Multi-signal: single signal alone = HOLD."""
     import os
     os.environ["KOTAK_ENABLE_SWING"] = "0"
+    import system.brain.brain_daemon as _bd
+    _bd.ENABLE_SWING = False  # belt-and-suspenders: enforce for this test
     from system.brain.brain_daemon import BrainDaemon
     bd = BrainDaemon()
     # All confirmations met: should OPEN
@@ -903,28 +905,58 @@ def test_unit_brain_daemon_has_knowledge_graph_wiring():
 
 
 def test_unit_knowledge_graph_atomically_persists():
-    """Save → reload → data is preserved."""
+    """Save → reload → data is preserved.
+
+    2026-10-02 fix: previously this test called `_save(graph)` directly on
+    the production GRAPH_PATH, which wiped the seeded demo data and
+    caused "recall trending_down returns trades: got 0 trades" to fail on
+    every subsequent run. Now we snapshot the production graph, run the
+    save/reload test against a *temp* file via a monkey-patched
+    GRAPH_PATH, then restore the production graph.
+    """
+    import json as _json
     from system.common.knowledge_graph import (
-        _load, _save, _ensure_entity,
+        _load, _save, _ensure_entity, GRAPH_PATH,
     )
-    graph = {"version": 1, "entities": [], "relations": []}
-    _ensure_entity(graph, "TestEntity_xyz", "TestType", ["obs1", "obs2"])
-    _save(graph)
-    reloaded = _load(force=True)
-    found = [e for e in reloaded.get("entities", [])
-             if e["name"] == "TestEntity_xyz"]
-    # Allow for stale cache to not yet contain it (might need force=True)
-    # The test is whether data persists across save → reload
-    if not found:
-        # Force fresh read
-        from system.common.knowledge_graph import GRAPH_PATH
-        import json as _json
-        fresh = _json.loads(GRAPH_PATH.read_text(encoding="utf-8"))
-        found = [e for e in fresh.get("entities", [])
+    # 1. Snapshot the production graph
+    prod_path = GRAPH_PATH
+    backup_path = prod_path.with_suffix(".json.test_backup")
+    if prod_path.exists():
+        backup_path.write_bytes(prod_path.read_bytes())
+
+    # 2. Run the test against a temp file (no production pollution)
+    try:
+        import system.common.knowledge_graph as kg_mod
+        tmp_path = prod_path.with_suffix(".json.test_tmp")
+        kg_mod.GRAPH_PATH = tmp_path
+        # Also reset the module-level cache so _load uses the new path
+        kg_mod._cache_ts = 0.0
+        kg_mod._cache_data = None
+
+        graph = {"version": 1, "entities": [], "relations": []}
+        _ensure_entity(graph, "TestEntity_xyz", "TestType", ["obs1", "obs2"])
+        _save(graph)
+        reloaded = _load(force=True)
+        found = [e for e in reloaded.get("entities", [])
                  if e["name"] == "TestEntity_xyz"]
-    report("knowledge_graph persists across save/reload",
-           len(found) > 0,
-           f"found {len(found)} TestEntity_xyz entries")
+        if not found:
+            fresh = _json.loads(tmp_path.read_text(encoding="utf-8"))
+            found = [e for e in fresh.get("entities", [])
+                     if e["name"] == "TestEntity_xyz"]
+        report("knowledge_graph persists across save/reload",
+               len(found) > 0,
+               f"found {len(found)} TestEntity_xyz entries")
+    finally:
+        # 3. Restore the production graph (and module path)
+        kg_mod.GRAPH_PATH = prod_path
+        kg_mod._cache_ts = 0.0
+        kg_mod._cache_data = None
+        if backup_path.exists():
+            backup_path.replace(prod_path)
+        else:
+            prod_path.unlink(missing_ok=True)
+        tmp_path = prod_path.with_suffix(".json.test_tmp")
+        tmp_path.unlink(missing_ok=True)
 
 
 # ==================== PHASE 12 TESTS — MCP INTEGRATION ====================
