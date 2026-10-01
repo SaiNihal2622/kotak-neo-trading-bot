@@ -170,7 +170,10 @@ def compute_position_size(
     # lot_size * spot_price = 75 * 25000 = 1,875,000 per lot
     spot_price = 25000.0
     lots_float = (cash * sized_pct) / (lot_size * spot_price)
-    lots = max(0, int(lots_float))
+    # PHASE 9 FIX (2026-10-01): round to whole lots so qty is multiple
+    # of lot_size (pre-flight gate "lot_size" rejects non-multiples).
+    # round() instead of int() so 0.5 lot → 1 lot (not 0).
+    lots = max(0, round(lots_float))
 
     # Cap at MAX_LOTS
     lots = min(lots, max_lots)

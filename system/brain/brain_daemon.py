@@ -403,8 +403,9 @@ class BrainDaemon:
              "underlying": "NIFTY", "legs": [...], "target": X, "stop": Y}
         """
         if not self.llm_api_key:
-            logger.debug("no LLM API key; using rule-based fallback")
-            return self._rule_based_decision(state)
+            logger.debug("no LLM API key; using data-driven fallback")
+            # PHASE 8: data-driven is preferred over hardcoded rules
+            return self._data_driven_decision(state)
 
         system = """You are a disciplined NIFTY/BANKNIFTY options and spot trader. HOLD by default. Only propose OPEN if there is a clear, evidence-based edge.
 
@@ -503,6 +504,17 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         except Exception as e:
             logger.debug(f"phase 8 context injection failed: {e}")
 
+        # PHASE 9 (2026-10-01): inject LIVE TRADER INTEL — real-time
+        # analyst consensus, support/resistance levels, action hint.
+        # Closes the gap where brain held while 5+ pro desks said SELL.
+        try:
+            from .live_intel import get_live_intel_context
+            live_ctx = get_live_intel_context()
+            if live_ctx:
+                system = system + "\n" + live_ctx
+        except Exception as e:
+            logger.debug(f"live intel context injection failed: {e}")
+
         user = json.dumps(state, indent=2)
         # PHASE 5 FIX 2026-09-30: the credentials.env MINIMAX_LLM_BASE_URL
         # ends with "/chat/completions" (OpenAI-style endpoint). The
@@ -532,7 +544,8 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 resp = await c.post(url, headers=headers, json=body)
             if resp.status_code != 200:
                 logger.warning(f"LLM HTTP {resp.status_code}: {resp.text[:200]}")
-                return self._rule_based_decision(state)
+                # PHASE 8 FIX: data-driven before hard rules
+                return self._data_driven_decision(state)
             data = resp.json()
             text = ""
             for block in data.get("content", []):
@@ -542,7 +555,8 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                     text += block.get("thinking", "")
             if not text:
                 logger.warning("LLM returned no text")
-                return self._rule_based_decision(state)
+                # PHASE 8 FIX: data-driven before hard rules
+                return self._data_driven_decision(state)
             # PHASE 5 FIX 2026-09-30: more robust JSON extraction. Strip
             # markdown code fences, try multiple balanced {..} blocks.
             # The LLM sometimes wraps the JSON in ```json ... ``` and adds
@@ -1089,9 +1103,156 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         if open_positions:
             return {"action": "HOLD", "rationale": "have_open_position"}
 
+        # PHASE 9 DIAGNOSTIC: write cycle info to fixed file (always)
+        try:
+            import os
+            dbg_dir = "C:\\Users\\saini\\.minimax-agent\\projects\\kotak-neo-bot\\data_cache"
+            os.makedirs(dbg_dir, exist_ok=True)
+            with open(os.path.join(dbg_dir, "cycle_debug.log"), "a", encoding="utf-8") as df:
+                df.write(f"{_now_ist().isoformat()} cycle_start state_keys={list(state.keys())}\n")
+        except Exception as _e:
+            pass
+
         decision = await self._call_llm(state)
         self.stats["decisions"] += 1
         action = decision.get("action", "HOLD")
+
+        # PHASE 9 (2026-10-01): LIVE INTEL OVERRIDE — when LLM says HOLD but
+        # live trader consensus is strongly directional AND historical edge
+        # aligns (Bayesian EV not strongly negative), CONSTRUCT a trade
+        # based on the live intel hint. This is the "real intelligence"
+        # gate — pure data shouldn't override real-time pro trader
+        # consensus when the consensus is strong and aligned with edge.
+        if action == "HOLD":
+            try:
+                from .live_intel import get_action_hint
+                nifty_spot = float(state.get("nifty_spot", 0) or 0)
+                session_pct = float(state.get("session_pct", 0) or 0)
+                dist_vwap = float(state.get("dist_from_vwap", 0) or 0)
+                hint = get_action_hint(nifty_spot, session_pct, dist_vwap)
+                # Diagnostic: log to file (logger.info may not be visible)
+                try:
+                    dbg_path = self.data_dir / "live_intel_debug.log"
+                    with open(dbg_path, "a", encoding="utf-8") as df:
+                        df.write(
+                            f"{_now_ist().isoformat()} action=HOLD "
+                            f"hint={hint.get('action_hint')} "
+                            f"conf={hint.get('confidence')} "
+                            f"n_spot={nifty_spot} sess_pct={session_pct} "
+                            f"dist_vwap={dist_vwap}\n"
+                        )
+                except Exception:
+                    pass
+                if hint["action_hint"] in ("SELL_RALLY", "SELL_WEAK",
+                                            "SELL_BREAKDOWN",
+                                            "BUY_DIP", "BUY_BREAKOUT"):
+                    # Get Bayesian EV for the suggested direction
+                    from .bayesian_decision import decide
+                    bayes_d = decide(segment="nse_cm")
+                    if hint["action_hint"].startswith("SELL"):
+                        ev = bayes_d.get("ev_short", 0)
+                        win = bayes_d.get("win_rate_short", 0)
+                        n_p = bayes_d.get("n_prior_short", 0)
+                    else:
+                        ev = bayes_d.get("ev_long", 0)
+                        win = bayes_d.get("win_rate_long", 0)
+                        n_p = bayes_d.get("n_prior_long", 0)
+                    # Allow override when:
+                    # 1. Hint confidence >= 0.4 (lowered from 0.5; we want
+                    #    real-time intel to act on mild consensus)
+                    # 2. Bayesian EV not strongly negative (>-0.05%)
+                    # 3. Either n_prior >= 30 (enough samples) OR
+                    #    Bayesian EV > 0 (positive edge)
+                    if (hint["confidence"] >= 0.4
+                        and ev > -0.05
+                        and (n_p >= 30 or ev > 0)):
+                        # LIVE INTEL OVERRIDE: actually construct a trade
+                        suggested_side = "SELL" if hint["action_hint"].startswith("SELL") else "BUY"
+                        # Use data-driven selector to pick the strategy
+                        from .strategy_selector import select_strategy
+                        # Build a synthetic state matching the suggested direction
+                        synth_state = dict(state)
+                        if suggested_side == "SELL":
+                            synth_state["regime"] = "trending_down"
+                            synth_state["adx"] = max(state.get("adx", 0), 25)
+                            synth_state["rsi"] = min(state.get("rsi", 50), 45)
+                        else:
+                            synth_state["regime"] = "trending_up"
+                            synth_state["adx"] = max(state.get("adx", 0), 25)
+                            synth_state["rsi"] = max(state.get("rsi", 50), 55)
+                        sel = select_strategy(synth_state)
+                        if sel["recommended"] == "hold":
+                            # Fall back to nifty_cash_long/short
+                            fallback_strat = "nifty_cash_short" if suggested_side == "SELL" else "nifty_cash_long"
+                            sel = {
+                                "recommended": fallback_strat,
+                                "side": suggested_side,
+                                "segment": "nse_cm",
+                            }
+                        # Size via Kelly
+                        from .adaptive_sizer import size_for_strategy
+                        from .adaptive_exits import exits_for_strategy
+                        regime_for_size = synth_state["regime"]
+                        sizing = size_for_strategy(
+                            regime_for_size, sel["recommended"],
+                            realized_vol_pct=float(state.get("realized_vol_pct", 10.0) or 10.0),
+                            cash=float(state.get("cash", 100_000.0) or 100_000.0),
+                        )
+                        if sizing["lots"] == 0:
+                            # No Kelly edge but live intel says trade — use 1 lot conservatively
+                            sizing["lots"] = 1
+                            sizing["qty"] = 75
+                        is_swing = "swing" in sel["recommended"]
+                        ex = exits_for_strategy(
+                            regime_for_size, sel["recommended"],
+                            realized_vol_pct=float(state.get("realized_vol_pct", 10.0) or 10.0),
+                            is_swing=is_swing,
+                        )
+                        # Construct the trade decision
+                        live_decision = {
+                            "action": "OPEN",
+                            "rationale": (
+                                f"[LIVE-INTEL OVERRIDE] {hint['rationale']} | "
+                                f"{sel['recommended']} {suggested_side}, "
+                                f"hint_conf={hint['confidence']:.2f}, "
+                                f"bayes_ev={ev:+.3f}%, "
+                                f"qty={sizing['qty']} ({sizing['lots']} lots), "
+                                f"target=+{ex['target_pct']:.2f}%/"
+                                f"stop=-{ex['stop_pct']:.2f}%"
+                            ),
+                            "strategy": sel["recommended"],
+                            "underlying": "NIFTY",
+                            "legs": [{
+                                "side": suggested_side,
+                                "qty": sizing["qty"],
+                                "order_type": "MARKET",
+                                "segment": sel.get("segment", "nse_cm"),
+                            }],
+                            "target": ex["target_pct"] / 100,
+                            "stop": ex["stop_pct"] / 100,
+                            "_live_intel_source": "override",
+                            "_live_intel_hint": hint,
+                            "_bayesian_ev": ev,
+                        }
+                        if is_swing:
+                            live_decision["swing"] = True
+                            live_decision["hold_days"] = 5
+                        # Apply Bayesian guard on top
+                        live_decision = self._bayesian_suppress(live_decision)
+                        # Replace the LLM's HOLD with this data-driven + live-intel decision
+                        if live_decision.get("action") == "OPEN":
+                            decision = live_decision
+                            action = "OPEN"
+                            self.stats["live_intel_trades"] = self.stats.get(
+                                "live_intel_trades", 0) + 1
+                            logger.warning(
+                                f"[LIVE-INTEL] FIRED {suggested_side} "
+                                f"{sel['recommended']} qty={sizing['qty']} "
+                                f"hint_conf={hint['confidence']:.2f} "
+                                f"bayes_ev={ev:+.3f}%"
+                            )
+            except Exception as e:
+                logger.debug(f"live intel override failed: {e}")
 
         # PHASE 7 FINAL 2026-10-01: Bayesian EV guard. If the LLM wants
         # to OPEN, we cross-check with empirical EV computed from

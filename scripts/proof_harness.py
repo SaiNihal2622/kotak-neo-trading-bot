@@ -754,6 +754,99 @@ def test_unit_brain_daemon_has_data_driven_decision():
     report("_call_llm injects adaptive_exits", has_exits)
 
 
+# ==================== PHASE 9 TESTS — LIVE TRADER INTEL ====================
+
+def test_unit_live_intel_importable():
+    """Live intel module imports + has required functions."""
+    from system.brain import live_intel
+    has_fetch = hasattr(live_intel, "fetch_intel")
+    has_hint = hasattr(live_intel, "get_action_hint")
+    has_ctx = hasattr(live_intel, "get_live_intel_context")
+    report("live_intel module imports", has_fetch and has_hint and has_ctx)
+
+
+def test_unit_live_intel_aggregates_seed():
+    """Aggregated consensus from seed data has expected shape."""
+    from system.brain.live_intel import fetch_intel, _aggregate_views
+    intel = fetch_intel()
+    required = ["biases_count", "consensus_bias", "top_supports",
+                "top_resistances", "quotes"]
+    missing = [k for k in required if k not in intel]
+    report("intel returns full schema",
+           len(missing) == 0,
+           f"missing={missing}" if missing else "")
+    # Consensus bias is one of valid values
+    report("consensus_bias in valid set",
+           intel["consensus_bias"] in (
+               "strong_bearish", "mild_bearish", "neutral",
+               "mild_bullish", "strong_bullish", "cautious"),
+           f"got {intel['consensus_bias']}")
+
+
+def test_unit_live_intel_action_hint_classification():
+    """Action hint logic: bearish + below VWAP → SELL_WEAK."""
+    from system.brain.live_intel import _classify_action, _aggregate_views, ANALYST_VIEWS_SEED
+    agg = _aggregate_views(ANALYST_VIEWS_SEED, current_nifty=22468)
+    # current_nifty=22468 is well below all resistance (22780+)
+    # but session_pct=-0.33%, dist_vwap=-0.28% (below VWAP, slightly negative session)
+    hint = _classify_action(agg, 22468, -0.33, -0.28)
+    report("Bearish + below VWAP → SELL_WEAK or HOLD",
+           hint["action_hint"] in ("SELL_WEAK", "HOLD", "SELL_RALLY"),
+           f"got {hint['action_hint']}")
+
+
+def test_unit_live_intel_sell_rally_at_resistance():
+    """Price near resistance + bearish → SELL_RALLY."""
+    from system.brain.live_intel import _classify_action, _aggregate_views, ANALYST_VIEWS_SEED
+    agg = _aggregate_views(ANALYST_VIEWS_SEED, current_nifty=22468)
+    # Current price near resistance 22780
+    hint = _classify_action(agg, 22780, -0.20, -0.10)
+    report("At resistance + bearish + below VWAP → SELL_RALLY",
+           hint["action_hint"] == "SELL_RALLY",
+           f"got {hint['action_hint']}")
+
+
+def test_unit_live_intel_buy_dip_at_support():
+    """Bullish consensus + at support → BUY_DIP."""
+    bullish_views = {
+        "desk_a": {"support": [22400], "resistance": [22780],
+                   "bias": "bullish", "key_levels": [22400],
+                   "quote": "Strong buy on dips."},
+        "desk_b": {"support": [22400], "resistance": [22800],
+                   "bias": "bullish", "key_levels": [22400],
+                   "quote": "Bullish momentum."},
+        "desk_c": {"support": [22500], "resistance": [22800],
+                   "bias": "bullish", "key_levels": [22500],
+                   "quote": "Trend positive."},
+        "desk_d": {"support": [22400], "resistance": [22780],
+                   "bias": "bullish", "key_levels": [22400],
+                   "quote": "Buy the dip."},
+        "desk_e": {"support": [22400], "resistance": [22780],
+                   "bias": "bullish", "key_levels": [22400],
+                   "quote": "Strong upside."},
+    }
+    from system.brain.live_intel import _aggregate_views, _classify_action
+    agg = _aggregate_views(bullish_views, current_nifty=22400)
+    # At support 22400 with bullish consensus
+    hint = _classify_action(agg, 22400, 0.1, 0.05)
+    report("At support + strong_bullish → BUY_DIP",
+           hint["action_hint"] == "BUY_DIP",
+           f"got {hint['action_hint']}")
+
+
+def test_unit_brain_daemon_has_live_intel_wiring():
+    """brain_daemon injects live_intel context in _call_llm."""
+    from system.brain import brain_daemon
+    import inspect
+    src = inspect.getsource(brain_daemon.BrainDaemon._call_llm)
+    has_live = "live_intel" in src
+    report("_call_llm injects live_intel context", has_live)
+    # Check cycle has live intel override
+    cycle_src = inspect.getsource(brain_daemon.BrainDaemon.cycle)
+    has_override = "live_intel" in cycle_src and "LIVE-INTEL" in cycle_src
+    report("cycle has LIVE-INTEL override block", has_override)
+
+
 # ==================== RUN ALL TESTS ====================
 
 def main():
@@ -790,6 +883,14 @@ def main():
     test_unit_adaptive_exits_math()
     test_unit_online_learner_per_regime_strategy()
     test_unit_brain_daemon_has_data_driven_decision()
+
+    print("\n[PHASE 9 — LIVE TRADER INTEL (real-time analyst consensus)]")
+    test_unit_live_intel_importable()
+    test_unit_live_intel_aggregates_seed()
+    test_unit_live_intel_action_hint_classification()
+    test_unit_live_intel_sell_rally_at_resistance()
+    test_unit_live_intel_buy_dip_at_support()
+    test_unit_brain_daemon_has_live_intel_wiring()
 
     print("\n[REPLAY TEST]")
     test_replay_daily_cycle()
