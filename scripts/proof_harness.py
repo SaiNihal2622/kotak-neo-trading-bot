@@ -847,6 +847,86 @@ def test_unit_brain_daemon_has_live_intel_wiring():
     report("cycle has LIVE-INTEL override block", has_override)
 
 
+# ==================== PHASE 10 TESTS — PLUGIN / KNOWLEDGE GRAPH ====================
+
+def test_unit_knowledge_graph_importable():
+    """Knowledge graph module imports + has core functions."""
+    from system.common import knowledge_graph
+    has_rem = hasattr(knowledge_graph, "remember_trade_outcome")
+    has_rec = hasattr(knowledge_graph, "recall_strategy_for_regime")
+    has_less = hasattr(knowledge_graph, "recall_lessons")
+    has_ctx = hasattr(knowledge_graph, "get_memory_context_for_prompt")
+    has_seed = hasattr(knowledge_graph, "seed_demo_data")
+    report("knowledge_graph imports + functions",
+           all([has_rem, has_rec, has_less, has_ctx, has_seed]))
+
+
+def test_unit_knowledge_graph_seed_and_recall():
+    """Seed demo data + recall for trending_down regime."""
+    from system.common.knowledge_graph import (
+        seed_demo_data, recall_strategy_for_regime, get_stats,
+    )
+    seed_demo_data()  # idempotent
+    stats = get_stats()
+    report("knowledge_graph has entities",
+           stats["n_entities"] > 0,
+           f"n_entities={stats['n_entities']}")
+    # Recall for trending_down
+    trades = recall_strategy_for_regime("trending_down")
+    report("recall trending_down returns trades",
+           len(trades) > 0,
+           f"got {len(trades)} trades")
+
+
+def test_unit_knowledge_graph_context_block():
+    """Context block has strategy stats + lessons."""
+    from system.common.knowledge_graph import (
+        seed_demo_data, get_memory_context_for_prompt,
+    )
+    seed_demo_data()
+    ctx = get_memory_context_for_prompt("trending_down")
+    report("context has KNOWLEDGE GRAPH header",
+           "[KNOWLEDGE GRAPH" in ctx,
+           f"got: {ctx[:200]}")
+    report("context mentions at least one strategy",
+           "n=" in ctx and "win=" in ctx,
+           f"got: {ctx[:300]}")
+
+
+def test_unit_brain_daemon_has_knowledge_graph_wiring():
+    """brain_daemon injects knowledge graph context in _call_llm."""
+    from system.brain import brain_daemon
+    import inspect
+    src = inspect.getsource(brain_daemon.BrainDaemon._call_llm)
+    has_kg = "knowledge_graph" in src
+    report("_call_llm injects knowledge_graph context", has_kg)
+
+
+def test_unit_knowledge_graph_atomically_persists():
+    """Save → reload → data is preserved."""
+    from system.common.knowledge_graph import (
+        _load, _save, _ensure_entity,
+    )
+    graph = {"version": 1, "entities": [], "relations": []}
+    _ensure_entity(graph, "TestEntity_xyz", "TestType", ["obs1", "obs2"])
+    _save(graph)
+    reloaded = _load(force=True)
+    found = [e for e in reloaded.get("entities", [])
+             if e["name"] == "TestEntity_xyz"]
+    # Allow for stale cache to not yet contain it (might need force=True)
+    # The test is whether data persists across save → reload
+    if not found:
+        # Force fresh read
+        from system.common.knowledge_graph import GRAPH_PATH
+        import json as _json
+        fresh = _json.loads(GRAPH_PATH.read_text(encoding="utf-8"))
+        found = [e for e in fresh.get("entities", [])
+                 if e["name"] == "TestEntity_xyz"]
+    report("knowledge_graph persists across save/reload",
+           len(found) > 0,
+           f"found {len(found)} TestEntity_xyz entries")
+
+
 # ==================== RUN ALL TESTS ====================
 
 def main():
@@ -891,6 +971,13 @@ def main():
     test_unit_live_intel_sell_rally_at_resistance()
     test_unit_live_intel_buy_dip_at_support()
     test_unit_brain_daemon_has_live_intel_wiring()
+
+    print("\n[PHASE 10 — PLUGIN / KNOWLEDGE GRAPH (persistent memory)]")
+    test_unit_knowledge_graph_importable()
+    test_unit_knowledge_graph_seed_and_recall()
+    test_unit_knowledge_graph_context_block()
+    test_unit_knowledge_graph_atomically_persists()
+    test_unit_brain_daemon_has_knowledge_graph_wiring()
 
     print("\n[REPLAY TEST]")
     test_replay_daily_cycle()

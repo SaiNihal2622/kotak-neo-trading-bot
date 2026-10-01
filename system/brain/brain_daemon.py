@@ -515,6 +515,18 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
         except Exception as e:
             logger.debug(f"live intel context injection failed: {e}")
 
+        # PHASE 10 (2026-10-01): inject KNOWLEDGE GRAPH context — persistent
+        # memory of strategies that worked in current regime. Local JSON
+        # store (works in NSSM) + memory MCP fallback (when in Mavis runtime).
+        try:
+            from ..common.knowledge_graph import get_memory_context_for_prompt
+            regime = state.get("regime", "unknown")
+            mem_ctx = get_memory_context_for_prompt(regime)
+            if mem_ctx:
+                system = system + "\n" + mem_ctx
+        except Exception as e:
+            logger.debug(f"knowledge graph context injection failed: {e}")
+
         user = json.dumps(state, indent=2)
         # PHASE 5 FIX 2026-09-30: the credentials.env MINIMAX_LLM_BASE_URL
         # ends with "/chat/completions" (OpenAI-style endpoint). The
@@ -1415,6 +1427,25 @@ START YOUR RESPONSE WITH { CHARACTER. NO PREAMBLE."""
                 self.stats["errors"] += 1
         elif action == "SWING_CLOSE":
             self.stats["swing_close"] = self.stats.get("swing_close", 0) + 1
+            # PHASE 10: record swing close outcome to knowledge graph
+            try:
+                from ..common.knowledge_graph import remember_trade_outcome
+                to_close_data = to_close[0] if to_close else {}
+                pnl = float(to_close_data.get("pnl", 0) or 0)
+                remember_trade_outcome(
+                    strategy=to_close_data.get("strategy", "swing"),
+                    side=to_close_data.get("side", "BUY"),
+                    regime=state.get("regime", "unknown"),
+                    pnl_rupees=pnl,
+                    pnl_pct=(pnl / 100000.0) * 100,  # approx
+                    win=pnl > 0,
+                    nifty_spot=float(state.get("nifty_spot", 0) or 0),
+                    vix=float(state.get("vix", 0) or 0),
+                    adx=float(state.get("adx", 0) or 0),
+                    source="brain_daemon_swing_close",
+                )
+            except Exception as e:
+                logger.debug(f"knowledge graph record (swing close) failed: {e}")
         else:
             self.stats["hold"] += 1
 
