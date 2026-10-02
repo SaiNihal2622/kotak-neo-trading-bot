@@ -1931,6 +1931,30 @@ un_forever().
 
 ## Known-issues register (durable findings) — additions this phase
 
+### 2026-10-03: Phase 12 — cron sessionId-binding overflow → mode:new
+
+- Cron: `kotak-mavis-brain-cycle-phase12` (`d61c77e8-3541-45fa-b3cc-b3c2b3f5bac8`),
+  schedule `*/5 9-15 * * 1-5` IST (every 5 min during market hours).
+- Bug: was bound to fixed `sessionId: mvs_1430b199e7bd49e5bd5e78aecb491859`
+  from 2026-08-31 to 2026-10-03. Every cron tick appended a "PHASE 12 BRAIN
+  CYCLE" prompt to that one session. After ~25 turns the context exceeded
+  the LLM checkpoint-generation ceiling; every subsequent tick failed with
+  `errorCode 50001` (compaction_failed). Session accumulated 20+ failed
+  compaction events before anyone noticed — the Mavis brain was silently
+  dead for ~33 days while the NSSM bot kept trading.
+- Fix: `cron update cron_id=d61c77e8-... session={mode:"new"}`. Each tick
+  now spawns a fresh isolated session tagged
+  `purpose: cron:mavis:kotak-mavis-brain-cycle-phase12` — no context
+  accumulation possible. Verified at 2026-10-03 02:08 IST.
+- **Apply when**:
+  - Audit any cron with `session.mode = sessionId` that fires more than a
+    few times per day/week — repoint to `mode: new`.
+  - User reports "context compaction failed" repeatedly: check the failing
+    session's attached cron. 90% of the time the binding is the bug.
+  - Creating new cron jobs: default to `mode: new` unless you need
+    cross-tick in-session state (rare; mostly when implementing
+    conversational cron prompts that build on prior context).
+
 ### 2026-10-02: Phase 12 — proof_harness self-pollution + ENABLE_SWING isolation
 
 - Commit: 800b6ca.
