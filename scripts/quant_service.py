@@ -219,6 +219,132 @@ except Exception as _now_ist_imp_err:
     log(f"now_ist-import-warn: {_now_ist_imp_err}")
 
 
+# ---------- LLM health circuit breaker ----------
+#
+# FIX 2026-10-05 20:35 IST: the LLM brain has been failing auth since
+# 2026-09-21 -- 44,675 `LLM-ERR: http 401` lines in
+# data_cache/quant_service.log -- and the failure was COMPLETELY SILENT.
+# Every degraded call returned {"type":"HOLD"} (the `if not result.get("ok")`
+# branch at the bottom of the decide path), so the system paper-traded for
+# 9 trading days without ever making a decision. Nothing alerted.
+#
+# This is the worst failure mode in the codebase: a dead brain is
+# indistinguishable from a disciplined brain that finds no setups, because
+# both produce HOLD with zero positions. Only the log distinguishes them,
+# and nobody reads a 38 MB log.
+#
+# Two classes of failure need different handling:
+#   - TRANSIENT (timeout, 429, 5xx, DNS) -> retry as before, then HOLD.
+#   - PERMANENT (401/403 auth, 402 balance, unknown model) -> retrying is
+#     pointless. Open the circuit, stop spending the tick budget on
+#     identical doomed requests, and alert ONCE (once per tick would be
+#     44k alerts).
+#
+# The latch is what makes this durable: while open, only 1 in
+# LLM_CIRCUIT_PROBE_EVERY calls actually probes the API, so the log stays
+# readable and the cause is obvious instead of drowning in repeated lines.
+
+AUTH_ERROR_MARKERS = ('http 401', 'http 402', 'http 403',
+                      'auth failed', 'unauthorized', 'insufficient_balance',
+                      'authentication_error', 'permission_denied',
+                      'invalid_api_key')
+
+_LLM_CIRCUIT = {
+    'open': False,          # True = LLM considered down, probe-only mode
+    'reason': '',           # why it opened (surfaced in state + dashboard)
+    'opened_at': None,      # iso ts when it opened
+    'last_ok_at': None,     # iso ts of last successful call
+    'last_err_at': None,
+    'consecutive_errors': 0,
+    'total_errors': 0,
+    'alerted': False,       # have we sent the one-shot alert?
+    'probes': 0,            # probe attempts made while open
+}
+
+# While the circuit is open, only 1 in N calls actually probes the API.
+LLM_CIRCUIT_PROBE_EVERY = 200
+# Consecutive failures (any class) before the circuit opens.
+LLM_CIRCUIT_ERROR_THRESHOLD = 5
+
+
+def llm_circuit_state() -> dict:
+    """Read-only snapshot of LLM health for the state file + dashboard."""
+    return dict(_LLM_CIRCUIT)
+
+
+def _classify_llm_error(error: str) -> str:
+    """'auth' for permanent credential/plan problems, else 'transient'."""
+    e = (error or '').lower()
+    for marker in AUTH_ERROR_MARKERS:
+        if marker in e:
+            return 'auth'
+    return 'transient'
+
+
+def _telegram_alerts_enabled() -> bool:
+    """Honour settings.yaml alerts.telegram.enabled.
+
+    The user's standing preference (FIX 2026-09-09) is dashboard, not
+    telegram. Critical alerts still go out -- an LLM-down alert that is
+    silently dropped because of a config flag is how we got 9 days of
+    silence -- but the config is the gate, checked explicitly rather than
+    assumed either way.
+    """
+    try:
+        import yaml as _yaml
+        cfg = _yaml.safe_load((ROOT / 'config' / 'settings.yaml').read_text(encoding='utf-8-sig')) or {}
+        return bool(((cfg.get('alerts') or {}).get('telegram') or {}).get('enabled', False))
+    except Exception:
+        return False
+
+
+def _llm_circuit_opened(reason: str) -> None:
+    """Latch the circuit open and alert exactly once."""
+    _LLM_CIRCUIT['open'] = True
+    _LLM_CIRCUIT['reason'] = reason[:300]
+    _LLM_CIRCUIT['opened_at'] = now_iso()
+    _LLM_CIRCUIT['consecutive_errors'] = 0
+    log(f"LLM-CIRCUIT-OPEN: {reason[:200]} -- LLM BRAIN IS DOWN. Every "
+        f"decision degrades to HOLD, so no trades will be taken. Fix "
+        f"MINIMAX_LLM_API_KEY / MINIMAX_LLM_BASE_URL in "
+        f"config/credentials.env, then delete "
+        f"data_cache/quant_service_restart.json to restart the brain.")
+    if not _LLM_CIRCUIT['alerted']:
+        _LLM_CIRCUIT['alerted'] = True
+        # Best-effort only. The dashboard and the state file are the
+        # source of truth; this alert must never be load-bearing.
+        try:
+            if _telegram_alerts_enabled():
+                send_telegram(f"<b>[Quant brain] LLM DOWN</b>\n{reason[:200]}")
+        except Exception:
+            pass
+
+
+def _llm_record_error(error: str) -> None:
+    """Record an LLM failure; open the circuit on an auth error, or on a
+    run of consecutive failures of any class."""
+    _LLM_CIRCUIT['total_errors'] += 1
+    _LLM_CIRCUIT['last_err_at'] = now_iso()
+    _LLM_CIRCUIT['consecutive_errors'] += 1
+    kind = _classify_llm_error(error)
+    if not _LLM_CIRCUIT['open'] and (
+            kind == 'auth'
+            or _LLM_CIRCUIT['consecutive_errors'] >= LLM_CIRCUIT_ERROR_THRESHOLD):
+        _llm_circuit_opened(f"{kind} failure: {error[:160]}")
+
+
+def _llm_record_ok() -> None:
+    """Record a successful LLM call; close the circuit if it was open."""
+    was_open = _LLM_CIRCUIT['open']
+    _LLM_CIRCUIT['open'] = False
+    _LLM_CIRCUIT['reason'] = ''
+    _LLM_CIRCUIT['consecutive_errors'] = 0
+    _LLM_CIRCUIT['last_ok_at'] = now_iso()
+    _LLM_CIRCUIT['alerted'] = False
+    if was_open:
+        log("LLM-CIRCUIT-CLOSED: LLM recovered, normal decisions resumed")
+
+
 # ---------- LLM direct call (Anthropic Messages API format) ----------
 
 def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) -> dict:
@@ -238,6 +364,21 @@ def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) ->
     if system:
         messages.append({'role': 'system', 'content': system})
     messages.append({'role': 'user', 'content': user})
+
+    # FIX 2026-10-05: honour the health circuit. While it is open we must not
+    # keep hammering a credential that is known-dead -- that is what produced
+    # 44,675 identical 401 lines. Probe 1 in LLM_CIRCUIT_PROBE_EVERY calls so
+    # a fixed key is picked up automatically without a restart, and fail fast
+    # otherwise so the caller can degrade to HOLD immediately.
+    if _LLM_CIRCUIT['open']:
+        _LLM_CIRCUIT['probes'] += 1
+        if _LLM_CIRCUIT['probes'] % LLM_CIRCUIT_PROBE_EVERY != 1:
+            return {
+                "ok": False,
+                "error": (f"llm-circuit-open: {_LLM_CIRCUIT['reason'] or 'LLM down'} "
+                          f"(probe {_LLM_CIRCUIT['probes']})"),
+                "_circuit_open": True,
+            }
 
     def _post(attempt_max_tokens: int, attempt_timeout: float) -> dict:
         """Single LLM POST. Returns dict with 'ok', 'text', 'usage', '_is_timeout'."""
@@ -273,6 +414,7 @@ def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) ->
     # quality for the common case (API is responsive).
     first = _post(max_tokens, 60.0)
     if first.get("ok"):
+        _llm_record_ok()
         return first
     # FIX 2026-09-22 13:40: retry on TIMEOUT only (not on http 4xx/5xx). When
     # MiniMax M3 was timing out 72% of the time in the 13:00 hour, a second
@@ -282,11 +424,14 @@ def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) ->
     # the first try. Non-timeout errors (http errors, JSON parse) are NOT
     # retried — those are real failures that retrying would just delay.
     if not first.get("_is_timeout"):
+        _llm_record_error(first.get("error", ""))
         return first
     retry = _post(max(1000, max_tokens // 3), 30.0)
     if retry.get("ok"):
+        _llm_record_ok()
         retry["_recovered_after_timeout"] = True
         return retry
+    _llm_record_error(retry.get("error", ""))
     return retry
 
 
@@ -3275,8 +3420,13 @@ def watch_loop():
             try:
                 if time.time() - _last_state_flush_ts > 30:
                     _last_state_flush_ts = time.time()
+                    # FIX 2026-10-05: include LLM health in the state file so a
+                    # dead brain is visible on the dashboard. Previously the only
+                    # symptom was a HOLD stream in a 38 MB log file -- invisible.
                     STATE.write_text(
-                        json.dumps({**SERVICE_STATE, "history_size": len(HISTORY)}, default=str),
+                        json.dumps({**SERVICE_STATE, "history_size": len(HISTORY),
+                                    "llm_health": llm_circuit_state()},
+                                   default=str),
                         encoding="utf-8",
                     )
             except Exception as _flush_err:
