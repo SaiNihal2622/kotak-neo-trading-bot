@@ -221,6 +221,42 @@ ENV = load_env()
 LLM_BACKEND = ENV.get('LLM_BACKEND', 'nous').strip().lower()
 LLM_MODEL = ENV.get('LLM_MODEL', 'anthropic/claude-sonnet-5.5').strip()
 
+# FIX 2026-10-05: tell the Nous client WHERE Hermes' credential lives, from
+# this file rather than from the service environment.
+#
+# NSSM runs this service as LocalSystem (confirmed: `sc qc KotakQuantService`
+# -> SERVICE_START_NAME: LocalSystem). Under that account USERPROFILE and
+# LOCALAPPDATA are both UNSET and Path.home() is
+# C:\Windows\System32\config\systemprofile, so the client could not find
+# auth.json and every decision degraded to HOLD -- twice, before this.
+#
+# NSSM's AppEnvironmentExtra is the other way to do it, but setting that
+# registry value needs an elevated prompt, whereas credentials.env is
+# already the file this process reads on every start. So the path is
+# configured here and exported into the environment before any LLM call.
+#
+# Set HERMES_AUTH_JSON in config/credentials.env if your Hermes install
+# lives somewhere other than the default location.
+if LLM_BACKEND == 'nous':
+    _hermes_auth = ENV.get('HERMES_AUTH_JSON', '').strip()
+    if not _hermes_auth:
+        _guess = Path.home() / 'AppData' / 'Local' / 'hermes' / 'auth.json'
+        if not _guess.is_file():
+            # LocalSystem: Path.home() is systemprofile, so fall back to the
+            # operator profile named in KOTAK_HOME_USER, then to the literal
+            # default. Cheap, and it beats guessing wrong under a service.
+            _fallback = ENV.get('KOTAK_HOME_USER', '').strip()
+            if _fallback:
+                _guess = Path(f'C:\\Users\\{_fallback}') / 'AppData' / 'Local' / 'hermes' / 'auth.json'
+        if _guess.is_file():
+            _hermes_auth = str(_guess)
+    if _hermes_auth:
+        os.environ['HERMES_AUTH_JSON'] = _hermes_auth
+        log(f"hermes-auth-path: {_hermes_auth}")
+    else:
+        log("hermes-auth-path-warn: could not locate Hermes auth.json; "
+            "set HERMES_AUTH_JSON in config/credentials.env")
+
 # Legacy static-key config, retained so the fallback path and the old
 # comment history stay readable. Not used unless LLM_BACKEND='minimax'.
 LLM_BASE = ENV.get('MINIMAX_LLM_BASE_URL', '').rstrip('/')

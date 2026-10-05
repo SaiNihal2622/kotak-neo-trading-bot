@@ -39,42 +39,124 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-AUTH_JSON = Path.home() / 'AppData' / 'Local' / 'hermes' / 'auth.json'
+def _default_auth_json() -> Path:
+    """Best-effort home-based default, computed LAZILY.
+
+    FIX 2026-10-05: this used to be a module-level constant,
+    `AUTH_JSON = Path.home() / ...`, which RAISES
+    `RuntimeError: Could not determine home directory` under a bare
+    LocalSystem environment (no USERPROFILE, no HOMEDRIVE/HOMEPATH, no
+    HOME). Because it was evaluated at import time, that exception would
+    have propagated out of `import nous_llm_client` and taken the whole
+    brain down -- a crash instead of a clean degraded HOLD.
+
+    Never call Path.home() at module scope. Every caller here is on a
+    request path where a raised error is recoverable, so a missing home is
+    just another candidate that doesn't exist.
+    """
+    try:
+        return Path.home() / 'AppData' / 'Local' / 'hermes' / 'auth.json'
+    except (RuntimeError, OSError):
+        # No profile at all. Return a path that will not exist; the caller
+        # raises a clear "not found at <path>" error naming it.
+        return Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'hermes' / 'auth.json'
+
+
+# Kept for backward compatibility with anything importing this name.
+# Resolved through the lazy helper so importing the module is always safe.
+AUTH_JSON = _default_auth_json()
+
+
+def _local_auth_copy() -> Path:
+    """Candidate 2: an operator-provided copy inside the project.
+
+    Reading another account's AppData as LocalSystem bypasses the ACL that
+    normally protects it. That is accepted for a local dev tool on a
+    single-user machine, but if you would rather not have a Windows service
+    account reading your profile, drop a gitignored copy of auth.json at
+    config/hermes_auth.json and this candidate will find it instead.
+
+    Extracted as a function so tests can redirect it.
+    """
+    return Path(__file__).resolve().parent.parent.parent / 'config' / 'hermes_auth.json'
 
 
 def _resolve_auth_json() -> Path:
     """Locate Hermes' auth.json regardless of the user the process runs as.
 
-    FIX 2026-10-05: this bit the brain the moment the new backend went live.
-    NSSM runs the services as LocalSystem, where `Path.home()` resolves to
-    C:\\Windows\\System32\\config\\systemprofile -- not the operator's profile.
-    The result was `auth: Hermes auth.json not found at
-    C:\\WINDOWS\\system32\\config\\systemprofile\\...` and the brain went
-    straight back to HOLD.
+    FIX 2026-10-05: this bit the brain twice, and both failures were silent
+    in the worst way -- the brain degraded to HOLD and looked disciplined.
 
-    A LocalSystem service genuinely cannot read another user's AppData (that
-    is the point of the isolation), so probing profiles is not an option
-    there. Instead: honour an explicit override, then the inherited
-    USERPROFILE, then the known install location, and finally fall back to
-    Path.home(). Anything but the final fallback must be an existing file --
-    never invent a path and never write credentials anywhere.
+    NSSM runs the services as LocalSystem (`SERVICE_START_NAME: LocalSystem`,
+    confirmed with `sc qc KotakQuantService`). Under that account:
+
+        USERPROFILE  -> unset
+        LOCALAPPDATA -> unset
+        Path.home()  -> C:\\Windows\\System32\\config\\systemprofile
+        (and with no profile env at all, Path.home() raises outright)
+
+    So every profile-derived heuristic fails, and a LocalSystem service
+    genuinely CANNOT read the operator's AppData -- that is the point of the
+    isolation. Probing other users' profiles is not an option and would be
+    the wrong thing to try.
+
+    Therefore: an explicit, operator-configured path is the primary
+    mechanism, and it is checked FIRST. On this host it is set in the
+    service environment:
+
+        HERMES_AUTH_JSON=C:\\Users\\<you>\\AppData\\Local\\hermes\\auth.json
+
+    Resolution order (first existing file wins):
+      1. HERMES_AUTH_JSON          -- explicit, required for LocalSystem
+      2. a KOTAK project-local copy at <ROOT>/config/hermes_auth.json
+      3. USERPROFILE-derived      -- works for a normal user session
+      4. LOCALAPPDATA-derived     -- normal user session
+      5. the home-based default   -- last resort; caller raises if missing
+
+    On the credential file's own permissions: reading another account's
+    AppData as LocalSystem bypasses the ACL that normally protects it. That
+    is a real, if narrow, security consideration -- it is accepted here
+    because the file holds a refresh token for a local dev tool on a
+    single-user machine, the operator configured it deliberately, and the
+    alternative is a trading brain that silently stops working. Prefer
+    option 2 (a gitignored copy inside the project) if that trade-off
+    matters to you.
     """
     override = os.environ.get('HERMES_AUTH_JSON', '').strip()
     if override:
-        return Path(override)
+        p = Path(override)
+        if p.is_file():
+            return p
+        # An EXPLICIT path that does not exist is a configuration error, not a
+        # hint. Silently falling through to another candidate here would mean
+        # the operator sets a path, it goes stale (profile moved/renamed), and
+        # the service quietly keeps using a different credential -- or none.
+        # Fail with the path the operator actually asked for.
+        raise NousAuthError(
+            f"HERMES_AUTH_JSON points at a file that does not exist: {p}. "
+            f"Fix the path in config/credentials.env, or delete the "
+            f"HERMES_AUTH_JSON line to fall back to auto-detection.")
 
-    candidates = []
+    # Project-local copy: gitignored, and readable without another profile.
+    local_copy = _local_auth_copy()
+    if local_copy.is_file():
+        return local_copy
+
     userprofile = os.environ.get('USERPROFILE', '').strip()
     if userprofile:
-        candidates.append(Path(userprofile) / 'AppData' / 'Local' / 'hermes' / 'auth.json')
-    # The documented install location, independent of any profile.
-    local = os.environ.get('LOCALAPPDATA', '').strip()
-    if local:
-        candidates.append(Path(local) / 'hermes' / 'auth.json')
-
-    for cand in candidates:
+        cand = Path(userprofile) / 'AppData' / 'Local' / 'hermes' / 'auth.json'
         if cand.is_file():
             return cand
+
+    local = os.environ.get('LOCALAPPDATA', '').strip()
+    if local:
+        cand = Path(local) / 'hermes' / 'auth.json'
+        if cand.is_file():
+            return cand
+
+    # Last resort. Avoid Path.home() entirely: it RAISES under a bare
+    # LocalSystem environment, and a raise here would look like a crash
+    # rather than a missing credential.
     return AUTH_JSON
 
 # Refresh this many seconds before the token actually expires, so an
@@ -204,7 +286,16 @@ def call_llm(system: str, user: str, *, model: str, max_tokens: int = 6000,
     return contract so it is a drop-in replacement:
         {"ok": bool, "text": str, "usage": dict, "error": str}
     """
-    cred = _token()
+    try:
+        cred = _token()
+    except NousAuthError as auth_err:
+        # Return the failure, never raise. This function's contract is
+        # {"ok": bool, ...} and its caller (quant_service.call_llm_direct)
+        # only knows how to handle a returned error -- an exception here
+        # would propagate up through the watch loop instead of degrading to
+        # a HOLD. A missing credential is an expected, recoverable state.
+        return {'ok': False, 'error': f'auth: {auth_err}'}
+
     url = f"{cred['inference_base_url']}/chat/completions"
 
     messages = []

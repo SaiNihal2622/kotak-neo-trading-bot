@@ -22,12 +22,37 @@ import nous_llm_client as nlc  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache():
-    """Each test starts with an empty credential cache."""
+def _clear_cache(monkeypatch, tmp_path):
+    """Empty credential cache, no profile env, and no network.
+
+    The no-profile part matters: this module resolves auth.json through a
+    chain that includes the real operator profile, so a test that points
+    HERMES_AUTH_JSON at a tmp file can still be beaten by a real auth.json
+    later in the chain. Clearing USERPROFILE/HOME/LOCALAPPDATA makes the
+    tmp override the only candidate.
+
+    The no-network part matters more: these are unit tests, and a stray
+    live call both costs money and asserts on real model names.
+    """
     nlc._CACHE.update({
         'token': None, 'expires_at': 0.0, 'base_url': '',
         'inference_base_url': '', 'refresh_token': '', 'client_id': '',
     })
+    for var in ('HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('SystemRoot', str(tmp_path))
+
+    def _no_network(*a, **k):
+        raise AssertionError('unit test attempted a live network call')
+    monkeypatch.setattr(nlc.urllib.request, 'urlopen', _no_network)
+
+    # The resolver's second candidate is a project-local copy at
+    # <ROOT>/config/hermes_auth.json. If the operator ever creates one it
+    # would outrank a test's tmp override, so point that lookup at a
+    # guaranteed-absent path for the duration of the test.
+    monkeypatch.setattr(nlc, '_local_auth_copy',
+                        lambda: tmp_path / 'absent_hermes_auth.json')
+
     yield
     nlc._CACHE.update({
         'token': None, 'expires_at': 0.0, 'base_url': '',
@@ -52,13 +77,26 @@ class _Resp:
 # ---------- config discovery ----------
 
 def test_missing_auth_json_raises_actionable_error(tmp_path, monkeypatch):
-    # Point the resolver at a nonexistent file via the override env var
-    # (patching the AUTH_JSON constant no longer works -- _read_auth_json
-    # resolves the path dynamically so it survives running as a service).
+    # An explicit path that doesn't exist is a CONFIG ERROR and must say so,
+    # rather than silently falling through to another candidate -- otherwise a
+    # stale path goes unnoticed and the service silently uses some other
+    # credential (or none).
     monkeypatch.setenv('HERMES_AUTH_JSON', str(tmp_path / 'nope.json'))
     with pytest.raises(nlc.NousAuthError) as ei:
         nlc._load_provider_config()
-    assert 'auth.json' in str(ei.value)
+    msg = str(ei.value)
+    assert 'HERMES_AUTH_JSON' in msg
+    assert 'does not exist' in msg
+    assert 'credentials.env' in msg, 'error must say how to fix it'
+
+
+def test_no_configured_path_falls_through_the_chain(tmp_path, monkeypatch):
+    """With no override, resolution walks the remaining candidates."""
+    monkeypatch.delenv('HERMES_AUTH_JSON', raising=False)
+    # Fixture already points _local_auth_copy and clears profile vars, so
+    # nothing exists -> the lazy default is returned, not an exception.
+    result = nlc._resolve_auth_json()
+    assert isinstance(result, Path)
 
 
 def test_missing_nous_block_raises(monkeypatch, tmp_path):
@@ -322,3 +360,52 @@ def test_missing_auth_json_error_names_the_resolved_path(monkeypatch, tmp_path):
     with pytest.raises(nlc.NousAuthError) as ei:
         nlc._read_auth_json()
     assert str(missing) in str(ei.value)
+
+
+def test_default_auth_json_never_raises_without_a_home(monkeypatch, tmp_path):
+    """REGRESSION: a crash, not a degraded HOLD.
+
+    `AUTH_JSON = Path.home() / ...` used to be evaluated at MODULE scope.
+    Under a bare LocalSystem environment Path.home() raises
+    RuntimeError('Could not determine home directory'), which propagated
+    out of `import nous_llm_client` and would have taken the whole brain
+    down. It is now computed lazily inside a try/except.
+    """
+    for var in ('HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('SystemRoot', str(tmp_path))
+
+    result = nlc._default_auth_json()   # must not raise
+    assert isinstance(result, Path)
+    assert 'hermes' in str(result).lower()
+
+
+def test_call_llm_degrades_instead_of_raising_on_missing_credential(monkeypatch, tmp_path):
+    """call_llm's contract is {"ok": bool, ...}; an exception would escape
+    into the watch loop and crash the decision path rather than HOLD."""
+    missing = tmp_path / 'gone.json'
+    monkeypatch.setenv('HERMES_AUTH_JSON', str(missing))
+    monkeypatch.setattr(nlc, '_CACHE', {**nlc._CACHE, 'token': None, 'expires_at': 0.0})
+
+    res = nlc.call_llm('sys', 'user', model='m')
+    assert res['ok'] is False
+    assert res['error'].startswith('auth:'), res['error']
+
+
+def test_configured_override_wins_even_with_no_profile_env(monkeypatch, tmp_path):
+    """The exact production scenario: LocalSystem with only the explicit
+    path from credentials.env, no profile environment whatsoever."""
+    auth = tmp_path / 'auth.json'
+    auth.write_text(json.dumps({'providers': {'nous': {
+        'client_id': 'c', 'refresh_token': 'r',
+        'portal_base_url': 'https://p.example.com',
+        'inference_base_url': 'https://i.example.com/v1'}}}), encoding='utf-8')
+
+    for var in ('HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('HERMES_AUTH_JSON', str(auth))
+    monkeypatch.setattr(nlc, '_CACHE', {**nlc._CACHE, 'token': None, 'expires_at': 0.0})
+
+    assert nlc._resolve_auth_json() == auth
+    cfg = nlc._load_provider_config()
+    assert cfg['client_id'] == 'c'
