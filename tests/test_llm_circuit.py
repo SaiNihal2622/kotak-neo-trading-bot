@@ -30,14 +30,26 @@ def qs():
 
 
 @pytest.fixture(autouse=True)
-def _reset(qs):
-    """Each test starts with a closed circuit."""
+def _reset(qs, tmp_path):
+    """Each test starts with a closed circuit AND writes to a throwaway log.
+
+    Without the log redirect, importing this module runs the real
+    `log()` -> data_cache/quant_service.log append, so test runs inject
+    fake LLM-CIRCUIT-OPEN/CLOSED lines into the operator's production log.
+    That is the same pollution class AGENTS.md flags for the knowledge
+    graph, and it is actively harmful here: this log is the forensic
+    record of the 9-day outage, and a 38 MB file is exactly why nobody
+    reads it. Keep test output out of it.
+    """
     qs._LLM_CIRCUIT.update({
         'open': False, 'reason': '', 'opened_at': None, 'last_ok_at': None,
         'last_err_at': None, 'consecutive_errors': 0, 'total_errors': 0,
         'alerted': False, 'probes': 0,
     })
+    orig_log_path = qs.LOG
+    qs.LOG = tmp_path / 'quant_service_test.log'
     yield
+    qs.LOG = orig_log_path
 
 
 # ---------- error classification ----------
