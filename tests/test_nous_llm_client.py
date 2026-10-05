@@ -52,7 +52,10 @@ class _Resp:
 # ---------- config discovery ----------
 
 def test_missing_auth_json_raises_actionable_error(tmp_path, monkeypatch):
-    monkeypatch.setattr(nlc, 'AUTH_JSON', tmp_path / 'nope.json')
+    # Point the resolver at a nonexistent file via the override env var
+    # (patching the AUTH_JSON constant no longer works -- _read_auth_json
+    # resolves the path dynamically so it survives running as a service).
+    monkeypatch.setenv('HERMES_AUTH_JSON', str(tmp_path / 'nope.json'))
     with pytest.raises(nlc.NousAuthError) as ei:
         nlc._load_provider_config()
     assert 'auth.json' in str(ei.value)
@@ -61,7 +64,7 @@ def test_missing_auth_json_raises_actionable_error(tmp_path, monkeypatch):
 def test_missing_nous_block_raises(monkeypatch, tmp_path):
     p = tmp_path / 'auth.json'
     p.write_text(json.dumps({'providers': {'openai': {}}}), encoding='utf-8')
-    monkeypatch.setattr(nlc, 'AUTH_JSON', p)
+    monkeypatch.setenv('HERMES_AUTH_JSON', str(p))
     with pytest.raises(nlc.NousAuthError) as ei:
         nlc._load_provider_config()
     assert 'nous' in str(ei.value)
@@ -72,7 +75,7 @@ def test_bom_prefixed_auth_json_is_readable(monkeypatch, tmp_path):
     p = tmp_path / 'auth.json'
     p.write_text(json.dumps({'providers': {'nous': {'client_id': 'x'}}}),
                  encoding='utf-8-sig')
-    monkeypatch.setattr(nlc, 'AUTH_JSON', p)
+    monkeypatch.setenv('HERMES_AUTH_JSON', str(p))
     assert nlc._load_provider_config()['client_id'] == 'x'
 
 
@@ -244,3 +247,78 @@ def test_call_llm_handles_empty_choices(monkeypatch):
 
 def test_token_fresh_for_is_zero_without_cache():
     assert nlc.token_fresh_for() == 0.0
+
+
+# ---------- running as a Windows service (the NSSM/LocalSystem trap) ----------
+
+def test_resolves_auth_json_when_home_is_systemprofile(monkeypatch, tmp_path):
+    """REGRESSION, and the one that actually broke the brain.
+
+    NSSM runs the services as LocalSystem, where Path.home() is
+    C:\\Windows\\System32\\config\\systemprofile. The first version of this
+    client used Path.home() directly, so the moment the backend went live
+    in production every call failed with
+
+        auth: Hermes auth.json not found at
+        C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Local\\hermes\\auth.json
+
+    and the brain went straight back to HOLD. USERPROFILE is inherited by
+    the service, so it is the reliable anchor -- not HOME.
+    """
+    fake_home = tmp_path / 'systemprofile'
+    fake_home.mkdir()
+    real_auth = tmp_path / 'operator' / 'AppData' / 'Local' / 'hermes' / 'auth.json'
+    real_auth.parent.mkdir(parents=True)
+    real_auth.write_text(json.dumps({'providers': {'nous': {'client_id': 'x'}}}),
+                         encoding='utf-8')
+
+    monkeypatch.delenv('HERMES_AUTH_JSON', raising=False)
+    monkeypatch.setenv('USERPROFILE', str(tmp_path / 'operator'))
+    monkeypatch.setenv('LOCALAPPDATA', '')
+    monkeypatch.setattr(nlc, 'AUTH_JSON', fake_home / 'AppData' / 'Local' / 'hermes' / 'auth.json')
+
+    assert nlc._resolve_auth_json() == real_auth
+
+
+def test_explicit_override_wins(monkeypatch, tmp_path):
+    """HERMES_AUTH_JSON must beat every heuristic -- it's the escape hatch
+    for a service that needs a credential copied to a readable location."""
+    override = tmp_path / 'custom' / 'auth.json'
+    override.parent.mkdir(parents=True)
+    override.write_text('{}', encoding='utf-8')
+
+    monkeypatch.setenv('HERMES_AUTH_JSON', str(override))
+    monkeypatch.setenv('USERPROFILE', str(tmp_path / 'nowhere'))
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'also-nowhere'))
+
+    assert nlc._resolve_auth_json() == override
+
+
+def test_missing_everywhere_falls_back_to_home(monkeypatch, tmp_path):
+    """No candidate exists -> return the home-based default, and let the
+    caller raise the actionable error. Never invent a path."""
+    monkeypatch.delenv('HERMES_AUTH_JSON', raising=False)
+    monkeypatch.setenv('USERPROFILE', str(tmp_path / 'nowhere'))
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'also-nowhere'))
+    monkeypatch.setattr(nlc, 'AUTH_JSON', tmp_path / 'fallback.json')
+
+    assert nlc._resolve_auth_json() == tmp_path / 'fallback.json'
+
+
+def test_read_auth_json_uses_resolver(monkeypatch, tmp_path):
+    """_read_auth_json must go through the resolver, not the module constant."""
+    real_auth = tmp_path / 'auth.json'
+    real_auth.write_text(json.dumps({'providers': {'nous': {'client_id': 'resolved'}}}),
+                         encoding='utf-8')
+    monkeypatch.setenv('HERMES_AUTH_JSON', str(real_auth))
+
+    assert nlc._read_auth_json()['providers']['nous']['client_id'] == 'resolved'
+
+
+def test_missing_auth_json_error_names_the_resolved_path(monkeypatch, tmp_path):
+    """The operator needs to be told WHICH path was searched."""
+    missing = tmp_path / 'nope.json'
+    monkeypatch.setenv('HERMES_AUTH_JSON', str(missing))
+    with pytest.raises(nlc.NousAuthError) as ei:
+        nlc._read_auth_json()
+    assert str(missing) in str(ei.value)

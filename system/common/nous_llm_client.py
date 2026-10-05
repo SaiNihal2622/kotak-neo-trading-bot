@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -39,6 +40,42 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 AUTH_JSON = Path.home() / 'AppData' / 'Local' / 'hermes' / 'auth.json'
+
+
+def _resolve_auth_json() -> Path:
+    """Locate Hermes' auth.json regardless of the user the process runs as.
+
+    FIX 2026-10-05: this bit the brain the moment the new backend went live.
+    NSSM runs the services as LocalSystem, where `Path.home()` resolves to
+    C:\\Windows\\System32\\config\\systemprofile -- not the operator's profile.
+    The result was `auth: Hermes auth.json not found at
+    C:\\WINDOWS\\system32\\config\\systemprofile\\...` and the brain went
+    straight back to HOLD.
+
+    A LocalSystem service genuinely cannot read another user's AppData (that
+    is the point of the isolation), so probing profiles is not an option
+    there. Instead: honour an explicit override, then the inherited
+    USERPROFILE, then the known install location, and finally fall back to
+    Path.home(). Anything but the final fallback must be an existing file --
+    never invent a path and never write credentials anywhere.
+    """
+    override = os.environ.get('HERMES_AUTH_JSON', '').strip()
+    if override:
+        return Path(override)
+
+    candidates = []
+    userprofile = os.environ.get('USERPROFILE', '').strip()
+    if userprofile:
+        candidates.append(Path(userprofile) / 'AppData' / 'Local' / 'hermes' / 'auth.json')
+    # The documented install location, independent of any profile.
+    local = os.environ.get('LOCALAPPDATA', '').strip()
+    if local:
+        candidates.append(Path(local) / 'hermes' / 'auth.json')
+
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return AUTH_JSON
 
 # Refresh this many seconds before the token actually expires, so an
 # in-flight request never races the expiry boundary.
@@ -63,15 +100,16 @@ class NousAuthError(RuntimeError):
 
 
 def _read_auth_json() -> Dict[str, Any]:
-    if not AUTH_JSON.exists():
-        raise NousAuthError(f"Hermes auth.json not found at {AUTH_JSON}")
+    path = _resolve_auth_json()
+    if not path.is_file():
+        raise NousAuthError(f"Hermes auth.json not found at {path}")
     try:
         # utf-8-sig: Hermes writes this file with PowerShell-style BOM on
         # some paths, and a plain utf-8 read makes json.loads fail.
-        with open(AUTH_JSON, 'r', encoding='utf-8-sig') as fh:
+        with open(path, 'r', encoding='utf-8-sig') as fh:
             return json.load(fh)
     except Exception as exc:  # pragma: no cover - defensive
-        raise NousAuthError(f"could not read {AUTH_JSON}: {exc}") from exc
+        raise NousAuthError(f"could not read {path}: {exc}") from exc
 
 
 def _load_provider_config() -> Dict[str, Any]:
