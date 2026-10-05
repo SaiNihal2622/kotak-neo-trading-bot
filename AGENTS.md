@@ -2181,3 +2181,43 @@ consecutive-green-days counter — which is why
 `live_go_status.json` still shows `consecutive_green_days: 0` next to a
 stale `-10.84%`. Any reset must write a dated baseline the tracker reads
 instead of assuming `100000`.
+
+### CRITICAL: never refresh the Nous token outside Hermes
+
+Nous refresh tokens are **single-use**, and the server **rotates** them on
+every refresh. Hermes persists the rotated token; anything else that calls
+`POST /api/oauth/token` invalidates the session.
+
+Hermes detects this and revokes the credential. The exact error, recorded
+verbatim from `~/AppData/Local/hermes/auth.json`:
+
+```
+Nous Portal detected refresh-token reuse and revoked this session.
+This usually means an external process (monitoring script, custom self-heal
+hook, or another Hermes install sharing ~/.hermes/auth.json) called
+POST /api/oauth/token with Hermes's refresh token without persisting the
+rotated token back.
+Nous refresh tokens are single-use — only Hermes may call the refresh endpoint.
+```
+
+**This was violated twice on 2026-10-05** — first by a manual probe, then by
+`nous_llm_client._refresh()`, which caches the rotated token in-process but
+never writes it back to `auth.json`. Every brain refresh therefore
+invalidates the session for the *next* one, and the second failure locks you
+out entirely.
+
+Consequences and the correct design:
+
+- **`nous_llm_client` must reuse Hermes' access token, not mint its own.**
+  Read the cached `access_token` + `expires_at` from `auth.json` and call it
+  before expiry, so in practice Hermes (not us) does the rotating refresh.
+  If it is already expired, the correct action is to report "run
+  `hermes auth add nous`", never to refresh programmatically.
+- **For a health check use `hermes auth status`, never a token call.** This
+  is stated in the error message and it is right.
+- Recovery from a revoked session requires a browser:
+  `hermes auth add nous --type oauth`.
+- Symptom to recognise: cron jobs fail with
+  `[blocked_config] provider credential missing: No access token found for
+  Nous Portal login`, and `providers.nous` loses `access_token` /
+  `refresh_token` / `expires_at` while gaining `last_auth_error`.
