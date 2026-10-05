@@ -30,16 +30,19 @@ def qs():
 
 
 @pytest.fixture(autouse=True)
-def _reset(qs, tmp_path):
-    """Each test starts with a closed circuit AND writes to a throwaway log.
+def _reset(qs, tmp_path, monkeypatch):
+    """Each test starts with a closed circuit, writes to a throwaway log, and
+    NEVER touches the network.
 
-    Without the log redirect, importing this module runs the real
-    `log()` -> data_cache/quant_service.log append, so test runs inject
-    fake LLM-CIRCUIT-OPEN/CLOSED lines into the operator's production log.
-    That is the same pollution class AGENTS.md flags for the knowledge
-    graph, and it is actively harmful here: this log is the forensic
-    record of the 9-day outage, and a 38 MB file is exactly why nobody
-    reads it. Keep test output out of it.
+    Three separate hazards this fixture blocks:
+    1. `log()` appends to the real data_cache/quant_service.log, so test runs
+       would inject fake LLM-CIRCUIT-OPEN/CLOSED lines into the operator's
+       forensic record of the 9-day outage.
+    2. Since the backend moved to the Nous client (FIX 2026-10-05),
+       stubbing `httpx.post` no longer intercepts anything -- these tests
+       would make REAL paid LLM calls and assert on their output.
+    3. A live call mutates the shared circuit, so tests would leak state
+       into each other.
     """
     qs._LLM_CIRCUIT.update({
         'open': False, 'reason': '', 'opened_at': None, 'last_ok_at': None,
@@ -48,6 +51,14 @@ def _reset(qs, tmp_path):
     })
     orig_log_path = qs.LOG
     qs.LOG = tmp_path / 'quant_service_test.log'
+
+    # Hard-block every network egress path.
+    def _no_network(*a, **k):
+        raise AssertionError(
+            'test attempted a live network call -- these tests must be offline')
+    monkeypatch.setattr(qs.httpx, 'post', _no_network, raising=False)
+    monkeypatch.setattr(qs, '_nous_call_llm', _no_network, raising=False)
+
     yield
     qs.LOG = orig_log_path
 
@@ -153,15 +164,11 @@ def test_open_circuit_short_circuits_most_calls(qs, monkeypatch):
 
     calls = {'n': 0}
 
-    class _Unauthorized:
-        status_code = 401
-        text = '{"code":401,"message":"auth failed"}'
-
-    def _counting_post(*a, **k):
+    def _counting_backend(system, user, model, max_tokens, timeout):
         calls['n'] += 1
-        return _Unauthorized()
+        return {'ok': False, 'error': 'http 401: {"code":401,"message":"auth failed"}'}
 
-    monkeypatch.setattr(qs.httpx, 'post', _counting_post)
+    monkeypatch.setattr(qs, '_nous_call_llm', _counting_backend)
 
     # Probe #1 is allowed through (probes was incremented when the circuit
     # opened, so probes % PROBE_EVERY == 1 here).
@@ -194,15 +201,11 @@ def test_circuit_open_error_message_is_actionable(qs):
 
 def test_healthy_circuit_does_not_short_circuit(qs, monkeypatch):
     """Regression guard: the breaker must not block a WORKING LLM."""
-    monkeypatch.setattr(qs.httpx, 'post', lambda *a, **k: _FakeResp())
+    monkeypatch.setattr(
+        qs, '_nous_call_llm',
+        lambda **kw: {'ok': True, 'text': 'hello there', 'usage': {'total_tokens': 5}})
     res = qs.call_llm_direct('sys', 'hello', max_tokens=10)
     assert res['ok'] is True
     assert 'hello' in res['text']
-
-
-class _FakeResp:
-    status_code = 200
-
-    def json(self):
-        return {'choices': [{'message': {'content': 'hello there'}}],
-                'usage': {'total_tokens': 12}}
+    assert qs.llm_circuit_state()['open'] is False
+    assert qs.llm_circuit_state()['consecutive_errors'] == 0

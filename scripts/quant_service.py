@@ -75,13 +75,16 @@ LEVEL_TOUCH_PCT = 0.05
 DEDUP_SEC = 5             # Same event-type+symbol won't re-fire within 5s (was 30s) — fast re-eval
 SESSION_MOVE_DEDUP_SEC = 300  # Session-wide moves per symbol re-evaluate every 5 min (was 30 min)
 MIN_DATA_POINTS = 5
-LLM_MODEL = "MiniMax-M3"
-# FIX 2026-09-21 15:35: bumped 4000 -> 6000 for the periodic-scan path. M2.7's
-# <think> block alone eats 1.5-3k tokens for complex prompts. With 4000 we
-# kept hitting finish_reason=length on verbose scenarios (especially
-# when there's a lot of intraday data to process). 6000 fits the
-# thinking + a real answer for the largest prompts we generate.
-LLM_MAX_TOKENS = 6000
+# LLM_MODEL is now read from config/credentials.env (LLM_MODEL) so the model
+# can change without a code edit. It was hardcoded to "MiniMax-M3" here,
+# a model that no longer exists on the current endpoint.
+#
+# FIX 2026-10-05: max_tokens 6000 -> 32000. The old value was sized for
+# MiniMax M3's short think block. Claude Sonnet 5.5 reasons in the visible
+# content, so a fixed trade-thesis JSON needs room to think before it
+# answers; 6000 truncated the reasoning and returned empty text, which the
+# caller then had to treat as a parse error.
+LLM_MAX_TOKENS = 32000
 
 # Persistent state
 TICKS: dict[str, deque] = {}
@@ -204,8 +207,32 @@ def load_env() -> dict:
 
 
 ENV = load_env()
+
+# FIX 2026-10-05: the static MiniMax key is gone for good. It returned 401
+# from 2026-09-21 onward and the brain degraded to HOLD for 9 trading days
+# with no alert (44,675 identical lines in data_cache/quant_service.log).
+# The static-key model is the bug, not just that one expired key: any
+# hardcoded secret eventually dies, and here nothing noticed.
+#
+# LLM_BACKEND='nous' reads the SAME short-lived OAuth credential Hermes
+# itself uses and refreshes it automatically, so there is no long-lived
+# secret left to expire. 'minimax' is kept only as a fallback and is
+# expected to fail -- do not restore it as the primary.
+LLM_BACKEND = ENV.get('LLM_BACKEND', 'nous').strip().lower()
+LLM_MODEL = ENV.get('LLM_MODEL', 'anthropic/claude-sonnet-5.5').strip()
+
+# Legacy static-key config, retained so the fallback path and the old
+# comment history stay readable. Not used unless LLM_BACKEND='minimax'.
 LLM_BASE = ENV.get('MINIMAX_LLM_BASE_URL', '').rstrip('/')
 LLM_KEY = ENV.get('MINIMAX_LLM_API_KEY', '')
+
+try:
+    sys.path.insert(0, str(ROOT / 'system' / 'common'))
+    from nous_llm_client import NousAuthError, call_llm as _nous_call_llm
+except Exception as _nous_import_err:  # pragma: no cover - defensive
+    _nous_call_llm = None
+    NousAuthError = RuntimeError
+    log(f"nous-llm-import-warn: {_nous_import_err}")
 
 # FIX 2026-09-21 13:50: import now_ist from kotak_bot.utils.clock. The
 # live-go-tracker scheduler at line ~2886 referenced `now_ist()` without
@@ -381,7 +408,25 @@ def call_llm_direct(system: str, user: str, max_tokens: int = LLM_MAX_TOKENS) ->
             }
 
     def _post(attempt_max_tokens: int, attempt_timeout: float) -> dict:
-        """Single LLM POST. Returns dict with 'ok', 'text', 'usage', '_is_timeout'."""
+        """Single LLM POST. Returns dict with 'ok', 'text', 'usage', '_is_timeout'.
+
+        FIX 2026-10-05: dispatch on LLM_BACKEND. 'nous' (the default) goes
+        through nous_llm_client, which refreshes its own OAuth credential --
+        so there is no static key that can expire unnoticed. 'minimax' is the
+        legacy static-key path, kept only as a fallback.
+        """
+        if LLM_BACKEND == 'nous':
+            if _nous_call_llm is None:
+                return {"ok": False, "error": "nous_llm_client unavailable (import failed)"}
+            try:
+                return _nous_call_llm(system=system, user=user, model=LLM_MODEL,
+                                      max_tokens=attempt_max_tokens,
+                                      timeout=attempt_timeout)
+            except NousAuthError as auth_err:
+                return {"ok": False, "error": f"auth: {auth_err}"}
+            except Exception as nous_err:
+                return {"ok": False, "error": str(nous_err)[:300]}
+
         try:
             r = httpx.post(
                 url,
