@@ -2079,3 +2079,105 @@ Verified working on 2026-09-30 21:00 IST — positions 1 → 0 after close.
 - Backtesting multi-day strategies: disable EOD close in the backtest
   harness (different from live; see scripts/backtest_30d.py)
 
+
+## 2026-10-05: The LLM brain was silently dead for 9 trading days (the defining lesson)
+
+**This is the most important entry in this file. Read it before touching
+anything LLM-related.**
+
+### What happened
+
+From 2026-09-21 to 2026-10-05 the brain made **zero decisions**.
+`data_cache/quant_service.log` holds **44,675** `LLM-ERR: http 401` lines.
+The cause: `MINIMAX_LLM_API_KEY` in `config/credentials.env` stopped
+authenticating, and `call_llm_direct`'s failure path returns
+`{"type": "HOLD", "note": "llm-error: ..."}` — so a dead brain is
+**byte-for-byte indistinguishable** from a disciplined brain that finds no
+setups. Both produce HOLD, zero positions, and a healthy-looking
+`paper_state.json`.
+
+Nothing alerted. The only evidence was a 38 MB log file nobody opens.
+
+### Rule: a degraded brain must never look like a disciplined brain
+
+**Any code path that converts an infrastructure failure into a trading
+decision must record the failure somewhere the operator actually looks.**
+`HOLD` is a valid decision; `HOLD` *because we could not ask* is not, and the
+two must be distinguishable from outside the process.
+
+Implemented as:
+- `quant_service._LLM_CIRCUIT` — fail-loud circuit breaker. One 401 (or 5
+  consecutive failures of any class) opens it; while open, 199 of 200 calls
+  return locally without an HTTP request; it alerts once per outage, not once
+  per tick; it probes periodically so a fixed credential self-heals without a
+  restart.
+- `llm_health` is written into `quant_service_state.json` every 30 s, so a
+  dead brain is visible on the dashboard instead of hidden in a log.
+- `tests/test_llm_brain_e2e.py` runs the REAL decision path against the REAL
+  backend. It is the test that would have caught this on day 1.
+
+### Rule: never hardcode an LLM credential
+
+The static-key *model* was the bug, not just that one expired key. Any
+hardcoded secret eventually dies. `LLM_BACKEND=nous` reads the same
+short-lived OAuth credential Hermes itself uses
+(`~/AppData/Local/hermes/auth.json`) and refreshes it automatically, so there
+is no long-lived secret left to rotate.
+
+Verified facts about that credential — do not re-derive them:
+- token endpoint is `https://portal.nousresearch.com/api/oauth/token`
+  (`/oauth/token` returns a Vercel 404 page, which reads like "bad creds")
+- the refresh token travels in the **`x-nous-refresh-token` header**, not the
+  form body
+- the server **rotates** the refresh token; the replacement must be cached or
+  the next refresh fails `invalid_grant` ("already rejected; please
+  re-authenticate" — and that state is only recoverable by re-running
+  `hermes auth add nous --type oauth`, which needs a browser)
+- `Hermes-4-405B` is retired (404). Default model is
+  `anthropic/claude-sonnet-5.5`; 425 models are listed at `GET /models`
+- `LLM_MAX_TOKENS` is 32000, not 6000. 6000 was sized for MiniMax M3's short
+  think block; Claude reasons in visible content, so 6000 truncated the
+  reasoning and returned empty text, which the caller saw as a parse error.
+
+### Rule: this codebase runs as LocalSystem — assume no profile environment
+
+`sc qc KotakQuantService` → `SERVICE_START_NAME: LocalSystem`. Measured under
+a bare service environment: `USERPROFILE` unset, `LOCALAPPDATA` unset, and
+`Path.home()` **raises** `RuntimeError: Could not determine home directory`.
+
+Consequences, all of which bit during this incident:
+1. `Path.home()` at **module scope** will crash the import, not degrade. The
+   brain must survive a missing credential, so every home lookup is lazy and
+   wrapped.
+2. Nothing profile-derived can locate a file. The path is configured
+   explicitly: `HERMES_AUTH_JSON` in `config/credentials.env`, exported by
+   `quant_service` at import. (NSSM's `AppEnvironmentExtra` is the
+   alternative but needs an elevated prompt.)
+3. A configured `HERMES_AUTH_JSON` that does not exist must **raise with fix
+   instructions**, not silently fall through to another candidate — a stale
+   path that quietly resolves to a different credential is the same silent
+   class of bug this whole entry is about.
+
+### Also learned
+
+- `tests/` must never make real network calls. Two of my own tests did,
+  because stubbing `httpx.post` stopped intercepting once the backend moved.
+  Unit tests now hard-block egress; live assertions live in the `-e2e` file.
+- Tests must not append to `data_cache/quant_service.log`. That log is the
+  forensic record of this incident; polluting it is the same mistake class
+  AGENTS.md already flags for the knowledge graph.
+
+### Money state (verified 2026-10-05)
+
+`paper_state.json` reads cash ₹100,000 / realized ₹0, but preserved
+`paper_state_pre_reset_*.json` backups show the account peaked at
+**₹184,642 on 2026-09-16** and has been reset to ₹100,000 at least six
+times since 2026-08-22. The strategy produced a real +84% run that was
+destroyed by resets, not by the market.
+
+**Before the next reset: make resets impossible to do silently.** The
+go-live tracker reads `paper_state`, so every reset also wipes the
+consecutive-green-days counter — which is why
+`live_go_status.json` still shows `consecutive_green_days: 0` next to a
+stale `-10.84%`. Any reset must write a dated baseline the tracker reads
+instead of assuming `100000`.
