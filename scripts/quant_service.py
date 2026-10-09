@@ -4063,6 +4063,21 @@ def watch_loop():
                             capture_output=True, text=True, timeout=20,
                         )
                         log(f"BOT-WATCHDOG: nssm start exit={_ns.returncode}")
+                    # FIX 2026-10-10: HUNG detection. NSSM restarts a CRASHED
+                    # service but not a HUNG one (process alive, loop stalled).
+                    # Check liveness freshness and restart if stale. This is
+                    # the gap the crash-only watchdog never covered.
+                    try:
+                        _lv_path = DATA / "liveness.json"
+                        if _lv_path.exists() and time.time() - _lv_path.stat().st_mtime > 300:
+                            log("BOT-WATCHDOG: KotakBotPaper liveness stale >300s = HUNG. Restarting.")
+                            _ns2 = subprocess.run(
+                                [str(Path(r"C:\Tools\nssm\nssm-2.24\win64\nssm.exe")), "restart", "KotakBotPaper"],
+                                capture_output=True, text=True, timeout=20,
+                            )
+                            log(f"BOT-WATCHDOG: hung restart exit={_ns2.returncode}")
+                    except Exception as _hung_err:
+                        log(f"bot-watchdog-hung-err: {_hung_err}")
             except Exception as _bw_err:
                 log(f"bot-watchdog-err: {_bw_err}")
 
