@@ -2837,6 +2837,28 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
             else:
                 log(f"ACTION-SUPPRESSED: OPEN after 14:30 IST (intraday no_new_trades_after); dropping to log only. rationale={decision.get('rationale','')[:80]}")
                 action_doc["actions"] = []  # strip the OPEN
+    # FIX 2026-10-10: SURVIVAL GATE ("earn or die"). The brain is fully
+    # autonomous; without a hard survival constraint it can keep trading
+    # after a drawdown and blow up the account. If the survival engine
+    # says no new positions (kill switch tripped, or equity below the
+    # survival floor), strip the OPEN -- the LLM cannot override this.
+    if action_doc["actions"] and any(a.get("type") == "OPEN" for a in action_doc["actions"]):
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(ROOT / "scripts"))
+            from survival_engine import can_open_position, update as _surv_update
+            _paper = _safe_read_json(DATA / "paper_state.json", default={})
+            _cash = float(_paper.get("cash", 0) or 0)
+            _real = float(_paper.get("realized_pnl", 0) or 0)
+            _surv_update(_real, _cash)  # keep state fresh
+            _gate = can_open_position(_cash, _real)
+            if not _gate["allowed"]:
+                log(f"ACTION-SUPPRESSED: {_gate['reason']}")
+                action_doc["actions"] = []
+                action_doc["note"] = f"survival-gate: {_gate['reason']}"
+        except Exception as _surv_err:
+            log(f"survival-gate-err: {_surv_err}")
+
     if action_doc["actions"]:
         ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
         SERVICE_STATE["actions_taken"] += 1
