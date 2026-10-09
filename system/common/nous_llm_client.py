@@ -36,6 +36,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -159,9 +160,11 @@ def _resolve_auth_json() -> Path:
     # rather than a missing credential.
     return AUTH_JSON
 
-# Refresh this many seconds before the token actually expires, so an
-# in-flight request never races the expiry boundary.
-REFRESH_MARGIN_SEC = 300
+# Re-read auth.json this many seconds before the token actually expires, so
+# an in-flight request never races the expiry boundary. NOTE: this is a
+# re-READ margin, not a refresh margin -- see _adopt_hermes_token. We never
+# call the token endpoint ourselves.
+TOKEN_REREAD_MARGIN_SEC = 300
 
 # A completion can legitimately take a while on a big prompt.
 DEFAULT_TIMEOUT_SEC = 90.0
@@ -220,58 +223,136 @@ def _inference_base(cfg: Dict[str, Any]) -> str:
     return base
 
 
-def _refresh(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Exchange the refresh token for a fresh access token."""
-    refresh_token = cfg.get('refresh_token') or _CACHE.get('refresh_token')
-    client_id = cfg.get('client_id') or _CACHE.get('client_id')
-    if not refresh_token or not client_id:
-        raise NousAuthError("Hermes auth.json has no refresh_token/client_id; "
-                            "run `hermes auth add nous` to re-login")
+def _adopt_hermes_token(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Reuse the access token Hermes already obtained. NEVER refresh.
 
-    body = f"grant_type=refresh_token&client_id={client_id}".encode()
-    req = urllib.request.Request(
-        _token_endpoint(cfg),
-        data=body,
-        headers={
-            'x-nous-refresh-token': refresh_token,
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            payload = json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as exc:
-        # Never echo the body: it can contain credential fragments.
-        raise NousAuthError(f"token refresh failed (HTTP {exc.code})") from exc
-    except Exception as exc:
-        raise NousAuthError(f"token refresh failed: {exc}") from exc
+    FIX 2026-10-05: this function used to call POST /api/oauth/token
+    itself. That is a protocol violation, not merely a style problem.
 
-    token = payload.get('access_token')
+    Nous refresh tokens are SINGLE-USE and the server ROTATES them on every
+    refresh. Hermes persists the rotated token back to auth.json. We cannot
+    safely do the same -- two writers on one rotating secret is a race, and
+    whichever loses gets the session revoked. It did, twice, and Hermes
+    detected it:
+
+        Nous Portal detected refresh-token reuse and revoked this session.
+        Nous refresh tokens are single-use - only Hermes may call the
+        refresh endpoint.
+
+    That revocation kills BOTH the trading brain and every Hermes cron job,
+    and recovery needs a browser. So the rule is now structural rather than
+    a comment: this module only ever READS.
+
+    The design that follows from that:
+      - Hermes owns the lifecycle and rotates on schedule.
+      - We poll auth.json and reuse whatever token is currently valid.
+      - The brain is on a ~5 s decision loop, so it consumes a fresh Hermes
+        token long before the 1 h expiry; our own refresh never needs to
+        fire in practice.
+      - If the token really is expired, say so and tell the operator to run
+        `hermes auth add nous --type oauth`. Silently minting one is exactly
+        the failure mode this replaces.
+
+    Consequence to accept: if Hermes itself is not running long enough to
+    refresh, the brain stops and says why. That is the correct trade -- a
+    loud stop beats a revoked session.
+    """
+    token = cfg.get('access_token')
     if not token:
-        raise NousAuthError("token refresh response had no access_token")
+        err = cfg.get('last_auth_error') or {}
+        detail = err.get('message') if isinstance(err, dict) else None
+        raise NousAuthError(
+            "Hermes has no Nous access token for this profile. "
+            + (f"Last error: {detail} " if detail else "")
+            + "Run `hermes auth add nous --type oauth` (needs a browser). "
+              "This module deliberately never refreshes the token itself: "
+              "Nous refresh tokens are single-use and rotating them outside "
+              "Hermes revokes the session.")
 
+    expires_at = _parse_expiry(cfg.get('expires_at'))
     _CACHE.update({
         'token': token,
-        'expires_at': time.time() + float(payload.get('expires_in') or 3600),
-        'refresh_token': payload.get('refresh_token') or refresh_token,
-        'inference_base_url': (payload.get('inference_base_url')
-                               or _inference_base(cfg)).rstrip('/'),
-        'base_url': (payload.get('base_url') or '').rstrip('/'),
+        'expires_at': expires_at,
+        'refresh_token': '',   # never read, never used, never persisted
+        'client_id': cfg.get('client_id') or '',
+        'inference_base_url': _inference_base(cfg),
+        'base_url': '',
+    })
+    return _CACHE
+
+
+def _parse_expiry(value: Optional[str]) -> float:
+    """ISO-8601 -> epoch seconds. Returns 0.0 when unknown/unparseable."""
+    if not value:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except Exception:
+        return 0.0
+
+
+USE_OAUTH = os.environ.get('NOUS_USE_OAUTH', '').strip().lower() in ('1', 'true', 'yes')
+
+def _static_key() -> Dict[str, Any]:
+    """Static API-key auth (NOUS_API_KEY), with no auth.json dependency.
+
+    FIX 2026-10-05: the OAuth path reads Hermes' auth.json for a bearer
+    access_token. Under an NSSM LocalSystem service that file is missing /
+    unreadable, so the brain degraded to HOLD with
+    'Hermes has no Nous access token for this profile'. A static key has
+    no lifecycle and no refresh race -- it is exactly what a headless
+    24/7 service needs. Set NOUS_API_KEY in config/credentials.env.
+    """
+    key = os.environ.get('NOUS_API_KEY', '').strip()
+    if not key:
+        raise NousAuthError(
+            "NOUS_API_KEY not set (and NOUS_USE_OAUTH not forced). "
+            "Put a working sk-nous-... key in NOUS_API_KEY in "
+            "config/credentials.env, or set NOUS_USE_OAUTH=1 to use "
+            "Hermes' auth.json OAuth flow instead.")
+    base = os.environ.get('NOUS_INFERENCE_BASE_URL', '').strip().rstrip('/')
+    if not base:
+        # Try to inherit from Hermes' auth.json; fall back to the default.
+        try:
+            cfg = _load_provider_config()
+            base = _inference_base(cfg).rstrip('/')
+        except Exception:
+            base = 'https://inference-api.nousresearch.com/v1'
+    _CACHE.update({
+        'token': key,
+        'expires_at': time.time() + 3600,  # static key: cache 1h, re-read
+        'refresh_token': '',
+        'client_id': '',
+        'inference_base_url': base,
+        'base_url': '',
     })
     return _CACHE
 
 
 def _token() -> Dict[str, Any]:
-    """Return a valid cached credential, refreshing if needed. Thread-safe."""
+    """Return a usable credential, re-reading auth.json when needed.
+
+    There is deliberately no refresh path here -- see
+    _adopt_hermes_token for why. "Needs a new token" means "Hermes has
+    written a new token to disk, go read it", not "mint one yourself".
+
+    Which path runs is decided live (not at import): NOUS_USE_OAUTH in
+    ('1','true','yes') forces the OAuth/auth.json path, anything else
+    (the default) uses the static NOUS_API_KEY.
+    """
     with _LOCK:
+        if os.environ.get('NOUS_USE_OAUTH', '').strip().lower() not in ('1', 'true', 'yes'):
+            return _static_key()
         now = time.time()
-        if _CACHE['token'] and now < (_CACHE['expires_at'] - REFRESH_MARGIN_SEC):
+        # Re-read a little before expiry so a long decision never starts
+        # with a token that dies mid-flight. Hermes refreshes on its own
+        # schedule, so this normally finds a fresh one already waiting.
+        if _CACHE['token'] and now < (_CACHE['expires_at'] - TOKEN_REREAD_MARGIN_SEC):
             return _CACHE
-        cfg = _load_provider_config()
-        # Pick up a rotated refresh_token / base_url from disk too.
-        _CACHE['refresh_token'] = cfg.get('refresh_token') or _CACHE['refresh_token']
-        _CACHE['client_id'] = cfg.get('client_id') or _CACHE['client_id']
-        return _refresh(cfg)
+        return _adopt_hermes_token(_load_provider_config())
 
 
 def token_fresh_for() -> float:

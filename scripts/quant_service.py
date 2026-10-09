@@ -238,6 +238,18 @@ LLM_MODEL = ENV.get('LLM_MODEL', 'anthropic/claude-sonnet-5.5').strip()
 # Set HERMES_AUTH_JSON in config/credentials.env if your Hermes install
 # lives somewhere other than the default location.
 if LLM_BACKEND == 'nous':
+    # FIX 2026-10-05: static NOUS_API_KEY is now the primary auth. A static
+    # key has no lifecycle and no refresh race -- unlike the OAuth path it
+    # cannot silently die under a LocalSystem service. Surface it into the
+    # environment so nous_llm_client picks it up without reading auth.json.
+    # Set NOUS_USE_OAUTH=1 to force the OAuth/auth.json path instead.
+    _nous_key = ENV.get('NOUS_API_KEY', '').strip()
+    if _nous_key:
+        os.environ['NOUS_API_KEY'] = _nous_key
+        log(f"nous-key: using static NOUS_API_KEY (len={len(_nous_key)})")
+    _nous_base = ENV.get('NOUS_INFERENCE_BASE_URL', '').strip()
+    if _nous_base:
+        os.environ['NOUS_INFERENCE_BASE_URL'] = _nous_base
     _hermes_auth = ENV.get('HERMES_AUTH_JSON', '').strip()
     if not _hermes_auth:
         _guess = Path.home() / 'AppData' / 'Local' / 'hermes' / 'auth.json'
