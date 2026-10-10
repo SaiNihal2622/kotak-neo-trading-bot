@@ -1,0 +1,182 @@
+"""Auto-journal the trading day into an Obsidian vault.
+
+The brain's EOD scheduler calls this: it reads the day's decisions + P&L
+and writes a markdown journal note (with wikilinks) into the vault, so the
+operator has a readable record of what the system did and why — beyond the
+raw JSONL logs.
+
+Vault path: OBSIDIAN_VAULT_PATH env, else ~/Documents/Obsidian Vault
+Layout:
+  Quant/{YYYY-MM-DD}.md          - daily journal note
+  Quant/README.md                - index of all journal notes
+
+Run (from the brain's EOD scheduler):
+    .venv\\Scripts\\python.exe scripts/obsidian_journal.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, date
+from pathlib import Path
+from typing import Optional
+
+ROOT = Path(r'C:\Users\saini\.minimax-agent\projects\kotak-neo-bot')
+DATA = ROOT / 'data_cache'
+DECISIONS = DATA / 'quant_service_decisions.jsonl'
+
+VAULT = Path(os.environ.get('OBSIDIAN_VAULT_PATH', r'C:\Users\saini\Documents\Obsidian Vault'))
+QUANT_DIR = VAULT / 'Quant'
+
+SUPPORTED_STRATS = ['iron_condor', 'bull_call_vertical', 'bear_put_vertical',
+                    'long_call', 'long_put', 'short_strangle', 'short_straddle',
+                    'calendar_spread']
+
+
+def _today_str() -> str:
+    return date.today().isoformat()
+
+
+def _read_today_decisions() -> list:
+    """Read today's decisions from the JSONL log."""
+    out = []
+    if not DECISIONS.exists():
+        return out
+    today = _today_str()
+    with open(DECISIONS, 'r', encoding='utf-8') as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts = rec.get('ts', '')
+            if not ts.startswith(today):
+                continue
+            dec = rec.get('decision', {})
+            if not isinstance(dec, dict):
+                continue
+            out.append({
+                'ts': ts,
+                'type': dec.get('type', '?'),
+                'strategy': dec.get('strategy', ''),
+                'note': dec.get('note', '') or dec.get('rationale', '') or '',
+            })
+    return out
+
+
+def _read_paper() -> dict:
+    try:
+        return json.loads((DATA / 'paper_state.json').read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _read_survival() -> dict:
+    try:
+        return json.loads((DATA / 'survival_state.json').read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _write_note(target_dir: Path, name: str, content: str) -> Path:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / name
+    path.write_text(content, encoding='utf-8')
+    return path
+
+
+def build_journal() -> Optional[Path]:
+    decs = _read_today_decisions()
+    paper = _read_paper()
+    surv = _read_survival()
+    today = _today_str()
+
+    # Summarize
+    n_total = len(decs)
+    n_open = sum(1 for d in decs if d['type'] == 'OPEN')
+    n_close = sum(1 for d in decs if d['type'] == 'CLOSE')
+    n_hold = sum(1 for d in decs if d['type'] == 'HOLD')
+    n_err = sum(1 for d in decs if 'error' in d['note'].lower() or d['type'] == '?')
+
+    realized = float(paper.get('realized_pnl', 0) or 0)
+    cash = float(paper.get('cash', 0) or 0)
+    equity = cash + realized
+
+    surv_mode = surv.get('survival_mode')
+    kill_switch = surv.get('policy', {}).get('kill_switch')
+    deployable = surv.get('deployable')
+
+    # Last 8 decisions (most recent last)
+    recent = decs[-8:] if decs else []
+
+    body = []
+    body.append(f"# Quant Journal — {today}")
+    body.append("")
+    body.append("## Day summary")
+    body.append(f"- Date: **[[{today}]]**")
+    body.append(f"- Type: **Quant trading day** (NSE options, paper)")
+    body.append(f"- Equity: **₹{equity:,.0f}**  (cash ₹{cash:,.0f} + realized ₹{realized:,.0f})")
+    body.append(f"- Decisions logged: **{n_total}** — {n_open} OPEN · {n_close} CLOSE · {n_hold} HOLD · {n_err} error")
+    body.append("")
+
+    body.append("## Capital / survival")
+    body.append(f"- Survival mode: **{'YES' if surv_mode else 'no'}**")
+    body.append(f"- Kill switch: **{'TRIPPED' if kill_switch else 'not tripped'}**")
+    if deployable is not None:
+        body.append(f"- Deployable capital: **₹{deployable:,.0f}** (40/60 split: 60% banked)")
+    body.append("")
+
+    body.append("## Decisions")
+    if recent:
+        for d in recent:
+            strat = f" ({d['strategy']})" if d['strategy'] else ""
+            note = (d['note'] or '')[:160]
+            body.append(f"- **{d['ts'][11:19]}** {d['type']}{strat} — {note}")
+    else:
+        body.append("- No trades logged today. If the market was open, this was a discipline day (the system held).")
+    body.append("")
+    body.append("## Lessons / notes")
+    body.append("- Auto-generated by the quant brain's EOD journal.")
+    body.append("- Data source: `quant_service_decisions.jsonl` + `paper_state.json` + `survival_state.json`.")
+    body.append("")
+
+    # Write the daily note
+    note_path = _write_note(QUANT_DIR, f"{today}.md", "\n".join(body))
+
+    # Update the index README
+    _write_index()
+
+    return note_path
+
+
+def _write_index() -> None:
+    """Write/replace the Quant README index linking all journal notes."""
+    if not QUANT_DIR.exists():
+        return
+    notes = sorted(QUANT_DIR.glob('*.md'))
+    notes = [n for n in notes if n.name != 'README.md']
+    lines = ["# Quant Journal Index", ""]
+    for n in notes:
+        lines.append(f"- [[{n.stem}]]")
+    _write_note(QUANT_DIR, 'README.md', "\n".join(lines) + "\n")
+
+
+def main() -> int:
+    try:
+        path = build_journal()
+        if path:
+            print(f"journal written: {path}")
+            return 0
+        print("journal not written (no vault / no data)")
+        return 1
+    except Exception as e:
+        print(f"journal error: {e}")
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -3988,6 +3988,18 @@ def watch_loop():
                     last_eod_backup_date = _now.date()
                     log("SCHED-EOD-BACKUP: triggering (15:45)")
                     _scheduled_subprocess("scripts/daily_state_backup.py", "eod-backup", timeout=60)
+                    # FIX 2026-10-11: auto-journal the day into the Obsidian vault.
+                    # The brain writes a readable markdown note (P&L, decisions,
+                    # survival state) so the operator sees what it did and why.
+                    try:
+                        _jr = subprocess.run(
+                            [str(ROOT / ".venv" / "Scripts" / "python.exe"),
+                             str(ROOT / "scripts" / "obsidian_journal.py")],
+                            capture_output=True, text=True, timeout=60,
+                        )
+                        log(f"SCHED-OBSIDIAN-JOURNAL: exit={_jr.returncode} {(_jr.stdout or '').strip()[:100]}")
+                    except Exception as _oj_err:
+                        log(f"sched-obsidian-journal-err: {_oj_err}")
             # Sun 21:00 weekend intel + Monday brief
             if _now.weekday() == 6 and _now.hour == 21 and _now.minute < 5 and last_weekend_intel_date != _now.date():
                 last_weekend_intel_date = _now.date()
