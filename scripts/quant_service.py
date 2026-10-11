@@ -4007,6 +4007,8 @@ def watch_loop():
                 _scheduled_subprocess("scripts/weekend_intel.py", "weekend-intel", timeout=120)
                 _scheduled_subprocess("scripts/monday_brief.py", "monday-brief-build", timeout=60)
                 _scheduled_subprocess("scripts/send_monday_brief.py", "monday-brief-send", timeout=30)
+                # FIX 2026-10-11: weekly market wrap + Monday readiness -> Obsidian vault.
+                _scheduled_subprocess("scripts/market_wrap.py", "market-wrap", timeout=60)
             # 23:00 daily: LLM self-review (self-evolution loop — updates AGENTS.md + prompt_addition.txt)
             if _now.hour == 23 and _now.minute < 5 and last_nightly_improvement_date != _now.date():
                 last_nightly_improvement_date = _now.date()
