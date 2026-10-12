@@ -3580,6 +3580,31 @@ def watch_loop():
                                     log(f"SELF-RESTART: nssm restart {_svc} exit={_r.returncode}")
                                 except Exception as _rse:
                                     log(f"SELF-RESTART: nssm restart {_svc} err: {_rse}")
+                        # FIX 2026-10-12: start_services handles PAUSED/STOPPED
+                        # services (nssm restart fails on a paused service with
+                        # exit=1). Use sc continue for PAUSED, sc start for STOPPED.
+                        _starts = _rb.get("start_services", [])
+                        if _starts:
+                            import subprocess as _ss_sub
+                            for _svc in _starts:
+                                try:
+                                    _q = _ss_sub.run(["sc", "query", _svc],
+                                                     capture_output=True, text=True, timeout=20)
+                                    _state = ""
+                                    for _ln in _q.stdout.splitlines():
+                                        if "STATE" in _ln:
+                                            _state = _ln.split(":")[-1].strip().split()[-1]
+                                            break
+                                    if _state == "PAUSED":
+                                        _a = _ss_sub.run(["sc", "continue", _svc],
+                                                         capture_output=True, text=True, timeout=30)
+                                        log(f"SELF-RESTART: sc continue {_svc} exit={_a.returncode}")
+                                    else:
+                                        _a = _ss_sub.run(["sc", "start", _svc],
+                                                         capture_output=True, text=True, timeout=30)
+                                        log(f"SELF-RESTART: sc start {_svc} exit={_a.returncode}")
+                                except Exception as _sse:
+                                    log(f"SELF-RESTART: start {_svc} err: {_sse}")
                         # Save state then exit
                         STATE.write_text(json.dumps({**SERVICE_STATE, "history_size": len(HISTORY)}, default=str), encoding='utf-8')
                         RUNNING = False
