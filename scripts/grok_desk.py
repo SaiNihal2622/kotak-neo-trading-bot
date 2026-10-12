@@ -84,12 +84,20 @@ def _load_credentials_env() -> None:
 _load_credentials_env()
 
 
-# ----- LLM config (matches the bot's existing minimax config) -----
+# ----- LLM config -----
+# FIX 2026-10-12: the MiniMax static key is DEAD (402/401 since 2026-09-21).
+# Prefer the same working Nous key the main brain uses (NOUS_API_KEY +
+# NOUS_INFERENCE_BASE_URL); fall back to MiniMax only if NOUS is absent.
 LLM_BASE_URL = os.environ.get(
-    "MINIMAX_LLM_BASE_URL", "https://agent.minimax.io/mavis/api/v1/llm/v1"
+    "NOUS_INFERENCE_BASE_URL",
+    os.environ.get("MINIMAX_LLM_BASE_URL", "https://inference-api.nousresearch.com/v1"),
+).rstrip('/')
+LLM_API_KEY = os.environ.get(
+    "NOUS_API_KEY",
+    os.environ.get("MINIMAX_LLM_API_KEY", ""),
 )
-LLM_API_KEY = os.environ.get("MINIMAX_LLM_API_KEY", "")
-LLM_MODEL = "MiniMax-M2.7-highspeed"
+LLM_MODEL = os.environ.get("NOUS_LLM_MODEL",
+                           os.environ.get("LLM_MODEL", "anthropic/claude-sonnet-5.5"))
 
 
 # ----- role system prompts (6 roles) -----

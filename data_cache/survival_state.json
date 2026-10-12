@@ -1,0 +1,20 @@
+{
+ "policy": {
+  "starting_capital": 100000.0,
+  "redeploy_ratio": 0.4,
+  "survival_floor_pct": 0.5,
+  "daily_loss_cap_pct": 0.03,
+  "kill_switch": false,
+  "kill_switch_reason": ""
+ },
+ "banked": 0.0,
+ "realized_total": 0.0,
+ "peak_equity": 100000.0,
+ "last_update": "2026-10-12T15:35:00+05:30",
+ "kill_switch_tripped_at": null,
+ "survival_mode": false,
+ "survival_floor": 50000.0,
+ "equity": 100000.0,
+ "deployable": 100000.0,
+ "_reset_note": "cleaned phantom 151M peak/equity from earlier desync; reality = 100k paper, 0 trades"
+}
