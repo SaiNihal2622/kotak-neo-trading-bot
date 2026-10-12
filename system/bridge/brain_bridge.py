@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -167,7 +168,11 @@ class BrainBridge:
                 # CAS: qty is already in shares, no multiplier
                 if qty_lots < 1:
                     continue
-                _l_qty = qty_lots
+                # FIX 2026-10-12: brain sizer can emit qty not a multiple of the
+                # lot size (e.g. 38 for NIFTY lot 75) -> preflight lot_size gate
+                # rejects -> OPEN silently never fills. Round UP to nearest lot.
+                _lot = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65, "MIDCPNIFTY": 120}.get(underlying, 75)
+                _l_qty = int(math.ceil(qty_lots / _lot) * _lot)
                 sym = underlying  # NIFTY spot, no strike suffix
                 legs.append({
                     "symbol": sym,

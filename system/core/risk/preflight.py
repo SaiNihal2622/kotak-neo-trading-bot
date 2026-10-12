@@ -55,6 +55,43 @@ class PreFlight:
         self.limit_safety_buy = limit_safety_buy
         self.limit_safety_sell = limit_safety_sell
         self.min_bid_buffer_pct = min_bid_buffer_pct
+        self._chain_cache = {"ts": 0, "data": {}}
+
+    def _chain_bid_ask(self, sym: str):
+        """FIX 2026-10-12: fall back to the fresh option-chain file for a
+        symbol's bid/ask when the live tick feed has no entry for it.
+
+        The bridge submits option plans (iron_condor, bear_put_vertical) but
+        the core's live tick state often lacks the specific option symbol, so
+        the pricing gate rejected every such OPEN ('no live tick ... cannot
+        validate LIMIT price') and the trade silently never filled. The chain
+        file (data_cache/option_chain_<UND>.json) is written fresh every cycle
+        with real bid/ask per strike. Returns (bid, ask) or (None, None).
+        """
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            und = sym
+            for _u in ("BANKNIFTY", "NIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+                if sym.startswith(_u):
+                    und = _u
+                    break
+            chain_path = _Path("data_cache") / f"option_chain_{und}.json"
+            if not chain_path.exists():
+                return (None, None)
+            mtime = chain_path.stat().st_mtime
+            if mtime != self._chain_cache["ts"]:
+                self._chain_cache["ts"] = mtime
+                self._chain_cache["data"] = _json.loads(chain_path.read_text(encoding="utf-8-sig"))
+            strikes = self._chain_cache["data"].get("strikes", {})
+            entry = strikes.get(sym)
+            if not entry:
+                return (None, None)
+            bid = float(entry.get("bid") or 0)
+            ask = float(entry.get("ask") or 0)
+            return (bid, ask)
+        except Exception:
+            return (None, None)
 
     def check_order(self, order: dict, state: StateProjection, plan_legs: list = None) -> PreflightResult:
         """Validate a single order. plan_legs is used for atomicity checks."""
@@ -167,6 +204,12 @@ class PreFlight:
             tick = state.ticks.get(sym)
             if tick:
                 price = tick.ask or tick.ltp
+            else:
+                # FIX 2026-10-12: chain fallback for option symbols missing from
+                # the live tick feed (same root cause as the limit-reasonable gate).
+                _cb, _ca = self._chain_bid_ask(sym)
+                if _cb and _cb > 0:
+                    price = _ca or _cb
         if price <= 0:
             return PreflightResult(ok=False, reason="no price for cost estimation", gate="pricing")
         est_cost = qty * price
@@ -255,11 +298,19 @@ class PreFlight:
         sym = order.get("symbol", "")
         tick = state.ticks.get(sym)
         if not tick or tick.bid <= 0:
-            return PreflightResult(
-                ok=False,
-                reason=f"no live tick for {sym} — cannot validate LIMIT price",
-                gate="pricing",
-            )
+            # FIX 2026-10-12: fall back to the fresh option-chain file for the
+            # symbol's bid/ask when the live tick feed lacks it. Without this,
+            # every option OPEN (iron_condor, bear_put_vertical) was rejected
+            # here and the trade silently never filled.
+            _cb, _ca = self._chain_bid_ask(sym)
+            if _cb and _cb > 0:
+                tick = type("T", (), {"bid": _cb, "ask": _ca or _cb, "ltp": _cb})()
+            else:
+                return PreflightResult(
+                    ok=False,
+                    reason=f"no live tick for {sym} — cannot validate LIMIT price",
+                    gate="pricing",
+                )
         limit = float(order.get("price", 0) or 0)
         if limit <= 0:
             return PreflightResult(ok=False, reason="LIMIT order missing price", gate="structure")
