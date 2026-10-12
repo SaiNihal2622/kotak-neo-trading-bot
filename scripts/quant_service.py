@@ -3876,8 +3876,24 @@ def watch_loop():
                     n_err = len(state.get('errors', []))
                     if n_inst > 0:
                         log(f"GLOBAL-CHECK: {n_inst} instruments, {n_err} errors")
-                except Exception as e:
-                    log(f"global-check-err: {e}")
+                    # FIX 2026-10-12: refresh REAL historical India VIX context
+                    # (percentile rank vs 6mo) so strategy gates are grounded in
+                    # market history, not fixed guesses. Non-blocking: if the
+                    # fetch fails, the learner (paper-trade evidence) still works.
+                    import subprocess as _mref_sub
+                    _mref = _mref_sub.run(
+                        [str(ROOT / ".venv" / "Scripts" / "python.exe"),
+                         str(ROOT / "scripts" / "market_reference.py")],
+                        capture_output=True, text=True, timeout=90)
+                    if _mref.returncode == 0:
+                        _mref_data = _safe_read_json(DATA / "market_reference.json", default={})
+                        _vh = _mref_data.get("vix_history", {})
+                        if _vh.get("n_points"):
+                            log(f"MARKET-REF: VIX {_vh.get('latest')} "
+                                f"pct_rank={_vh.get('latest_pct_rank')}% "
+                                f"(6mo mean {_vh.get('mean')})")
+                except Exception as _gce:
+                    log(f"global-check-err: {_gce}")
 
             # --- Scheduled operations (replaces 23 paused Mavis crons) ---
             # Mon-Fri operations
