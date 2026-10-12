@@ -35,7 +35,7 @@ def pf(tmp_path, monkeypatch):
     backup = None
     if real_chain.exists():
         backup = real_chain.read_text(encoding='utf-8-sig')
-    real_chain.write_text('{"strikes": {"NIFTY22600CE": {"bid": 100.0, "ask": 102.0}}}', encoding='utf-8')
+    real_chain.write_text('{"strikes": {"22050_CE": {"bid": 100.0, "ask": 102.0}}}', encoding='utf-8')
     yield inst
     if backup is not None:
         real_chain.write_text(backup, encoding='utf-8')
@@ -44,7 +44,8 @@ def pf(tmp_path, monkeypatch):
 
 
 def test_chain_bid_ask_returns_prices(pf):
-    bid, ask = pf._chain_bid_ask('NIFTY22600CE')
+    # real bridge symbol format (NIFTY<expiry><strike><CE/PE>) -> chain key 22050_CE
+    bid, ask = pf._chain_bid_ask('NIFTY22OCT2622050CE')
     assert bid == 100.0
     assert ask == 102.0
 
@@ -58,7 +59,7 @@ def test_chain_bid_ask_unknown_symbol(pf):
 def test_limit_reasonable_passes_with_chain_fallback(pf):
     """An option order with no live tick but a chain entry must pass the gate."""
     order = {
-        'symbol': 'NIFTY22600CE', 'side': 'SELL', 'qty': 75,
+        'symbol': 'NIFTY22OCT2622050CE', 'side': 'SELL', 'qty': 75,
         'order_type': 'LIMIT', 'price': 100.0, 'underlying': 'NIFTY',
     }
     # empty state.ticks -> no live tick -> must fall back to chain
@@ -83,7 +84,7 @@ def test_limit_reasonable_still_rejects_when_no_chain(pf, monkeypatch):
 def test_per_trade_cap_uses_chain_price(pf):
     """Cost estimation falls back to chain ask when no live tick."""
     order = {
-        'symbol': 'NIFTY22600CE', 'side': 'BUY', 'qty': 75,
+        'symbol': 'NIFTY22OCT2622050CE', 'side': 'BUY', 'qty': 75,
         'order_type': 'LIMIT', 'price': 0.0, 'underlying': 'NIFTY',
         'exchange': 'NFO',
     }

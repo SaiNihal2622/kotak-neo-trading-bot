@@ -84,7 +84,18 @@ class PreFlight:
                 self._chain_cache["ts"] = mtime
                 self._chain_cache["data"] = _json.loads(chain_path.read_text(encoding="utf-8-sig"))
             strikes = self._chain_cache["data"].get("strikes", {})
+            # The chain file keys are "<strike>_<CE|PE>" (e.g. "22050_CE") but the
+            # bridge builds symbols like "NIFTY22OCT2622050CE". Convert the symbol
+            # to the chain key format: extract the trailing strike + opt_type.
             entry = strikes.get(sym)
+            if not entry:
+                _key = None
+                _m = None
+                import re as _re
+                _m = _re.search(r"(\d{4,5})(CE|PE)$", sym)
+                if _m:
+                    _key = f"{_m.group(1)}_{_m.group(2)}"
+                    entry = strikes.get(_key)
             if not entry:
                 return (None, None)
             bid = float(entry.get("bid") or 0)
