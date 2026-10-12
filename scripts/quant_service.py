@@ -3565,6 +3565,21 @@ def watch_loop():
                         log(f"SELF-RESTART: marker found ({_rb.get('reason', '?')}), exiting cleanly")
                         _rb["consumed"] = True
                         _rb_path.write_text(json.dumps(_rb, indent=2), encoding="utf-8")
+                        # FIX 2026-10-12: a marker may also request restarting the
+                        # core + bridge (they import preflight/bridge code at
+                        # startup and need a restart to load fixes). The brain runs
+                        # as LocalSystem so it CAN call NSSM. Do this BEFORE exiting.
+                        _svcs = _rb.get("restart_services", [])
+                        if _svcs:
+                            import subprocess as _rs_sub
+                            _nssm = r"C:\Tools\nssm\nssm-2.24\win64\nssm.exe"
+                            for _svc in _svcs:
+                                try:
+                                    _r = _rs_sub.run([_nssm, "restart", _svc],
+                                                     capture_output=True, text=True, timeout=30)
+                                    log(f"SELF-RESTART: nssm restart {_svc} exit={_r.returncode}")
+                                except Exception as _rse:
+                                    log(f"SELF-RESTART: nssm restart {_svc} err: {_rse}")
                         # Save state then exit
                         STATE.write_text(json.dumps({**SERVICE_STATE, "history_size": len(HISTORY)}, default=str), encoding='utf-8')
                         RUNNING = False
