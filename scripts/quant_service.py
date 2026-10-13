@@ -3605,6 +3605,20 @@ def watch_loop():
                                         log(f"SELF-RESTART: sc start {_svc} exit={_a.returncode}")
                                 except Exception as _sse:
                                     log(f"SELF-RESTART: start {_svc} err: {_sse}")
+                        # FIX 2026-10-13: run_script lets a marker run an arbitrary
+                        # python script as LocalSystem (for diagnostics/repairs that
+                        # need admin, e.g. probing why a service won't resume).
+                        _script = _rb.get("run_script")
+                        if _script:
+                            import subprocess as _rs_sub2
+                            try:
+                                _sp = _rs_sub2.run(
+                                    [str(ROOT / ".venv" / "Scripts" / "python.exe"), str(_script)],
+                                    capture_output=True, text=True, timeout=180)
+                                log(f"SELF-RESTART: run_script {_script} exit={_sp.returncode} "
+                                    f"err={(_sp.stderr or '')[:120]}")
+                            except Exception as _rse2:
+                                log(f"SELF-RESTART: run_script err: {_rse2}")
                         # Save state then exit
                         STATE.write_text(json.dumps({**SERVICE_STATE, "history_size": len(HISTORY)}, default=str), encoding='utf-8')
                         RUNNING = False
