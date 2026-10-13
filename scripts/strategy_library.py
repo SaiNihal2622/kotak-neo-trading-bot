@@ -410,9 +410,46 @@ def select_strategy(context: dict, performance: Dict[str, StrategyResult]) -> Op
             ))
     if not candidates:
         return None
-    # Pick highest score
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    return candidates[0][0]
+    # FIX 2026-10-13: REGIME-AWARE WEIGHTS (was static -> always iron_condor).
+    # The old code gave iron_condor a fixed 0.9, which beat the trend strategies
+    # (0.75/0.70) on EVERY day, so a strong trending day (ADX 45, session +0.6%)
+    # still routed to the range-bound iron condor -> the biggest source of
+    # 'template operating' and missed directional P&L all month.
+    # Now: if the market is TRENDING (high ADX + directional session), boost the
+    # directional strategies and demote iron_condor; if RANGE-BOUND, do the reverse.
+    adx2 = 0
+    try:
+        from pathlib import Path as _P
+        import json as _j
+        _ca_path = _P("data_cache") / "candles_aggregate.json"
+        if _ca_path.exists():
+            _ca = _j.loads(_ca_path.read_text(encoding="utf-8"))
+            adx2 = float(((_ca.get("symbols") or {}).get("NIFTY") or {}).get("indicators", {}).get("adx") or 0)
+    except Exception:
+        adx2 = 0
+    s_pct = context.get("session_pct", 0) or 0
+    if s_pct == 0 and context.get("session_open") and context.get("spot"):
+        s_pct = (context["spot"] - context["session_open"]) / context["session_open"] * 100
+    abs_pct = abs(s_pct)
+    trending = adx2 > 25 and abs_pct > 0.3
+    ranging = adx2 < 20 and abs_pct < 0.3
+    # Direction of the trend (to favor the correct side)
+    direction = "long" if s_pct > 0 else "short"
+    _ic_name = "iron_condor_nifty"
+    _longs = {"nifty_cash_long", "vwap_bounce_nifty", "long_call"}
+    _shorts = {"nifty_cash_short", "bear_put_vertical", "long_put"}
+    adj = []
+    for cand, w, reason in candidates:
+        sname = cand.name
+        if trending and sname == _ic_name:
+            w -= 0.60          # demote range strategy on a trending day
+        elif trending and sname in (_longs if direction == "long" else _shorts):
+            w += 0.40          # boost the correct-direction trend strategy
+        elif ranging and sname == _ic_name:
+            w += 0.35          # range day -> iron_condor is the edge
+        adj.append((cand, w, reason))
+    adj.sort(key=lambda x: x[1], reverse=True)
+    return adj[0][0]
 
 
 # ===== Trade plan generator =====
