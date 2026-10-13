@@ -2881,6 +2881,8 @@ last_eod_check_date = None
 last_weekly_check_date = None
 last_intel_refresh = None
 last_reconcile_ts = 0
+last_positions_count = 0        # failsafe: last known open position count
+injected_opens_streak = 0      # failsafe: consecutive cycles brain wanted OPEN but positions stayed 0
 
 # ---------- Scheduled operations (in-process, replaces 23 paused crons) ----------
 # Each entry: (last_fired_date_var, hhmm_window, script_relpath, label, args, timeout_sec, weekday_filter)
@@ -3538,9 +3540,40 @@ def watch_loop():
                     # FIX 2026-10-05: include LLM health in the state file so a
                     # dead brain is visible on the dashboard. Previously the only
                     # symptom was a HOLD stream in a 38 MB log file -- invisible.
+                    # FIX 2026-10-13: PHANTOM-FILL FAILSAFE. The recurring silent
+                    # failure was: brain writes OPEN, execution rejects, position
+                    # count stays 0, and it looks like 'discipline' not failure.
+                    # Track whether the brain held OPEN intent while the account
+                    # never gained a position; surface it as trade_health.
+                    global injected_opens_streak, last_positions_count
+                    try:
+                        _pp_fs = read_paper() or {}
+                        _pos_fs = len(_pp_fs.get("positions", {}) or {}) if isinstance(_pp_fs, dict) else 0
+                        # Did the brain just try to OPEN?
+                        _open_now = False
+                        for _fa in action_doc.get("actions", []) if isinstance(action_doc, dict) else []:
+                            if _fa.get("type") == "OPEN" or (isinstance(_fa, dict) and _fa.get("type") == "OPEN"):
+                                _open_now = True; break
+                        if not _open_now:
+                            # check decisions stream too (LLM wanted OPEN, suppressed after)
+                            injected_opens_streak = 0 if _pos_fs > 0 else injected_opens_streak
+                        else:
+                            injected_opens_streak = 0 if _pos_fs > 0 else (injected_opens_streak + 1)
+                        last_positions_count = _pos_fs
+                        _phantom = injected_opens_streak >= 5 and _pos_fs == 0
+                        if _phantom:
+                            log(f"PHANTOM-FILL-ALERT: brain issued OPEN {injected_opens_streak} straight cycles but positions=0 -> delivery/execution failure, NOT discipline")
+                    except Exception as _fs_e:
+                        _phantom = False
+                        log(f"phantom-fill-failsafe-err: {_fs_e}")
                     STATE.write_text(
                         json.dumps({**SERVICE_STATE, "history_size": len(HISTORY),
-                                    "llm_health": llm_circuit_state()},
+                                    "llm_health": llm_circuit_state(),
+                                    "trade_health": {
+                                        "injected_opens_streak": injected_opens_streak,
+                                        "open_positions": last_positions_count,
+                                        "phantom_fill_detected": _phantom,
+                                    }},
                                    default=str),
                         encoding="utf-8",
                     )
