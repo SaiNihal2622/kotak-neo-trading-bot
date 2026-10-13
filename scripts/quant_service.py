@@ -219,7 +219,7 @@ ENV = load_env()
 # secret left to expire. 'minimax' is kept only as a fallback and is
 # expected to fail -- do not restore it as the primary.
 LLM_BACKEND = ENV.get('LLM_BACKEND', 'nous').strip().lower()
-LLM_MODEL = ENV.get('LLM_MODEL', 'anthropic/claude-sonnet-5.5').strip()
+LLM_MODEL = ENV.get('LLM_MODEL', 'z-ai/glm-5.3-flash:US').strip()
 
 # FIX 2026-10-05: tell the Nous client WHERE Hermes' credential lives, from
 # this file rather than from the service environment.

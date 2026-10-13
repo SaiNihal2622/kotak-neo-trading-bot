@@ -1,4 +1,4 @@
-﻿"""grok_desk.py â€” 6-role LLM trading desk for Indian NIFTY/BNF options.
+"""grok_desk.py â€” 6-role LLM trading desk for Indian NIFTY/BNF options.
 
 DESIGN (2026-09-08): inspired by @MSBIntel's GROK BOT Desk (PDF guide shared
 by the user, 4 pages, 6 role prompts). The Grok Bot uses Grok-4-fast (xAI).
@@ -97,7 +97,7 @@ LLM_API_KEY = os.environ.get(
     os.environ.get("MINIMAX_LLM_API_KEY", ""),
 )
 LLM_MODEL = os.environ.get("NOUS_LLM_MODEL",
-                           os.environ.get("LLM_MODEL", "anthropic/claude-sonnet-5.5"))
+                           os.environ.get("LLM_MODEL", "z-ai/glm-5.3-flash:US"))
 
 
 # ----- role system prompts (6 roles) -----
