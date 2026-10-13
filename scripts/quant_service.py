@@ -4070,6 +4070,17 @@ def watch_loop():
                         log(f"SCHED-OBSIDIAN-JOURNAL: exit={_jr.returncode} {(_jr.stdout or '').strip()[:100]}")
                     except Exception as _oj_err:
                         log(f"sched-obsidian-journal-err: {_oj_err}")
+                    # FIX 2026-10-13: daily P&L + fills + blocked-signals journal.
+                    # Writes Quant/Daily/<date>.md + data_cache/daily_journal.json.
+                    try:
+                        _dj_r = subprocess.run(
+                            [str(ROOT / ".venv" / "Scripts" / "python.exe"),
+                             str(ROOT / "scripts" / "daily_journal.py")],
+                            capture_output=True, text=True, timeout=60,
+                        )
+                        log(f"SCHED-DAILY-JOURNAL: exit={_dj_r.returncode} {(_dj_r.stdout or '').strip()[:100]}")
+                    except Exception as _dj_err:
+                        log(f"sched-daily-journal-err: {_dj_err}")
             # Sun 21:00 weekend intel + Monday brief
             if _now.weekday() == 6 and _now.hour == 21 and _now.minute < 5 and last_weekend_intel_date != _now.date():
                 last_weekend_intel_date = _now.date()

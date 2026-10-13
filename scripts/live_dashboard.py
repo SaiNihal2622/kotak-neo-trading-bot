@@ -2173,6 +2173,24 @@ def handle_api(path):
         # trading show" P&L, which is the only meaningful metric.
         # Alias for /api/mtm (same endpoint, clearer name for the dashboard).
         return json.dumps(_compute_mtm(), default=str)
+    if u.path == "/api/daily_journal":
+        # FIX 2026-10-13: daily P&L + fills + blocked-signals journal (scripts/daily_journal.py).
+        # Shows what the system actually filled AND — crucially — the signals it
+        # blocked, so an empty fills panel is explainable ("template" -> transparency).
+        try:
+            _dj_path = os.path.join(DCACHE, "daily_journal.json")
+            if os.path.exists(_dj_path):
+                return open(_dj_path, encoding="utf-8").read()
+            # not generated yet today -> build it live
+            sys.path.insert(0, str(ROOT / "scripts"))
+            import daily_journal as _dj
+            _dj.DATA = DCACHE
+            _dj.build()
+            if os.path.exists(_dj_path):
+                return open(_dj_path, encoding="utf-8").read()
+            return json.dumps({"error": "daily_journal not available"}, default=str)
+        except Exception as e:
+            return json.dumps({"error": f"daily_journal: {e}"}, default=str)
     if u.path == "/api/option_chain":
         sym = (qs.get("symbol", ["NIFTY"])[0]).upper()
         expiry = qs.get("expiry", ["auto"])[0]
