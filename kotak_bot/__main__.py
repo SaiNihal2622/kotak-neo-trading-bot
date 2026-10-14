@@ -997,7 +997,25 @@ def run_paper() -> None:
                 _liveness_state["realized_pnl"] = float(risk.state.daily_pnl or 0.0)
             _liveness_state["trades_today"] = int(risk.state.trades_today or 0)
             try:
-                _liveness_state["open_positions"] = len(broker.get_positions())
+                # FIX 2026-10-14: in bridge-active mode the EXEC GATEWAY fills
+                # orders into the core's projection, NOT this bot's PaperClient.
+                # Reading broker.get_positions() here shows 0 even when the
+                # gateway has filled real paper positions -> the dashboard lied
+                # ("nothing trades"). Read positions from the core instead.
+                _core_pos = 0
+                try:
+                    import urllib.request as _ur
+                    _core_url = os.environ.get("KOTAK_CORE_URL", "http://127.0.0.1:8510")
+                    _r = _ur.urlopen(f"{_core_url}/api/positions", timeout=3)
+                    _core_pos = len((json.loads(_r.read()) or {}).get("positions", {}) or {})
+                except Exception:
+                    _core_pos = 0
+                if _core_pos > 0:
+                    _liveness_state["open_positions"] = _core_pos
+                    _liveness_state["positions_source"] = "core"
+                else:
+                    _liveness_state["open_positions"] = len(broker.get_positions())
+                    _liveness_state["positions_source"] = "broker"
             except Exception as e:
                 _liveness_state["positions_error"] = str(e)
             try:

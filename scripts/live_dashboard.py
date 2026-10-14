@@ -103,6 +103,23 @@ def paper_state():
     j = _read_json(os.path.join(DCACHE, "paper_state.json"), {})
     orders = j.get("orders", {}) if isinstance(j.get("orders"), dict) else {}
     positions = j.get("positions", {}) if isinstance(j.get("positions"), dict) else {}
+    # FIX 2026-10-14: in bridge-active mode the EXEC GATEWAY fills into the
+    # core's projection, not paper_state.json. Merge core positions so the
+    # dashboard shows real fills instead of a false 0.
+    try:
+        import urllib.request as _ur
+        _core_url = os.environ.get("KOTAK_CORE_URL", "http://127.0.0.1:8510")
+        _r = _ur.urlopen(f"{_core_url}/api/positions", timeout=3)
+        _core = (json.loads(_r.read()) or {}).get("positions", {}) or {}
+        for _sym, _p in _core.items():
+            if isinstance(_p, dict) and _p.get("qty"):
+                positions.setdefault(_sym, {})
+                positions[_sym]["qty"] = _p.get("qty")
+                positions[_sym]["avg_price"] = _p.get("avg_price", 0)
+                positions[_sym]["symbol"] = _sym
+                positions[_sym]["pnl"] = _p.get("unrealized_pnl", 0) or 0
+    except Exception:
+        pass
     today_ist = datetime.now(IST).strftime("%Y-%m-%d")
     today_fills = []
     for oid, o in orders.items():
