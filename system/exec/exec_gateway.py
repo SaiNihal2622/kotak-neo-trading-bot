@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import traceback
 from datetime import datetime, timezone
@@ -35,6 +36,13 @@ logger = logging.getLogger(__name__)
 
 CORE_URL = "http://127.0.0.1:8510"
 CORE_WS = "ws://127.0.0.1:8510/ws"
+
+
+
+
+def _now_iso_ist() -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).isoformat()
 
 
 class ExecGateway:
@@ -53,6 +61,9 @@ class ExecGateway:
         self.broker = None
         self.processed_orders: set[str] = set()
         self.last_event_ts: str = ""
+        # FIX 2026-10-14: fills must reach paper_state.json (the store the
+        # dashboard/journal/survival/bot read), not just the core's SQLite.
+        self.paper_state_path = os.path.join("data_cache", "paper_state.json")
         # PHASE 5 FIX 2026-09-29: allow tests to inject a session (or mock) so
         # the gateway doesn't need real network for fill emission. Default to
         # a fresh requests.Session.
@@ -105,6 +116,55 @@ class ExecGateway:
         except Exception as e:
             logger.error(f"fill emission failed for {order_id}: {e}")
         return False
+
+    def _sync_paper_state(self, order: dict, fill_price: float, filled_qty: int) -> None:
+        """FIX 2026-10-14: the gateway fills into the core's SQLite event store,
+        but the dashboard, journal, survival engine and bot read
+        data_cache/paper_state.json. Without a write-back, every fill was
+        stranded in an orphan store and the system LOOKED like it never traded
+        (positions stayed 0, realized 0). Write the fill into paper_state.json.
+        """
+        try:
+            import json as _j
+            from pathlib import Path as _P
+            _ps_path = _P(self.paper_state_path)
+            _ps = {}
+            if _ps_path.exists():
+                try:
+                    _ps = _j.loads(_ps_path.read_text(encoding="utf-8-sig"))
+                except Exception:
+                    _ps = {}
+            _ps.setdefault("orders", {})
+            _ps.setdefault("positions", {})
+            sym = str(order.get("symbol", ""))
+            side = str(order.get("side", "BUY"))
+            _oid = str(order.get("client_order_id") or order.get("id") or sym)
+            _ps["orders"][_oid] = {
+                **_ps["orders"].get(_oid, {}),
+                "filled_at": _now_iso_ist(),
+                "symbol": sym, "side": side, "qty": filled_qty,
+                "filled_qty": filled_qty, "avg_fill_price": float(fill_price),
+                "status": "complete", "underlying": order.get("underlying", ""),
+                "strike": order.get("strike", 0), "option_type": order.get("option_type", ""),
+                "expiry": order.get("expiry", ""),
+            }
+            _pos = _ps["positions"].get(sym, {"qty": 0, "avg_price": 0.0, "symbol": sym})
+            _cur = int(_pos.get("qty", 0) or 0)
+            _delta = filled_qty if side == "BUY" else -filled_qty
+            _new = _cur + _delta
+            if _new == 0:
+                _ps["positions"].pop(sym, None)
+            else:
+                _pos["qty"] = _new
+                if _cur == 0:
+                    _pos["avg_price"] = float(fill_price)
+                else:
+                    _pos["avg_price"] = round(
+                        (_cur * float(_pos.get("avg_price", 0)) + _delta * float(fill_price)) / _new, 2)
+                _ps["positions"][sym] = _pos
+            _ps_path.write_text(_j.dumps(_ps, indent=2, default=str), encoding="utf-8")
+        except Exception as _se:
+            logger.warning(f"paper_state sync failed: {_se}")
 
     async def _handle_order_event(self, event: dict):
         """Process an ORDER_PROPOSED event by placing the order."""
@@ -186,7 +246,12 @@ class ExecGateway:
                     )
                 # Always emit fill so the state projection updates. Use
                 # client_order_id (the projection's _find_order() resolves by it).
-                await self._post_fill(client_order_id or eid, fill_price, order.qty)
+                if await self._post_fill(client_order_id or eid, fill_price, order.qty):
+                    self._sync_paper_state({
+                        "symbol": order.symbol, "side": order.side.value,
+                        "client_order_id": client_order_id, "underlying": order.underlying,
+                        "strike": order.strike, "option_type": order.option_type, "expiry": order.expiry,
+                    }, fill_price, order.qty)
                 return
 
             # LIVE path — fetch tick and turn MARKET into LIMIT @ tick.
@@ -208,6 +273,11 @@ class ExecGateway:
                         f"DIRECT-FILL {order.symbol} {order.side.value} "
                         f"{order.qty} @ {live_price} (from core tick)"
                     )
+                    self._sync_paper_state({
+                        "symbol": order.symbol, "side": order.side.value,
+                        "client_order_id": client_order_id, "underlying": order.underlying,
+                        "strike": order.strike, "option_type": order.option_type, "expiry": order.expiry,
+                    }, live_price, order.qty)
                     return
                 # else: direct fill failed (core down?), fall through to broker path
                 logger.warning(
