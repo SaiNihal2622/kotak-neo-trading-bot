@@ -57,6 +57,10 @@ def test_build_captures_blocked_signal(monkeypatch, tmp_path):
     monkeypatch.setattr(dj, 'VAULT', tmp_path)
     monkeypatch.setattr(dj, 'DAILY_DIR', tmp_path)
     monkeypatch.setattr(dj, 'DATA', tmp_path)
+    # isolate the module constants so the test reads tmp files, not the real log
+    monkeypatch.setattr(dj, 'QUANT_LOG', tmp_path / 'quant_service.log')
+    monkeypatch.setattr(dj, 'DECISIONS', tmp_path / 'quant_service_decisions.jsonl')
+    monkeypatch.setattr(dj, 'REJECTIONS', tmp_path / 'order_rejections.jsonl')
     import datetime
     today = datetime.date.today().isoformat()
     (tmp_path / 'paper_state.json').write_text(

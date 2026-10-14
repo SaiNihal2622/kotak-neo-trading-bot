@@ -199,6 +199,13 @@ class BrainBridge:
             except Exception:
                 exp_str = expiry
             sym = f"{underlying}{exp_str}{int(strike)}{opt}"
+            # FIX 2026-10-14: use the LIVE chain price for the limit, not the
+            # LLM's guess. The LLM proposes limits ~50% below the real ask,
+            # which the preflight limit_reasonable gate rejects -> OPEN never
+            # fills. ask for BUY, bid for SELL. Fall back to the LLM price only
+            # if the chain has no data for this symbol.
+            _live = self._chain_price(sym, side)
+            _final_price = _live if _live is not None else (float(price) if price else 0.0)
             legs.append({
                 "symbol": sym,
                 "underlying": underlying,
@@ -206,7 +213,7 @@ class BrainBridge:
                 "qty": self._lot_qty(underlying) * max(1, qty_lots),
                 "order_type": order_type,
                 "product": "MIS",
-                "price": float(price) if price else 0.0,
+                "price": _final_price,
                 "tag": f"BRAIN-{str(action.get('strategy','?'))[:10]}"[:30],
                 "strike": float(strike),
                 "option_type": opt,
@@ -218,6 +225,75 @@ class BrainBridge:
     def _lot_qty(self, underlying: str) -> int:
         return {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65,
                 "MIDCPNIFTY": 120, "SENSEX": 10}.get(underlying.upper(), 75)
+
+    def _chain_price(self, sym: str, side: str):
+        """FIX 2026-10-14: override the LLM's guessed limit with the LIVE
+        option-chain price (ask for BUY, bid for SELL). The LLM frequently
+        proposes a limit ~50% below the real ask (e.g. 34 vs 67), which the
+        preflight limit_reasonable gate correctly rejects -> the OPEN never
+        fills. The chain file (data_cache/option_chain_<UND>.json) has real
+        bid/ask per strike. Returns a float price, or None if no chain data.
+        """
+        try:
+            import json as _j
+            from pathlib import Path as _P
+            und = sym
+            for _u in ("BANKNIFTY", "NIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+                if sym.startswith(_u):
+                    und = _u
+                    break
+            chain_path = _P("data_cache") / f"option_chain_{und}.json"
+            if not chain_path.exists():
+                return None
+            strikes = _j.loads(chain_path.read_text(encoding="utf-8-sig")).get("strikes", {})
+            entry = strikes.get(sym)
+            if not entry:
+                import re as _re
+                _m = _re.search(r"(\d{4,5})(CE|PE)$", sym)
+                if _m:
+                    entry = strikes.get(f"{_m.group(1)}_{_m.group(2)}")
+            if not entry:
+                return None
+            bid = float(entry.get("bid") or 0)
+            ask = float(entry.get("ask") or 0)
+            if side == "BUY":
+                return ask if ask > 0 else (bid if bid > 0 else None)
+            return bid if bid > 0 else (ask if ask > 0 else None)
+        except Exception:
+            return None
+
+    def _cap_leg_notional(self, legs: list, capital: float = 100000.0,
+                          max_pct: float = 0.05) -> list:
+        """FIX 2026-10-14: hard-cap each leg's notional (qty x price) to a % of
+        capital. The sizer/LLM can emit an oversized leg (e.g. Rs.396k on a
+        Rs.100k account) which the preflight per_trade_cap gate rejects -> the
+        OPEN never fills. Reduce qty to the nearest lot multiple that fits.
+        """
+        if not legs or capital <= 0:
+            return legs
+        cap = capital * max_pct
+        out = []
+        for leg in legs:
+            qty = int(leg.get("qty", 0) or 0)
+            price = float(leg.get("price", 0) or 0)
+            if qty <= 0 or price <= 0:
+                out.append(leg)
+                continue
+            notional = qty * price
+            if notional <= cap:
+                out.append(leg)
+                continue
+            # reduce qty to fit the cap, rounded down to a lot multiple
+            lot = self._lot_qty(str(leg.get("underlying", "NIFTY")))
+            max_qty = int(cap / price)
+            max_qty = max(0, (max_qty // lot) * lot)
+            if max_qty < lot:
+                # even 1 lot exceeds the cap -> drop the leg (safer than oversizing)
+                continue
+            leg = dict(leg)
+            leg["qty"] = max_qty
+            out.append(leg)
+        return out
 
     def _submit_close_all(self, action: dict) -> dict:
         """PHASE 6 FIX: post a CLOSE_ALL to /api/close_all.
@@ -241,6 +317,18 @@ class BrainBridge:
         legs = self._build_plan_legs(action)
         if not legs:
             return {"ok": False, "reason": "no_legs"}
+        # FIX 2026-10-14: hard-cap leg notional so the preflight per_trade_cap
+        # gate doesn't reject an oversized leg (e.g. Rs.396k on Rs.100k).
+        try:
+            from pathlib import Path as _P
+            _pp_path = _P("data_cache") / "paper_state.json"
+            _pp = self._read_json(_pp_path, default={}) if _pp_path.exists() else {}
+            _cap_cash = float((_pp or {}).get("cash") or 100000.0)
+            legs = self._cap_leg_notional(legs, capital=_cap_cash)
+        except Exception:
+            pass
+        if not legs:
+            return {"ok": False, "reason": "no_legs_after_cap"}
         plan = {
             "strategy": str(action.get("strategy", "custom")),
             "underlying": str(action.get("underlying", "NIFTY")).upper(),

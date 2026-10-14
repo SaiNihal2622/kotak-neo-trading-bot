@@ -3549,13 +3549,18 @@ def watch_loop():
                     try:
                         _pp_fs = read_paper() or {}
                         _pos_fs = len(_pp_fs.get("positions", {}) or {}) if isinstance(_pp_fs, dict) else 0
-                        # Did the brain just try to OPEN?
+                        # Did the brain just try to OPEN? FIX 2026-10-14: read the
+                        # DECISION type, not action_doc.actions - the earlier gates
+                        # strip OPENs from action_doc to [], so reading actions made
+                        # the streak always 0 and the failsafe never fired. The
+                        # decision (LLM intent) is preserved even when suppressed.
                         _open_now = False
-                        for _fa in action_doc.get("actions", []) if isinstance(action_doc, dict) else []:
-                            if _fa.get("type") == "OPEN" or (isinstance(_fa, dict) and _fa.get("type") == "OPEN"):
-                                _open_now = True; break
+                        try:
+                            _dec_fs = decision.get("type", "") if isinstance(decision, dict) else ""
+                            _open_now = _dec_fs == "OPEN"
+                        except Exception:
+                            _open_now = False
                         if not _open_now:
-                            # check decisions stream too (LLM wanted OPEN, suppressed after)
                             injected_opens_streak = 0 if _pos_fs > 0 else injected_opens_streak
                         else:
                             injected_opens_streak = 0 if _pos_fs > 0 else (injected_opens_streak + 1)
