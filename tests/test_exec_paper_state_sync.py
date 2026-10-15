@@ -72,3 +72,27 @@ def test_sync_handles_missing_file(gw):
     g._sync_paper_state({'symbol': 'NIFTY', 'side': 'BUY', 'client_order_id': 'x',
                          'underlying': 'NIFTY'}, 22375.0, 75)
     # no exception raised is the pass
+
+
+def test_sync_realized_pnl(gw):
+    """Closing a long position must realize (fill - avg) * qty into realized_pnl."""
+    g, ps_path = gw
+    g._sync_paper_state({'symbol': 'NIFTY22900CE', 'side': 'BUY', 'client_order_id': 'a',
+                         'underlying': 'NIFTY'}, 60.0, 150)
+    # close: SELL 150 @ 70 -> realized = (70-60)*150 = +1500
+    g._sync_paper_state({'symbol': 'NIFTY22900CE', 'side': 'SELL', 'client_order_id': 'b',
+                         'underlying': 'NIFTY'}, 70.0, 150)
+    ps = json.loads(ps_path.read_text(encoding='utf-8'))
+    assert ps['realized_pnl'] == 1500.0
+    assert 'NIFTY22900CE' not in ps['positions']
+
+
+def test_sync_realized_pnl_loss(gw):
+    """Closing a long below entry realizes a loss."""
+    g, ps_path = gw
+    g._sync_paper_state({'symbol': 'NIFTY22500PE', 'side': 'BUY', 'client_order_id': 'a',
+                         'underlying': 'NIFTY'}, 65.0, 150)
+    g._sync_paper_state({'symbol': 'NIFTY22500PE', 'side': 'SELL', 'client_order_id': 'b',
+                         'underlying': 'NIFTY'}, 50.0, 150)
+    ps = json.loads(ps_path.read_text(encoding='utf-8'))
+    assert ps['realized_pnl'] == -2250.0  # (50-65)*150

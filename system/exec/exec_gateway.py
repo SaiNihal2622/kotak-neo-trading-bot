@@ -152,6 +152,16 @@ class ExecGateway:
             _cur = int(_pos.get("qty", 0) or 0)
             _delta = filled_qty if side == "BUY" else -filled_qty
             _new = _cur + _delta
+            # FIX 2026-10-16: compute REALIZED P&L when a position closes.
+            # A SELL that reduces a long (or BUY that reduces a short) realizes
+            # (fill - avg) * closed_qty, signed by direction. This is what makes
+            # the daily P&L / win-rate data actually materialize.
+            _realized = 0.0
+            if _cur != 0 and (_new == 0 or (_cur > 0 and _delta < 0) or (_cur < 0 and _delta > 0)):
+                _closed_qty = min(abs(_cur), abs(_delta))
+                _avg = float(_pos.get("avg_price", 0) or 0)
+                _dir = 1 if _cur > 0 else -1
+                _realized = _dir * (float(fill_price) - _avg) * _closed_qty
             if _new == 0:
                 _ps["positions"].pop(sym, None)
             else:
@@ -162,6 +172,8 @@ class ExecGateway:
                     _pos["avg_price"] = round(
                         (_cur * float(_pos.get("avg_price", 0)) + _delta * float(fill_price)) / _new, 2)
                 _ps["positions"][sym] = _pos
+            if _realized:
+                _ps["realized_pnl"] = round(float(_ps.get("realized_pnl", 0) or 0) + _realized, 2)
             _ps_path.write_text(_j.dumps(_ps, indent=2, default=str), encoding="utf-8")
         except Exception as _se:
             logger.warning(f"paper_state sync failed: {_se}")

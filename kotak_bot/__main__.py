@@ -2677,6 +2677,22 @@ def run_paper() -> None:
                 if open_trades:
                     closed = order_mgr.square_off_all(reason="intraday_force_close")
                     logger.warning(f"[INTRADAY] force-closed {closed} open trades (force_square_off_time hit)")
+                # FIX 2026-10-16: the EXEC GATEWAY fills orders into the CORE's
+                # projection, not this bot's order_mgr. The bot's own book is
+                # empty, so the force-square above never closes the real fills.
+                # Also close the core's positions so they realize P&L at EOD.
+                try:
+                    import urllib.request as _ur2
+                    _core_url2 = os.environ.get("KOTAK_CORE_URL", "http://127.0.0.1:8510")
+                    _req2 = _ur2.Request(f"{_core_url2}/api/close_all",
+                                         data=b'{"reason":"intraday_force_close"}',
+                                         headers={"Content-Type": "application/json"}, method="POST")
+                    _resp2 = json.loads(_ur2.urlopen(_req2, timeout=10).read())
+                    _closed2 = _resp2.get("closed", 0)
+                    if _closed2:
+                        logger.warning(f"[INTRADAY] force-closed {_closed2} CORE positions (gateway fills)")
+                except Exception as _ce2:
+                    logger.warning(f"[INTRADAY] core close_all failed: {_ce2}")
                 else:
                     # FIX 2026-09-03 14:55: order_mgr may have 0 trades because brain-driven OPENs
                     # bypassed execute_plan (FIX 947a25b added register_external_managed_trade but
