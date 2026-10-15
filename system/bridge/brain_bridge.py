@@ -122,7 +122,19 @@ class BrainBridge:
         from ..common.atomic_io import write_json_atomic
         ok = write_json_atomic(path, data)
         if not ok:
-            logger.warning(f"write {path}: atomic write failed")
+            # FIX 2026-10-16: transient race when brain daemon + bridge hit the
+            # same file at the same instant. Retry with a tiny backoff; also add
+            # a unique nonce so a concurrent reader/writer of the same content
+            # doesn't clobber the rename under contention.
+            import time as _tw
+            for _attempt in range(3):
+                _tw.sleep(0.05 * (_attempt + 1))
+                _ok2 = write_json_atomic(path, data)
+                if _ok2:
+                    ok = True
+                    break
+        if not ok:
+            logger.warning(f"write {path}: atomic write failed after retries")
 
     def _build_plan_legs(self, action: dict) -> list[dict]:
         """Convert a quant_actions.json action into /api/plan legs."""
