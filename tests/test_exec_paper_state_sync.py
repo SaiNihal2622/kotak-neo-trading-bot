@@ -96,3 +96,52 @@ def test_sync_realized_pnl_loss(gw):
                          'underlying': 'NIFTY'}, 50.0, 150)
     ps = json.loads(ps_path.read_text(encoding='utf-8'))
     assert ps['realized_pnl'] == -2250.0  # (50-65)*150
+
+
+def test_chain_fill_price_resolves_real_price(tmp_path, monkeypatch):
+    """The broker's Rs.1.00 placeholder must be replaced by the chain's real bid/ask."""
+    import json as _json
+    from pathlib import Path as _Path
+    from system.exec.exec_gateway import ExecGateway
+    # write a fake chain file
+    chain = {"strikes": {"22900_CE": {"bid": 64.0, "ask": 66.0},
+                          "22900_PE": {"bid": 50.0, "ask": 52.0}}}
+    (tmp_path / "data_cache").mkdir(exist_ok=True)
+    (tmp_path / "data_cache" / "option_chain_NIFTY.json").write_text(_json.dumps(chain), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    gw = ExecGateway.__new__(ExecGateway)
+    class O:
+        underlying = "NIFTY"
+        symbol = "NIFTY22OCT2622900CE"
+        side = "BUY"
+    # BUY -> ask
+    assert gw._chain_fill_price(O()) == 66.0
+    O.side = "SELL"
+    assert gw._chain_fill_price(O()) == 64.0
+    # unresolvable -> 0.0
+    O.symbol = "NIFTY22OCT2629999CE"
+    assert gw._chain_fill_price(O()) == 0.0
+
+
+def test_broker_trading_disabled_guard(monkeypatch):
+    """In bridge-active mode the bot's paper_client must reject all orders."""
+    import os
+    from kotak_bot.broker.paper_client import PaperClient
+    from kotak_bot.broker.base import Order, OrderStatus
+    monkeypatch.setenv("KOTAK_BOT_TRADING_DISABLED", "YES")
+    pc = PaperClient.__new__(PaperClient)
+    pc._lock = __import__("threading").RLock()
+    pc._connected = True
+    pc._orders = {}
+    o = Order(symbol="NIFTY22900CE", side="SELL", qty=75, order_type="LIMIT", price=60.0, product="MIS")
+    res = pc.place_order(o)
+    assert res.status == OrderStatus.REJECTED
+    assert "bridge-active" in (res.rejection_reason or "")
+    # without the flag, it proceeds (would raise not-connected or fill)
+    monkeypatch.delenv("KOTAK_BOT_TRADING_DISABLED")
+    pc._connected = False
+    try:
+        pc.place_order(o)
+        assert False, "should raise not-connected"
+    except RuntimeError:
+        pass

@@ -301,12 +301,24 @@ class ExecGateway:
             # a core tick for, e.g. obscure weekly options).
             filled = broker.place_order(order)
             if filled.status.value in ("complete", "filled", "open"):
+                # FIX 2026-10-16: the broker's paper_client falls back to
+                # Rs.1.00 for symbols it can't price (cash underlyings, options
+                # without a live tick). That placeholder was being posted to the
+                # core, so every position's avg_price became 1.0 and realized
+                # P&L was garbage. Resolve the REAL price from the fresh option
+                # chain file (same source preflight uses) when the broker's fill
+                # is a placeholder.
+                _fp = float(filled.avg_fill_price or order.price or 0)
+                if _fp <= 1.0:
+                    _chain_fp = self._chain_fill_price(order)
+                    if _chain_fp > 0:
+                        _fp = _chain_fp
                 await self._post_fill(
                     client_order_id or eid,
-                    float(filled.avg_fill_price or order.price),
+                    _fp,
                     int(filled.qty),
                 )
-                logger.info(f"placed {symbol}: status={filled.status.value} fill={filled.avg_fill_price}")
+                logger.info(f"placed {symbol}: status={filled.status.value} fill={_fp}")
             else:
                 logger.warning(f"order rejected: {filled.rejection_reason}")
                 try:
@@ -319,6 +331,49 @@ class ExecGateway:
                     pass
         except Exception as e:
             logger.error(f"order placement failed for {client_order_id or eid}: {e}\n{traceback.format_exc()}")
+
+    def _chain_fill_price(self, order) -> float:
+        """Resolve a real fill price from the fresh option-chain file.
+
+        The broker's paper_client returns Rs.1.00 for symbols it can't price
+        (no live tick). The option chain file (data_cache/option_chain_<UND>.json,
+        keys '<strike>_<CE|PE>') carries real bid/ask written fresh every cycle.
+        Returns 0.0 if unresolvable so the caller keeps the broker's price.
+        """
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            und = str(getattr(order, "underlying", "") or "NIFTY").upper()
+            chain_path = _Path("data_cache") / f"option_chain_{und}.json"
+            if not chain_path.exists():
+                return 0.0
+            data = _json.loads(chain_path.read_text(encoding="utf-8-sig"))
+            strikes = data.get("strikes", {}) or {}
+            sym = getattr(order, "symbol", "") or ""
+            # chain keys are '<strike>_<CE|PE>'; bridge symbol is NIFTY<exp><strike><CE|PE>.
+            # Match against the ACTUAL chain keys (robust vs regex, which grabs
+            # the expiry digits too, e.g. '622900' instead of '22900').
+            key = None
+            if sym in strikes:
+                key = sym
+            else:
+                _opt = "CE" if sym.endswith("CE") else ("PE" if sym.endswith("PE") else "")
+                if _opt:
+                    for _ck in strikes:
+                        if _ck.endswith(f"_{_opt}") and sym.endswith(_ck.replace("_", "")):
+                            key = _ck
+                            break
+            if key is None or key not in strikes:
+                return 0.0
+            s = strikes[key]
+            bid = float(s.get("bid", 0) or 0)
+            ask = float(s.get("ask", 0) or 0)
+            side = str(getattr(order, "side", "") or "").upper()
+            if side == "BUY":
+                return ask if ask > 0 else (bid if bid > 0 else 0.0)
+            return bid if bid > 0 else (ask if ask > 0 else 0.0)
+        except Exception:
+            return 0.0
 
     async def run_forever(self):
         """Subscribe to /ws, process order events forever."""

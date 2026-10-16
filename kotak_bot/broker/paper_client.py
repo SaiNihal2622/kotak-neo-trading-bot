@@ -7,6 +7,7 @@ This is the safe default for paper trading when the Kotak UAT is not yet provisi
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from collections import deque
@@ -183,6 +184,18 @@ class PaperClient(BrokerClient):
         the limit actually crosses the book. The strategy library also uses bid
         directly (commit pending) for clean orders, but this is the safety net.
         """
+        # FIX 2026-10-16: in bridge-active mode the bot is DATA-FEED-ONLY.
+        # The exec gateway is the SOLE executor. The bot's own legacy strategy
+        # fills at Rs.1.00 for symbols it can't price and bridges those
+        # placeholder fills into the core, corrupting the quant brain's
+        # real-price fills (every position avg became 1.0, realized P&L
+        # garbage). This single choke point disables ALL bot-side trading.
+        if os.environ.get("KOTAK_BOT_TRADING_DISABLED", "").upper() == "YES":
+            order.order_id = f"PAPER-{uuid.uuid4().hex[:10].upper()}"
+            order.placed_at = datetime.now(timezone.utc)
+            order.status = OrderStatus.REJECTED
+            order.rejection_reason = "bridge-active: bot is data-feed-only, exec gateway is the sole executor"
+            return order
         with self._lock:
             if not self._connected:
                 raise RuntimeError("PaperClient not connected — call connect() first")

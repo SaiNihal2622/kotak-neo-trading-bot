@@ -1722,6 +1722,12 @@ def run_paper() -> None:
                     if _qa_path.exists() and (now - _last_qa_bridge_log).total_seconds() > 60:
                         _last_qa_bridge_log = now
                         logger.info("[QUANT-ACTION] bridge-active mode — bot does not submit plans")
+                    # FIX 2026-10-16: bridge-active => bot is DATA-FEED-ONLY.
+                    # Disable the bot's own legacy trading (8 place_order sites)
+                    # so it cannot double-trade or bridge Rs.1.00 placeholder fills
+                    # into the core. The exec gateway is the sole executor.
+                    os.environ["KOTAK_BOT_TRADING_DISABLED"] = "YES"
+
                     # Skip the rest of this try block — bridge handles plans
                     # We still need to consume the action so the bridge's
                     # bridge_consumed check doesn't conflict, but that's the
