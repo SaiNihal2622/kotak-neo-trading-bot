@@ -587,6 +587,28 @@ def render_sidebar() -> DataProvider:
         )
         st.markdown(f"**Regime**: {account.regime}")
 
+        # FIX 2026-10-16: self-watching health banner. Reads the health
+        # monitor's report (data_cache/health_report.json) so the operator
+        # sees a problem without grepping logs.
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _hp = _Path("data_cache") / "health_report.json"
+            if _hp.exists():
+                _hr = _json.loads(_hp.read_text(encoding="utf-8-sig"))
+                _ov = _hr.get("overall", "UNKNOWN")
+                _fails = [f"{k}: {v.get('detail','')}" for k, v in (_hr.get("checks") or {}).items() if v.get("status") == "FAIL"]
+                if _ov == "HEALTHY":
+                    st.markdown("🟢 **HEALTHY** — all systems nominal", unsafe_allow_html=True)
+                elif _ov == "ACTION-NEEDED":
+                    st.markdown("🔴 **ACTION-NEEDED**", unsafe_allow_html=True)
+                    for _f in _fails[:4]:
+                        st.markdown(f"&nbsp;&nbsp;• {_f}", unsafe_allow_html=True)
+                else:
+                    st.markdown("🟡 **health unknown** (monitor not run yet)", unsafe_allow_html=True)
+        except Exception:
+            pass
+
         st.markdown("---")
         st.markdown("### Quick stats")
         st.metric("Equity", f"₹{account.equity:,.0f}")

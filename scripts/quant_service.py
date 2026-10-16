@@ -3748,6 +3748,17 @@ def watch_loop():
                 # US/Asia moves, prepares for NSE open, logs hypothetical plans).
                 if datetime.now().timestamp() - last_periodic_scan_ts > 900:  # 15 min
                     last_periodic_scan_ts = datetime.now().timestamp()
+                    # FIX 2026-10-16: self-watching health monitor. Runs every
+                    # 15 min 24/7, checks every known failure class (services,
+                    # LLM circuit, bridge-active, placeholder fills, stranded
+                    # positions, single book, bridge alive, config) and writes
+                    # data_cache/health_report.json for the dashboard. If any
+                    # check FAILs, the dashboard shows ACTION-NEEDED so the
+                    # operator never has to grep a 38MB log.
+                    try:
+                        _scheduled_subprocess("scripts/health_monitor.py", "health-check", timeout=60)
+                    except Exception as _he:
+                        log(f"health-check-err: {_he}")
                     # FIX 2026-09-09 14:10: build the full context FIRST so we
                     # can pass it to both the system-enforcement check and the
                     # periodic scan. The enforcement may write a fallback

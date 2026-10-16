@@ -465,7 +465,21 @@ def aggregate_state():
         "log_tail": lt,
         "crons": cr,
         "reset_history": ps.get("reset_history", []),
+        "health": _read_health_report(),
     }
+
+
+def _read_health_report():
+    """Read the self-watching health monitor's report (data_cache/health_report.json)."""
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        p = _Path("data_cache") / "health_report.json"
+        if not p.exists():
+            return {"overall": "UNKNOWN", "n_fail": 0, "n_warn": 0, "checks": {}, "ts": ""}
+        return _json.loads(p.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {"overall": "UNKNOWN", "n_fail": 0, "n_warn": 0, "checks": {}, "ts": ""}
 
 
 # ---- HTTP server ------------------------------------------------------------
@@ -552,6 +566,10 @@ HTML = r"""<!DOCTYPE html>
   }
   .topbar .spacer { flex: 1; }
   .topbar .clock { font-family: 'Consolas', monospace; color: var(--cyan); font-size: 15px; font-weight: 600; }
+    .health-banner { font-family: 'Consolas', monospace; }
+    .health-banner.ok   { background: rgba(0,200,80,.12); color: #4ade80; border: 1px solid rgba(0,200,80,.3); }
+    .health-banner.bad  { background: rgba(255,60,60,.15); color: #ff6b6b; border: 1px solid rgba(255,60,60,.4); }
+    .health-banner.warn { background: rgba(255,180,0,.12); color: #fbbf24; border: 1px solid rgba(255,180,0,.3); }
   .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; padding: 14px; }
   .col-12 { grid-column: span 12; }
   .col-8  { grid-column: span 8; }
@@ -852,6 +870,7 @@ HTML = r"""<!DOCTYPE html>
   <span class="spacer"></span>
   <span id="dataAge" class="muted mono" style="font-size: 11px;">data age: --</span>
   <span class="clock" id="clock">--:--:--</span>
+  <div id="healthBanner" class="health-banner warn" style="display:block;margin:6px 0;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:600;">health: --</div>
   <span class="pill pill-clock">IST</span>
 </div>
 
@@ -1287,6 +1306,26 @@ function render(s) {
   // clock
   const cd = s.countdowns || {};
   $('clock').textContent = (cd.now_ist || '--:--:--') + ' IST · ' + (cd.now_date || '');
+
+    // FIX 2026-10-16: self-watching health banner. Shows the health monitor's
+    // overall verdict + any failing checks, so the operator sees a problem
+    // without grepping logs.
+    const h = s.health || {};
+    const hEl = $('healthBanner');
+    if (hEl) {
+      const fails = Object.entries(h.checks || {}).filter(([,v]) => v.status === 'FAIL');
+      const warns = Object.entries(h.checks || {}).filter(([,v]) => v.status === 'WARN');
+      if (h.overall === 'HEALTHY') {
+        hEl.className = 'health-banner ok';
+        hEl.innerHTML = '🟢 HEALTHY · all systems nominal' + (warns.length ? ' · ' + warns.length + ' warn' : '');
+      } else if (h.overall === 'ACTION-NEEDED') {
+        hEl.className = 'health-banner bad';
+        hEl.innerHTML = '🔴 ACTION-NEEDED · ' + fails.map(([k,v]) => k + ': ' + v.detail).join(' | ');
+      } else {
+        hEl.className = 'health-banner warn';
+        hEl.innerHTML = '🟡 health unknown (monitor not runun yet)';
+      }
+    }
 
   // top pills (declare bot FIRST so other blocks can use it)
   const bot = s.bot || {};
