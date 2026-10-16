@@ -96,7 +96,11 @@ risk:
   # ai_override is the default — the LLM can ignore ALL of these.
   # =============================================================
   intraday:
-    allow_overnight: true            # default: AI can hold overnight freely
+    allow_overnight: false           # FIX 2026-10-16: MIS/intraday paper positions MUST square daily.
+                                     # allow_overnight=true skipped the EOD force-square, so positions
+                                     # held forever and realized P&L never materialized -> no validation
+                                     # data after 2 months. With false, the 15:25 force-square closes
+                                     # everything daily and records real realized P&L.
     no_new_trades_after: "15:00"     # last 30 min of NSE is exit-only (LLM can override)
     force_square_off_time: "15:25"   # last 5 min is true close (LLM can override)
     avoid_first_5_min_after_open: false  # removed: AI can trade from 9:15
