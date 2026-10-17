@@ -23,6 +23,7 @@ Writes: data_cache/health_report.json  (dashboard reads this)
 import json
 import os
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,11 +134,9 @@ def _check_stranded():
     if n == 0:
         return ("ok", "no open positions")
     # if market is closed and positions remain, that's a stranded risk
-    now = datetime.now(timezone.utc)
-    ist = now.astimezone(timezone.utc).replace(tzinfo=None)
-    # NSE 09:15-15:30 IST = 03:45-10:00 UTC
-    h = ist.hour
-    market_open = (3 <= h < 10)
+    # NSE 09:15-15:30 IST = 03:45-10:00 UTC, weekdays only
+    uv = datetime.now(timezone.utc)
+    market_open = (uv.weekday() < 5 and 3 <= uv.hour < 10)
     if not market_open and n > 0:
         return ("FAIL", f"{n} positions open after market close (should be squared)")
     return ("ok", f"{n} positions open (market {'open' if market_open else 'closed'})")
@@ -177,9 +176,10 @@ def _check_bridge_alive():
         try:
             last_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
             age = (datetime.now() - last_dt).total_seconds()
-            # market open check (UTC 03:45-10:00)
-            h = datetime.now(timezone.utc).hour
-            market_open = (3 <= h < 10)
+            # NSE market open: Mon-Fri 09:15-15:30 IST = UTC 03:45-10:00.
+            # weekdays only - Saturday/Sunday are always closed.
+            uv = datetime.now(timezone.utc)
+            market_open = (uv.weekday() < 5 and 3 <= uv.hour < 10)
             if age > 600 and market_open:
                 return ("FAIL", f"bridge last cycle {age/60:.0f} min ago during market hours (stuck?)")
             if age > 600:
@@ -260,5 +260,28 @@ def run_health_check():
 
 
 if __name__ == "__main__":
-    rep = run_health_check()
-    print(json.dumps(rep, indent=2))
+    if "--once" in sys.argv:
+        rep = run_health_check()
+        print(json.dumps(rep, indent=2))
+    else:
+        # FIX 2026-10-17: self-running loop mode. Registered as its own NSSM
+        # service so health checks run periodically WITHOUT depending on the
+        # brain's in-process scheduler (which may be running pre-deploy code).
+        # Sleeps between runs; a single process re-checks every interval.
+        import time as _time
+        import sys as _sys
+        delay = 900  # every 15 min
+        for a in _sys.argv[1:]:
+            if a.startswith("--interval="):
+                try:
+                    delay = int(a.split("=")[1])
+                except Exception:
+                    pass
+        print(f"[health-monitor] watching every {delay}s", flush=True)
+        while True:
+            try:
+                rep = run_health_check()
+                print(f"[health-monitor] {rep['overall']} fail={rep['n_fail']} warn={rep['n_warn']}", flush=True)
+            except Exception as e:
+                print(f"[health-monitor] err {e}", flush=True)
+            _time.sleep(delay)

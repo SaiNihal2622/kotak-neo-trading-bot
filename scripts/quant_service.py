@@ -3756,7 +3756,10 @@ def watch_loop():
                     # check FAILs, the dashboard shows ACTION-NEEDED so the
                     # operator never has to grep a 38MB log.
                     try:
-                        _scheduled_subprocess("scripts/health_monitor.py", "health-check", timeout=60)
+                        # --once: the dedicated KotakHealthMonitor NSSM service
+                        # runs the loop; here we just do a single check so this
+                        # is belt-and-suspenders even before the service starts.
+                        _scheduled_subprocess("scripts/health_monitor.py", "health-check", timeout=60, args=["--once"])
                     except Exception as _he:
                         log(f"health-check-err: {_he}")
                     # FIX 2026-09-09 14:10: build the full context FIRST so we
