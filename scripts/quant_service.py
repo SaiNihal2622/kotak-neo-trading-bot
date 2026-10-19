@@ -2883,6 +2883,68 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
         except Exception as _surv_err:
             log(f"survival-gate-err: {_surv_err}")
 
+    # FIX 2026-10-19: POSITION-STACKING GATE. The brain was making 2,430 OPEN
+    # decisions for the SAME iron condor in one day, stacking 9 overlapping
+    # positions because the preflight position_cap only limits a SINGLE symbol's
+    # exposure, not the TOTAL book. This gate strips an OPEN when the book is
+    # already full (max open positions) OR already holds the same strategy -
+    # the brain must manage/close the existing position instead of stacking.
+    # The LLM cannot override this (hard gate, same as survival).
+    if action_doc["actions"] and any(a.get("type") == "OPEN" for a in action_doc["actions"]):
+        # FIX 2026-10-19: OPEN cooldown - don't re-enter the same trade every
+        # few seconds. The brain was making 5,010 OPEN decisions/day with no
+        # pause. Enforce a minimum interval (default 10 min) between OPENs so
+        # it manages existing positions instead of churning new entries.
+        try:
+            global _last_open_action_ts
+            _open_cooldown = float(os.environ.get("KOTAK_OPEN_COOLDOWN_SEC", "600"))
+            _now_ts = time.time()
+            if _now_ts - _last_open_action_ts < _open_cooldown:
+                log(f"ACTION-SUPPRESSED: OPEN cooldown ({_now_ts - _last_open_action_ts:.0f}s < {_open_cooldown:.0f}s); managing existing positions")
+                action_doc["actions"] = []
+                action_doc["note"] = f"open-cooldown: {_open_cooldown:.0f}s"
+            else:
+                _last_open_action_ts = _now_ts
+        except Exception as _cd_err:
+            log(f"open-cooldown-err: {_cd_err}")
+    if action_doc["actions"] and any(a.get("type") == "OPEN" for a in action_doc["actions"]):
+        try:
+            import urllib.request as _ur_stack
+            _core_url_stack = os.environ.get("KOTAK_CORE_URL", "http://127.0.0.1:8510")
+            _stack_resp = json.loads(_ur_stack.urlopen(f"{_core_url_stack}/api/positions", timeout=3).read())
+            _open_pos = _stack_resp.get("positions", {}) or {}
+            _n_open = len([p for p in _open_pos.values() if isinstance(p, dict) and p.get("qty")])
+            _max_open = int(os.environ.get("KOTAK_MAX_OPEN_POSITIONS", "6"))
+            _strat = str(decision.get("strategy", "") or "").lower()
+            _blocked = False
+            _reason = ""
+            if _n_open >= _max_open:
+                _blocked = True
+                _reason = f"position-stack-gate: {_n_open} open >= max {_max_open}"
+            elif _strat:
+                # same-strategy dedup: if the book already holds this strategy's
+                # strikes, don't open another of the same kind.
+                _strat_strikes = set()
+                for _p in _open_pos.values():
+                    if isinstance(_p, dict):
+                        _s = str(_p.get("symbol", "") or "").upper()
+                        _strat_strikes.add(_s)
+                # crude same-strategy check: iron_condor uses CE+PE pairs; if we
+                # already hold both a CE and a PE for the same underlying, treat
+                # as already-in-an-iron-condor.
+                if _strat in ("iron_condor", "iron_condor_nifty", "short_strangle", "short_straddle"):
+                    _has_ce = any(s.endswith("CE") for s in _strat_strikes)
+                    _has_pe = any(s.endswith("PE") for s in _strat_strikes)
+                    if _has_ce and _has_pe:
+                        _blocked = True
+                        _reason = f"position-stack-gate: already holding {_strat} (CE+PE open)"
+            if _blocked:
+                log(f"ACTION-SUPPRESSED: {_reason}; managing existing positions instead of stacking")
+                action_doc["actions"] = []
+                action_doc["note"] = _reason
+        except Exception as _stack_err:
+            log(f"position-stack-gate-err: {_stack_err}")
+
     if action_doc["actions"]:
         ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
         SERVICE_STATE["actions_taken"] += 1
@@ -2906,6 +2968,7 @@ last_weekly_check_date = None
 last_intel_refresh = None
 last_reconcile_ts = 0
 last_positions_count = 0        # failsafe: last known open position count
+_last_open_action_ts = 0.0     # FIX 2026-10-19: cooldown - min seconds between OPEN actions
 injected_opens_streak = 0      # failsafe: consecutive cycles brain wanted OPEN but positions stayed 0
 
 # ---------- Scheduled operations (in-process, replaces 23 paused crons) ----------
