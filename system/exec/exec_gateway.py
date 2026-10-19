@@ -247,6 +247,14 @@ class ExecGateway:
                                 return float(tick.get("bid", 0) or tick.get("ltp", 0) or 0)
                 except Exception:
                     pass
+                # FIX 2026-10-19: the core tick store lacks most option symbols,
+                # so CLOSE orders (MARKET, price=0) fell through to the broker's
+                # Rs.1.00 placeholder -> the EOD force-square realized a fake
+                # -Rs.1,01,289 loss. Fall back to the fresh option-chain file
+                # (real bid/ask) before giving up.
+                _chain_fp = self._chain_fill_price(o)
+                if _chain_fp > 0:
+                    return _chain_fp
                 return 0.0
 
             if self.dry_run:
