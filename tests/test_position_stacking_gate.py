@@ -10,6 +10,19 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
+class _FakeDT:
+    """Fake datetime that reports a trading-hours Monday 11:00 IST."""
+    @classmethod
+    def now(cls):
+        import datetime as _dt
+        return _dt.datetime(2026, 10, 19, 11, 0, 0)  # Mon 11:00 (in window)
+
+
+def _patch_trading_window(monkeypatch, qs):
+    """Force the trading-window gate to pass (Mon 11:00) so the stacking gate is reached."""
+    monkeypatch.setattr(qs, "datetime", _FakeDT)
+
+
 def _make_decision(otype="OPEN", strategy="iron_condor_nifty"):
     return {
         "type": otype,
@@ -45,6 +58,7 @@ def test_stacking_gate_blocks_when_book_full(monkeypatch, tmp_path):
     # valid paper_state so the survival gate doesn't fire first
     (tmp_path / "paper_state.json").write_text(
         json.dumps({"cash": 100000, "realized_pnl": 0, "positions": {}}), encoding="utf-8")
+    _patch_trading_window(monkeypatch, qs)
 
     logs = []
     monkeypatch.setattr(qs, "log", lambda *a, **k: logs.append(a[0] if a else ""))
@@ -77,6 +91,7 @@ def test_stacking_gate_blocks_same_strategy(monkeypatch, tmp_path):
     monkeypatch.setattr(qs, "_last_open_action_ts", 0.0)
     (tmp_path / "paper_state.json").write_text(
         json.dumps({"cash": 100000, "realized_pnl": 0, "positions": {}}), encoding="utf-8")
+    _patch_trading_window(monkeypatch, qs)
 
     logs = []
     monkeypatch.setattr(qs, "log", lambda *a, **k: logs.append(a[0] if a else ""))
@@ -104,6 +119,7 @@ def test_open_cooldown_blocks_rapid_reentry(monkeypatch, tmp_path):
     monkeypatch.setattr(qs, "now_iso", lambda: "2026-10-19T12:00:00+05:30")
     (tmp_path / "paper_state.json").write_text(
         json.dumps({"cash": 100000, "realized_pnl": 0, "positions": {}}), encoding="utf-8")
+    _patch_trading_window(monkeypatch, qs)
     # simulate a recent open (cooldown active)
     monkeypatch.setattr(qs, "_last_open_action_ts", __import__("time").time() - 10)
 

@@ -2891,6 +2891,19 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
     # the brain must manage/close the existing position instead of stacking.
     # The LLM cannot override this (hard gate, same as survival).
     if action_doc["actions"] and any(a.get("type") == "OPEN" for a in action_doc["actions"]):
+        # FIX 2026-10-19: PRE-MARKET READINESS GATE. If the 08:15 verification
+        # harness found a broken execution path (NOT-READY), do NOT open new
+        # positions - the system is not safe to trade. This is the hard gate
+        # that turns "catch bugs before the open" into "don't trade if broken".
+        try:
+            _vr = _safe_read_json(DATA / "pre_market_verification.json", default={})
+            if _vr.get("overall") == "NOT-READY":
+                log(f"ACTION-SUPPRESSED: pre-market verification NOT-READY ({_vr.get('n_fail')} fail); not opening new positions")
+                action_doc["actions"] = []
+                action_doc["note"] = f"pre-market-not-ready: {_vr.get('n_fail')} checks failed"
+        except Exception as _vr_err:
+            log(f"readiness-gate-err: {_vr_err}")
+    if action_doc["actions"] and any(a.get("type") == "OPEN" for a in action_doc["actions"]):
         # FIX 2026-10-19: OPEN cooldown - don't re-enter the same trade every
         # few seconds. The brain was making 5,010 OPEN decisions/day with no
         # pause. Enforce a minimum interval (default 10 min) between OPENs so
@@ -4118,6 +4131,13 @@ def watch_loop():
                     except Exception as e:
                         log(f"morning-brief-err: {e}")
                     _scheduled_subprocess("scripts/mavis_premarket.py", "morning-brief", timeout=60)
+                    # FIX 2026-10-19: PRE-MARKET VERIFICATION. Exercise the FULL
+                    # execution pipeline (services, LLM circuit, bridge-active,
+                    # chain prices, open path, close path, stacking gate, single
+                    # book, config) BEFORE the open so a broken execution path
+                    # fails at 08:15, not 11:00. Writes
+                    # data_cache/pre_market_verification.json (READY/NOT-READY).
+                    _scheduled_subprocess("scripts/pre_market_verification.py", "pre-market-verify", timeout=90)
                 # 08:25 daily maintenance: re-auth, self-test, power plan, reconcile
                 if _now.hour == 8 and 25 <= _now.minute < 30 and last_daily_maint_date != _now.date():
                     last_daily_maint_date = _now.date()
