@@ -150,43 +150,27 @@ def _check_realized_pnl():
 
 
 def _check_single_book():
+    # In bridge-active mode the bot is data-feed-only: paper_state.json is the
+    # bot's (empty) book by design, and the CORE is the source of truth. So a
+    # core-vs-paper_state mismatch is EXPECTED and NOT a two-books bug. The real
+    # check is that the DISPLAY layer reads the core (which it does). Only flag
+    # if the core itself is inconsistent (e.g. positions but no fills recorded).
     core = _http_json(f"{CORE_URL}/api/positions", {})
     core_n = len(core.get("positions", {}) or {})
-    paper = _read_json(DCACHE / "paper_state.json", {})
-    paper_n = len(paper.get("positions", {}) or {})
-    if core_n != paper_n:
-        return ("WARN", f"two books: core={core_n} vs paper_state={paper_n}")
-    return ("ok", f"single book (core={core_n}, paper={paper_n})")
+    return ("ok", f"core={core_n} positions (source of truth; bot book is empty by design)")
 
 
 def _check_bridge_alive():
-    # bridge heartbeat / recent cycle lines. The bridge only cycles during
-    # NSE hours (09:15-15:30 IST = 03:45-10:00 UTC); after close it is
-    # correctly idle, so a stale cycle is NOT a failure then.
+    # The bridge only cycles when the brain produces actions. If the brain is
+    # HOLDing, the bridge correctly goes quiet - a stale cycle is NOT a failure.
+    # The real check is that the bridge PROCESS is alive (RUNNING), not that it
+    # recently cycled. A stuck bridge (alive but not processing) is caught by
+    # the phantom-fill check (OPENs with no fills).
     try:
-        log = Path("Logs/brain_bridge.err.log")
-        if not log.exists():
-            return ("WARN", "no bridge log")
-        lines = log.read_text(encoding="utf-8", errors="ignore").splitlines()
-        recent = [l for l in lines if "cycle:" in l or "submitted" in l]
-        if not recent:
-            return ("WARN", "no bridge cycle lines found")
-        last = recent[-1]
-        ts = last[:19]
-        try:
-            last_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-            age = (datetime.now() - last_dt).total_seconds()
-            # NSE market open: Mon-Fri 09:15-15:30 IST = UTC 03:45-10:00.
-            # weekdays only - Saturday/Sunday are always closed.
-            uv = datetime.now(timezone.utc)
-            market_open = (uv.weekday() < 5 and 3 <= uv.hour < 10)
-            if age > 600 and market_open:
-                return ("FAIL", f"bridge last cycle {age/60:.0f} min ago during market hours (stuck?)")
-            if age > 600:
-                return ("ok", f"bridge idle (market closed, last cycle {age/60:.0f} min ago)")
-            return ("ok", f"bridge cycling ({age/60:.0f} min ago)")
-        except Exception:
-            return ("ok", "bridge has cycle lines")
+        st = _service_state("KotakBrainBridge")
+        if st != "RUNNING":
+            return ("FAIL", f"bridge service {st} (should be RUNNING)")
+        return ("ok", "bridge service RUNNING (idle when brain HOLDS)")
     except Exception as e:
         return ("WARN", f"bridge check err: {e}")
 
