@@ -1495,6 +1495,20 @@ class PaperClient(BrokerClient):
             logger.warning(f"[PAPER] 0DTE EXPIRY: settlement sweep failed: {_ss_err}")
 
     def _save_state(self) -> None:
+        # FIX 2026-10-19 (ROOT CAUSE): in bridge-active mode the bot is
+        # data-feed-only and the EXEC GATEWAY is the sole executor. The gateway
+        # fills into the CORE and syncs paper_state.json from it. If the bot
+        # ALSO writes paper_state.json here (its own empty book), it CLOBBERS
+        # the gateway's real fills every tick -> the dashboard/journal/survival
+        # all read 0 positions and the brain can't manage positions. This was
+        # the single root cause behind the invisible-fills, stranded-positions,
+        # and no-active-management bugs. The bot must NOT write the shared
+        # state file in bridge-active mode.
+        # NOTE: 'os' is imported locally later in this function (os.replace),
+        # which makes it a LOCAL name for the whole function scope - so we
+        # cannot reference the module-level os here. Use __import__ instead.
+        if __import__("os").environ.get("KOTAK_BOT_TRADING_DISABLED", "").upper() == "YES":
+            return
         # FIX 2026-09-08 14:20: skip-save flag for clean resets. The pre-market
         # reset script (scripts/pre_market_reset_paper_state.py) creates this
         # flag, writes a clean paper_state.json, then removes it. While the

@@ -375,6 +375,54 @@ class ExecGateway:
         except Exception:
             return 0.0
 
+    def _sync_full_from_core(self) -> None:
+        """FIX 2026-10-19 (ROOT CAUSE): the bot no longer writes paper_state.json
+        in bridge-active mode, so the gateway is the SOLE writer. It must sync
+        the FULL state from the core (positions + realized P&L), not just on
+        fills - otherwise closes and EOD squares never reach paper_state.json
+        and the dashboard/journal/survival go stale. The core is the source of
+        truth; paper_state.json is a derived view of it.
+        """
+        try:
+            import json as _j
+            from pathlib import Path as _P
+            _ps_path = _P(self.paper_state_path)
+            _ps = {}
+            if _ps_path.exists():
+                try:
+                    _ps = _j.loads(_ps_path.read_text(encoding="utf-8-sig"))
+                except Exception:
+                    _ps = {}
+            _ps.setdefault("orders", {})
+            _ps.setdefault("positions", {})
+            # positions from core
+            _r = self._http.get(f"{self.core_url}/api/positions", timeout=5)
+            _core = _r.json().get("positions", {}) or {}
+            _new_pos = {}
+            for _sym, _p in _core.items():
+                if isinstance(_p, dict) and _p.get("qty"):
+                    _new_pos[_sym] = {
+                        "symbol": _sym, "qty": _p.get("qty"),
+                        "avg_price": _p.get("avg_price", 0),
+                        "ltp": _p.get("ltp", 0),
+                        "pnl": _p.get("pnl", 0) or 0,
+                        "expiry": _p.get("expiry", ""),
+                    }
+            _ps["positions"] = _new_pos
+            # realized P&L + cash from core state (under 'account')
+            try:
+                _rs = self._http.get(f"{self.core_url}/api/state", timeout=5).json()
+                _acct = _rs.get("account", {}) or {}
+                _rp = _acct.get("realized_pnl", _ps.get("realized_pnl", 0))
+                _cash = _acct.get("cash", _ps.get("cash", 100000))
+                _ps["realized_pnl"] = _rp
+                _ps["cash"] = _cash
+            except Exception:
+                pass
+            _ps_path.write_text(_j.dumps(_ps, indent=2, default=str), encoding="utf-8")
+        except Exception as _se:
+            logger.warning(f"full paper_state sync failed: {_se}")
+
     async def run_forever(self):
         """Subscribe to /ws, process order events forever."""
         # PHASE 6 FIX 2026-09-30: per-service heartbeat. Lets the
@@ -396,8 +444,15 @@ class ExecGateway:
                     # First message is snapshot; drain it
                     await ws.recv()
                     # Then process events
+                    _last_full_sync = 0.0
                     while True:
                         try:
+                            # FIX 2026-10-19: periodic full sync from core so
+                            # paper_state.json reflects closes/EOD even without
+                            # new fills (the bot no longer writes it).
+                            if time.time() - _last_full_sync > 30:
+                                _last_full_sync = time.time()
+                                self._sync_full_from_core()
                             msg = await ws.recv()
                             data = json.loads(msg)
                             if data.get("type") == "events":
