@@ -447,13 +447,19 @@ class ExecGateway:
                     _last_full_sync = 0.0
                     while True:
                         try:
-                            # FIX 2026-10-19: periodic full sync from core so
-                            # paper_state.json reflects closes/EOD even without
-                            # new fills (the bot no longer writes it).
+                            # FIX 2026-10-19: periodic full sync from core on a
+                            # TIMER, NOT gated behind ws.recv(). If placed after
+                            # recv(), it only runs when a message arrives - with
+                            # no orders coming, paper_state never syncs. Use
+                            # asyncio.wait_for so the sync fires even when the
+                            # socket is idle.
                             if time.time() - _last_full_sync > 30:
                                 _last_full_sync = time.time()
                                 self._sync_full_from_core()
-                            msg = await ws.recv()
+                            try:
+                                msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                            except asyncio.TimeoutError:
+                                continue  # no message; loop back to check sync timer
                             data = json.loads(msg)
                             if data.get("type") == "events":
                                 for event in data.get("data", []):
