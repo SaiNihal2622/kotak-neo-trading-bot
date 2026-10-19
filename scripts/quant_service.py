@@ -2466,8 +2466,32 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     # contain lies like "Already long NIFTY 24000 PE from 10:31") as evidence.
     # This block gives it the FACTS right before deciding.
     try:
-        _truth = _safe_read_json(DATA / "paper_state.json", default={})
-        _truth_positions = _truth.get("positions", {}) or {}
+        # FIX 2026-10-19: in bridge-active mode the EXEC GATEWAY fills into the
+        # CORE's projection, NOT paper_state.json (the bot's empty book). The
+        # brain was reading paper_state for ground truth -> saw 0 positions
+        # even with 4 real fills -> never emitted CLOSE -> could not manage
+        # positions (close losers early, take profit). Read the CORE as the
+        # source of truth, fall back to paper_state only if the core is down.
+        _truth_positions = {}
+        try:
+            import urllib.request as _ur_gt
+            _core_url_gt = os.environ.get("KOTAK_CORE_URL", "http://127.0.0.1:8510")
+            _gt_resp = json.loads(_ur_gt.urlopen(f"{_core_url_gt}/api/positions", timeout=3).read())
+            _core_pos = _gt_resp.get("positions", {}) or {}
+            # normalize core positions to the {symbol: {qty, avg_price, ltp, pnl}} shape
+            for _sym, _p in _core_pos.items():
+                if isinstance(_p, dict) and _p.get("qty"):
+                    _truth_positions[_sym] = {
+                        "symbol": _sym,
+                        "qty": _p.get("qty"),
+                        "avg_price": _p.get("avg_price", 0),
+                        "ltp": _p.get("ltp", 0),
+                        "pnl": _p.get("pnl", 0) or _p.get("unrealized_pnl", 0) or 0,
+                        "expiry": _p.get("expiry", ""),
+                    }
+        except Exception:
+            _truth = _safe_read_json(DATA / "paper_state.json", default={})
+            _truth_positions = _truth.get("positions", {}) or {}
         _truth_symbols = sorted([
             (p.get("symbol") or sym).upper()
             for sym, p in _truth_positions.items()
@@ -2493,7 +2517,7 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             "count": len(_truth_symbols),
             "symbols": _truth_symbols,
             "details": _truth_position_details,
-            "source_of_truth": "data_cache/paper_state.json (written by bot, not brain)",
+            "source_of_truth": "core /api/positions (exec gateway fills; bridge-active mode)",
             "interpretation": "This is the AUTHORITATIVE list of open positions. "
                               "If count=0, you have ZERO live positions. Do not "
                               "assume you have a position from past decisions. "
