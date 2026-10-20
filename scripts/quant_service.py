@@ -2903,6 +2903,39 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
                 action_doc["note"] = f"pre-market-not-ready: {_vr.get('n_fail')} checks failed"
         except Exception as _vr_err:
             log(f"readiness-gate-err: {_vr_err}")
+
+    # FIX 2026-10-20 13:50 — HOLIDAY GATE (self-governance, not a hand-run script).
+    # The brain must respect the NSE trading calendar on its OWN, every cycle.
+    # On an NSE holiday or weekend it strips every OPEN — the same hard-gate
+    # discipline as survival/stacking. The LLM cannot override this. Today
+    # (DUSSEHRA 2026-10-20) exposed that the pre-market READY harness and the
+    # brain both had NO calendar awareness; this is the brain encoding the
+    # invariant once, in its own source, so it never needs an external patch.
+    if action_doc["actions"] and any(a.get("type") == "OPEN" for a in action_doc["actions"]):
+        _holiday_ok = True
+        _holiday_reason = ""
+        try:
+            _nse = _safe_read_json(DATA / "nse_holidays_2026.json", default={})
+            # the file nests holidays under the "nse_holidays_2026" key
+            _n = _nse.get("nse_holidays_2026") or _nse
+            _hol_dates = set()
+            for _h in (_n.get("holidays") or []):
+                if isinstance(_h, str) and _h.startswith("2026-"):
+                    _hol_dates.add(_h)
+            _today_iso = now_iso()[:10] if isinstance(now_iso(), str) else datetime.now().strftime("%Y-%m-%d")
+            if _today_iso in _hol_dates:
+                _holiday_ok = False
+                _holiday_reason = f"holiday-gate: {_today_iso} is an NSE holiday"
+            elif datetime.now().weekday() >= 5:
+                _holiday_ok = False
+                _holiday_reason = f"holiday-gate: weekend ({datetime.now().strftime('%A')})"
+        except Exception as _he:
+            log(f"holiday-gate-err: {_he}")
+        if not _holiday_ok:
+            log(f"ACTION-SUPPRESSED: {_holiday_reason}")
+            action_doc["actions"] = []
+            action_doc["note"] = _holiday_reason
+
     if action_doc["actions"] and any(a.get("type") == "OPEN" for a in action_doc["actions"]):
         # FIX 2026-10-19: OPEN cooldown - don't re-enter the same trade every
         # few seconds. The brain was making 5,010 OPEN decisions/day with no
