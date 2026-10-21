@@ -50,18 +50,25 @@ if priced:
                  "product":"MIS","exchange":"NFO","expiry":"2026-10-22"}],
         "dry_run":True,
     }
+    # FIX 2026-10-21: POSTing /api/plan emits ORDER_PROPOSED events even for
+    # dry_run plans -> the gateway fills them -> feeds the churn loop the probe
+    # is trying to detect. Use a READ-ONLY preflight check instead (no events).
     try:
-        req = urllib.request.Request(CORE+"/api/plan", method="POST", data=json.dumps(plan).encode())
-        req.add_header("Content-Type","application/json")
-        resp = json.loads(urllib.request.urlopen(req, timeout=8).read())
-        step("preflight_open", bool(resp.get("ok")) or resp.get("dry_run"), f"plan accepted (batch submitted)")
+        sys.path.insert(0, str(ROOT))
+        from system.core.risk.preflight import PreFlight as Preflight
+        from system.core.domain.state import StateProjection
+        pf = Preflight()
+        st = StateProjection()
+        # build a minimal order dict for the preflight check
+        chk = {
+            "symbol": f"NIFTY22OCT26{strike}{opt}", "underlying": "NIFTY",
+            "side": "BUY", "qty": 75, "strike": strike, "option_type": opt,
+            "order_type": "LIMIT", "price": ask, "product": "MIS", "exchange": "NFO",
+        }
+        res = pf.check_order(chk, st)
+        step("preflight_open", res.ok, f"read-only preflight: {res.reason or 'ok'}")
     except Exception as e:
-        # read error body
-        detail = str(e)
-        try:
-            if hasattr(e,'read'): detail = e.read().decode()[:150]
-        except: pass
-        step("preflight_open", False, detail)
+        step("preflight_open", False, str(e)[:120])
 
 # 4. Bridge writes quant_actions.json atomically (not a stale blocked queue)
 qa = DATA/"quant_actions.json"
