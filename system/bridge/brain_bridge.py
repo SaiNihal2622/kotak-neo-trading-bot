@@ -390,6 +390,17 @@ class BrainBridge:
                 # PHASE 6 FIX 2026-09-30: handle CLOSE_ALL specially.
                 # It calls /api/close_all instead of /api/plan.
                 action_kind = str(action.get("action", "")).upper()
+                # FIX 2026-10-21 (recurring 'custom/no_legs' blocker): the brain
+                # emits an end-of-day force-square as type=CLOSE, strategy=custom,
+                # underlying=ALL, 0-legs. That NEVER matched action_kind=CLOSE_ALL,
+                # fell through to /api/plan submission, got rejected as 'no_legs',
+                # and (being rejected) was never marked consumed -> it blocked the
+                # queue every cycle all day. Recognize the type=CLOSE underlying=ALL
+                # shape as a close-all too.
+                if action_kind != "CLOSE_ALL":
+                    if str(action.get("type", "")).upper() in ("CLOSE", "CLOSE_ALL") and \
+                       str(action.get("underlying", "")).upper() in ("ALL", "ALL_POSITIONS"):
+                        action_kind = "CLOSE_ALL"
                 if action_kind == "CLOSE_ALL":
                     if action.get("bridge_consumed"):
                         continue
