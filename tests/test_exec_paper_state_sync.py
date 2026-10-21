@@ -181,3 +181,20 @@ def test_chain_fill_price_spot(tmp_path, monkeypatch):
     gw = ExecGateway.__new__(ExecGateway)
     O = type("O", (), {"price": 0.0, "underlying": "NIFTY", "symbol": "NIFTY", "side": "SELL"})()
     assert gw._chain_fill_price(O) == 22811.35
+
+
+def test_fail_closed_placeholder_rejects(tmp_path, monkeypatch):
+    """A fill that cannot resolve a real price must REJECT, never fill at Rs.1.0."""
+    import json as _json
+    from pathlib import Path as _Path
+    from system.exec.exec_gateway import ExecGateway
+    # chain with NO real prices (all <=1.0) -> resolver returns 0.0
+    chain = {"spot": 0.0, "strikes": {"22900_CE": {"bid": 0.5, "ask": 0.5}}}
+    (tmp_path / "data_cache").mkdir(exist_ok=True)
+    (tmp_path / "data_cache" / "option_chain_NIFTY.json").write_text(_json.dumps(chain), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    gw = ExecGateway.__new__(ExecGateway)
+    O = type("O", (), {"price": 0.0, "underlying": "NIFTY", "symbol": "NIFTY", "side": "SELL"})()
+    fp = gw._chain_fill_price(O)
+    # spot is 0.0 -> must NOT resolve to a real price
+    assert fp <= 1.0, f"expected placeholder rejection, got Rs.{fp}"

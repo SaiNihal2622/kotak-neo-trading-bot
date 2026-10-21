@@ -260,12 +260,21 @@ class ExecGateway:
             if self.dry_run:
                 logger.info(f"[DRY-RUN] would place: {order.symbol} {order.side.value} {order.qty}")
                 fill_price = _resolve_fill_price(order)
-                if fill_price <= 0:
-                    logger.debug(
-                        f"DRY-RUN: no tick price for {order.symbol}, emitting fill @ 0.0"
-                    )
-                # Always emit fill so the state projection updates. Use
-                # client_order_id (the projection's _find_order() resolves by it).
+                # FIX 2026-10-21 (FAIL-CLOSED): never emit a fill at a
+                # placeholder price (<=1.0) even in dry-run - it corrupts the
+                # projection's avg_price and fabricates false P&L. Reject.
+                if fill_price <= 1.0:
+                    logger.warning(f"DRY-RUN: REJECT {order.symbol} - unresolvable fill price Rs.{fill_price}")
+                    try:
+                        self._http.post(
+                            f"{self.core_url}/api/order_reject",
+                            json={"order_id": client_order_id or eid,
+                                  "reason": "unresolvable fill price (placeholder)"},
+                            timeout=5,
+                        )
+                    except Exception:
+                        pass
+                    return
                 if await self._post_fill(client_order_id or eid, fill_price, order.qty):
                     self._sync_paper_state({
                         "symbol": order.symbol, "side": order.side.value,
@@ -284,7 +293,9 @@ class ExecGateway:
             # so we trust that as the source of truth.
             live_price = _resolve_fill_price(order)
 
-            if live_price > 0:
+            # FIX 2026-10-21 (FAIL-CLOSED): require a REAL price (>1.0), not
+            # just >0. A 0.5 is still a placeholder and would corrupt avg_price.
+            if live_price > 1.0:
                 # Direct-fill path: we have a tick → emit fill event directly.
                 # The order record is captured via ORDER_PROPOSED + ORDER_FILLED
                 # events in the core's event log.
@@ -321,6 +332,23 @@ class ExecGateway:
                     _chain_fp = self._chain_fill_price(order)
                     if _chain_fp > 0:
                         _fp = _chain_fp
+                # FIX 2026-10-21 (FAIL-CLOSED, not a patch): if the price is
+                # STILL <=1.0 (placeholder), REJECT the order. Never fill at a
+                # placeholder - a placeholder fill corrupts avg_price and
+                # fabricates false P&L. Reject instead so the brain sees the
+                # rejection and the queue is not poisoned.
+                if _fp <= 1.0:
+                    logger.warning(f"REJECT placeholder price Rs.{_fp} for {symbol} (cannot resolve real price); not filling")
+                    try:
+                        self._http.post(
+                            f"{self.core_url}/api/order_reject",
+                            json={"order_id": client_order_id or eid,
+                                  "reason": "unresolvable fill price (placeholder)"},
+                            timeout=5,
+                        )
+                    except Exception:
+                        pass
+                    return
                 await self._post_fill(
                     client_order_id or eid,
                     _fp,
