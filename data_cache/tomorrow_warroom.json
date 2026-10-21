@@ -1,0 +1,30 @@
+{
+  "session": "Wednesday 2026-10-21 prep for Thursday market open war-room",
+  "created": "2026-10-21T22:54:37.851096",
+  "user_will_be_online": true,
+  "baseline_frozen": {
+    "cash": 100000,
+    "positions": 0,
+    "realized": 0
+  },
+  "pre_open_09_15": [
+    "auto-operator verifies services (every 5 min)",
+    "pre-market verification reads nse_holidays (Thursday NOT a holiday)",
+    "brain decides -> atomic write -> bridge delivers",
+    "gateway fills at real chain price (options + NIFTY spot)",
+    "positions visible in dashboard + core==paper"
+  ],
+  "eod_15_25": [
+    "force-square closes positions",
+    "gateway resolves real close price (the old Rs.1.0 bug - fixed)",
+    "realized P&L recorded for first time",
+    "daily journal + dashboard show banked result"
+  ],
+  "what_i_watch": [
+    "auto-operator escalations (every 5 min)",
+    "phantom/placeholder fills rising",
+    "single-book drift (core vs paper)",
+    "LLM circuit opening",
+    "holiday/calendar mismatch"
+  ]
+}
