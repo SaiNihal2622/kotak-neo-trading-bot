@@ -2992,7 +2992,19 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
             log(f"position-stack-gate-err: {_stack_err}")
 
     if action_doc["actions"]:
-        ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
+        # FIX 2026-10-21 (ROOT CAUSE of bridge write-back failures): the brain
+        # wrote quant_actions.json with plain write_text while the bridge writes
+        # it back ATOMICALLY (tmp+rename). Two writers, one plain + one atomic,
+        # no lock -> when the brain's plain write lands mid-bridge-rename, the
+        # bridge's os.replace fails ("atomic write failed after retries"), so
+        # consumed never flips and a stale action blocks the queue all day.
+        # Use the SAME atomic helper so both writers are tmp+rename and can't
+        # corrupt each other.
+        try:
+            from system.common.atomic_io import write_json_atomic
+            write_json_atomic(ACTIONS, action_doc)
+        except Exception:
+            ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
         SERVICE_STATE["actions_taken"] += 1
         log(f"ACTION-WRITTEN: {decision.get('type')} {decision.get('underlying')} {decision.get('strategy', '')}")
     # Always log the decision with full context (event + market snapshot) for the dashboard

@@ -257,7 +257,14 @@ class BrainBridge:
             chain_path = _P("data_cache") / f"option_chain_{und}.json"
             if not chain_path.exists():
                 return None
-            strikes = _j.loads(chain_path.read_text(encoding="utf-8-sig")).get("strikes", {})
+            data = _j.loads(chain_path.read_text(encoding="utf-8-sig"))
+            # FIX 2026-10-21: NIFTY CASH/spot leg (symbol==underlying) is not an
+            # option - use the chain's real spot price. Without this, a NIFTY
+            # cash order got price=0 -> preflight pricing gate rejected it.
+            if sym.upper() == und or sym.upper() == f"{und}SPOT":
+                _spot = float(data.get("spot", 0) or 0)
+                return _spot if _spot > 1.0 else None
+            strikes = data.get("strikes", {})
             entry = strikes.get(sym)
             if not entry:
                 import re as _re
