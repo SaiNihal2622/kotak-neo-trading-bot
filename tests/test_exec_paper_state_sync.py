@@ -167,3 +167,17 @@ def test_resolve_fill_price_chain_fallback(tmp_path, monkeypatch):
     # _resolve_fill_price is a closure; test the chain fallback path directly
     # by checking _chain_fill_price is called when price=0 and no tick.
     assert gw._chain_fill_price(O()) == 66.0
+
+
+def test_chain_fill_price_spot(tmp_path, monkeypatch):
+    """A NIFTY CASH order (symbol==underlying) must resolve from the chain's spot price."""
+    import json as _json
+    from pathlib import Path as _Path
+    from system.exec.exec_gateway import ExecGateway
+    chain = {"spot": 22811.35, "strikes": {"22900_CE": {"bid": 64.0, "ask": 66.0}}}
+    (tmp_path / "data_cache").mkdir(exist_ok=True)
+    (tmp_path / "data_cache" / "option_chain_NIFTY.json").write_text(_json.dumps(chain), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    gw = ExecGateway.__new__(ExecGateway)
+    O = type("O", (), {"price": 0.0, "underlying": "NIFTY", "symbol": "NIFTY", "side": "SELL"})()
+    assert gw._chain_fill_price(O) == 22811.35

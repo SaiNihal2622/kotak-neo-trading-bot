@@ -358,6 +358,18 @@ class ExecGateway:
             data = _json.loads(chain_path.read_text(encoding="utf-8-sig"))
             strikes = data.get("strikes", {}) or {}
             sym = getattr(order, "symbol", "") or ""
+            # FIX 2026-10-21 (ROOT CAUSE of today's placeholder fills): the
+            # NIFTY CASH/spot leg (symbol == underlying, e.g. "NIFTY") is NOT
+            # an option - it has no strike in the chain. The chain file carries
+            # the real spot price in the "spot" field. Without this branch, a
+            # NIFTY cash order found no strike -> returned 0.0 -> the broker
+            # filled at Rs.1.00 placeholder (196 placeholder fills today vs 4
+            # real). Use the chain's spot price for cash/spot orders.
+            if sym.upper() == und or sym.upper() == f"{und}SPOT":
+                _spot = float(data.get("spot", 0) or 0)
+                if _spot > 1.0:
+                    return _spot
+                return 0.0
             # chain keys are '<strike>_<CE|PE>'; bridge symbol is NIFTY<exp><strike><CE|PE>.
             # Match against the ACTUAL chain keys (robust vs regex, which grabs
             # the expiry digits too, e.g. '622900' instead of '22900').
