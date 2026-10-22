@@ -4040,7 +4040,31 @@ def watch_loop():
                     except Exception as e:
                         log(f"system-enforcement-err: {e}")
                     try:
-                        _periodic_scan(context=_scan_ctx)
+                        # REBUILD 2026-10-22: HARD position management. Run the
+                        # decision engine's manage_positions every cycle; if it
+                        # says CLOSE (target/stop/edge hit), write a CLOSE
+                        # action DIRECTLY to the action file — bypassing the
+                        # LLM so a losing position is never held on hope.
+                        try:
+                            from decision_engine import manage_positions as _de_mgmt, _regime as _de_regime
+                            _mgmt_paper = _safe_read_json(DATA / "paper_state.json", default={})
+                            _mgmt_pos = _mgmt_paper.get("positions", {}) or {}
+                            if _mgmt_pos:
+                                _mgmt_candles = _safe_read_json(DATA / "candles_aggregate.json", default={})
+                                _mgmt_intraday = _safe_read_json(DATA / "intraday_levels.json", default={})
+                                _mgmt_vix = float(_safe_read_json(DATA / "liveness.json", default={}).get("snapshot", {}).get("vix", 15))
+                                _mgmt_regime = _de_regime(_mgmt_candles, _mgmt_intraday, _mgmt_vix)
+                                _mgmt = _de_mgmt(_mgmt_pos, _mgmt_regime, float(_mgmt_paper.get("cash", 100000)))
+                                if _mgmt.get("action") == "CLOSE":
+                                    log(f"POSITION-MGMT: {_mgmt.get('rationale', '')[:100]}")
+                                    write_decision({
+                                        "type": "CLOSE", "underlying": "ALL", "expiry": "",
+                                        "strategy": "position_management", "legs": [],
+                                        "target": None, "stop": None, "max_hold_minutes": 0,
+                                        "rationale": _mgmt.get("rationale", "position management close"),
+                                    }, context_snapshot={"trigger": "position_management", "open_positions": len(_mgmt_pos)})
+                        except Exception as _mgmt_err:
+                            log(f"position-mgmt-err: {_mgmt_err}")
                     except Exception as e:
                         log(f"periodic-scan-err: {e}")
                 # FIX 2026-09-08 22:35: RSS news fetch every 30 min (24/7). Real
