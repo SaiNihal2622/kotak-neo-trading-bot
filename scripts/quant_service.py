@@ -1564,7 +1564,10 @@ def reconcile_unfilled_actions() -> int:
             log(f"RECONCILE-FAILED-HIST-ERR: {_hf_err}")
         # Now clear the live file (so the next brain cycle starts fresh)
         try:
-            qa_path.write_text(json.dumps({"ts": now_iso(), "source": "reconciled", "actions": [], "consumed": True, "note": "previous action failed, see quant_actions.failed.json"}, indent=2, default=str), encoding="utf-8")
+            from system.core.state_guard import guarded_write
+            _ok, _msg = guarded_write(qa_path, {"ts": now_iso(), "source": "reconciled", "actions": [], "consumed": True, "note": "previous action failed, see quant_actions.failed.json"}, "Brain")
+            if not _ok:
+                log(f"state_guard: {_msg}")
             log(f"RECONCILE: moved unfilled action (ts={qa.get('ts', '?')}, actions={len(qa.get('actions', []))}) to {failed_path.name}")
             return 1
         except Exception as _clr_err:
@@ -3004,7 +3007,12 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
             from system.common.atomic_io import write_json_atomic
             write_json_atomic(ACTIONS, action_doc)
         except Exception:
-            ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
+            from system.core.state_guard import guarded_write
+            _ok, _msg = guarded_write(ACTIONS, action_doc, "Brain")
+            if not _ok:
+                log(f"state_guard: {_msg}")
+            else:
+                ACTIONS.write_text(json.dumps(action_doc, indent=2, default=str), encoding='utf-8')
         SERVICE_STATE["actions_taken"] += 1
         log(f"ACTION-WRITTEN: {decision.get('type')} {decision.get('underlying')} {decision.get('strategy', '')}")
     # Always log the decision with full context (event + market snapshot) for the dashboard
@@ -3072,6 +3080,26 @@ last_live_go_tracker_ts = 0         # FIX 2026-09-17 13:55: live-go policy check
 # --- LLM call thread tracking (for non-blocking async LLM calls) ---
 _LLM_THREAD = None           # type: ignore  # the in-flight Thread object, or None
 _LLM_LOCK = None             # lazy-initialized threading.Lock
+
+
+# FIX 2026-10-22: decision throttle - min seconds between LLM decisions.
+# The watch loop fires events at 1Hz; without a throttle it calls the LLM every
+# few seconds during market hours (80K+ calls/2wk = the $3/day cost driver).
+# Default 30s: market structure doesn't change faster than this for options.
+DECISION_MIN_INTERVAL_SEC = float(os.environ.get("KOTAK_DECISION_INTERVAL_SEC", "30"))
+_last_llm_decision_ts = 0.0
+
+
+def _llm_throttled() -> bool:
+    """Return True if we should SKIP an LLM decision because too little time
+    has passed since the last one. Keeps the brain responsive but cuts call
+    volume dramatically (the biggest cost lever)."""
+    global _last_llm_decision_ts
+    now = time.time()
+    if now - _last_llm_decision_ts < DECISION_MIN_INTERVAL_SEC:
+        return True
+    _last_llm_decision_ts = now
+    return False
 
 
 def _llm_in_flight() -> bool:
@@ -3830,10 +3858,12 @@ def watch_loop():
                 # even if the LLM takes 1-3s to respond. This is the key to "live
                 # sec by sec" — events are detected at 1Hz; LLM evaluates them
                 # asynchronously.
-                if not _llm_in_flight():
+                if not _llm_in_flight() and not _llm_throttled():
                     _spawn_llm_thread(events, context, paper)
-                else:
+                elif _llm_in_flight():
                     log(f"EVENT: {len(events)} skipped (LLM still in flight from previous call)")
+                else:
+                    log(f"EVENT: {len(events)} skipped (decision throttle {DECISION_MIN_INTERVAL_SEC:.0f}s)")
             # EOD self-eval at 15:30 IST (market close) — runs once per day
             from datetime import datetime as _dt
             _now = _dt.now()

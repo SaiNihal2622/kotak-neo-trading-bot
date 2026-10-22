@@ -174,7 +174,10 @@ class ExecGateway:
                 _ps["positions"][sym] = _pos
             if _realized:
                 _ps["realized_pnl"] = round(float(_ps.get("realized_pnl", 0) or 0) + _realized, 2)
-            _ps_path.write_text(_j.dumps(_ps, indent=2, default=str), encoding="utf-8")
+            from system.core.state_guard import guarded_write
+            _ok, _msg = guarded_write(_ps_path, _ps, "ExecGateway")
+            if not _ok:
+                logger.error(f"state_guard: {_msg}")
         except Exception as _se:
             logger.warning(f"paper_state sync failed: {_se}")
 
@@ -467,7 +470,10 @@ class ExecGateway:
                 _ps["cash"] = _cash
             except Exception:
                 pass
-            _ps_path.write_text(_j.dumps(_ps, indent=2, default=str), encoding="utf-8")
+            from system.core.state_guard import guarded_write
+            _ok, _msg = guarded_write(_ps_path, _ps, "ExecGateway")
+            if not _ok:
+                logger.error(f"state_guard: {_msg}")
         except Exception as _se:
             logger.warning(f"full paper_state sync failed: {_se}")
 
