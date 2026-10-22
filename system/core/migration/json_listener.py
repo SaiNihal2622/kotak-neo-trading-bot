@@ -51,7 +51,13 @@ class JsonListener:
             return {}
 
     def _diff_positions(self, new_positions: dict) -> list:
-        """Return list of position changes since last sync."""
+        """Return list of position changes since last sync.
+
+        FIX 2026-10-22 (ROOT CAUSE): same as bot_adapter — this legacy listener
+        re-emits fills at stored avg_price, duplicating the gateway's real fills
+        at garbage prices and corrupting the core. Disabled in bridge-active mode.
+        """
+        return []
         events = []
         old_positions = self.last_state.get("positions", {})
         # New positions

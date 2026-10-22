@@ -64,7 +64,16 @@ class BotAdapter:
             return None
 
     def sync_once(self) -> int:
-        """Read JSON once, emit events for diffs. Returns event count."""
+        """Read JSON once, emit events for diffs. Returns event count.
+
+        FIX 2026-10-22 (ROOT CAUSE): this legacy adapter reads paper_state.json
+        and re-emits fills at the stored avg_price. In bridge-active mode the
+        gateway is the SOLE executor and paper_state.json is synced FROM the
+        core — so this adapter's legacy fills are DUPLICATES at garbage prices
+        (e.g. 1/2 and 1/3 of the real fill), corrupting the core's position
+        avg and fabricating phantom P&L. It must never write fills. Disabled.
+        """
+        return 0
         try:
             mtime = self.json_path.stat().st_mtime
         except (FileNotFoundError, OSError):
