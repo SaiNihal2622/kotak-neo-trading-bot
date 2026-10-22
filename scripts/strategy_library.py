@@ -513,6 +513,21 @@ def generate_trade_plan(strategy: Strategy, context: dict, capital: float = 1000
         ]
         plan["target_pnl"] = target_leg_price * n_lots * lot_size * (strategy.target_pct / 100)
         plan["stop_pnl"] = -target_leg_price * n_lots * lot_size * (strategy.stop_pct / 100)
+    elif strategy.structure == "long_call_or_put":
+        # FIX 2026-10-22 (ROOT CAUSE): vwap_bounce_nifty and other directional
+        # strategies use structure="long_call_or_put" but generate_trade_plan
+        # had NO branch for it -> plan["legs"] stayed [] -> the bridge rejected
+        # every OPEN as "no_legs" -> the brain kept trying to open a trade that
+        # could never fill (the recurring no_legs class). Generate a directional
+        # leg: buy the ATM call or put based on the strategy's direction.
+        _dir = getattr(strategy, "direction", "up")
+        _opt = "CE" if _dir == "up" else "PE"
+        plan["legs"] = [
+            {"side": "BUY", "qty": n_lots, "strike": atm, "opt_type": _opt,
+             "order_type": "MARKET", "price": None}
+        ]
+        plan["target_pnl"] = target_leg_price * n_lots * lot_size * (strategy.target_pct / 100)
+        plan["stop_pnl"] = -target_leg_price * n_lots * lot_size * (strategy.stop_pct / 100)
     elif strategy.structure == "cash_long":
         # FIX 2026-09-29 12:40: NIFTY CASH (spot) long. Single leg.
         # __main__.py routes structure="cash_long" to nse_cm + MIS.
