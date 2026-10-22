@@ -246,6 +246,76 @@ def build_plan(decision: dict, context: dict) -> dict:
     }
 
 
+# ===== Position management =====
+
+def manage_positions(positions: dict, regime: dict, capital: float = 100000.0) -> dict:
+    """Decide whether to CLOSE open positions based on target/stop/edge.
+
+    Returns a decision dict. Rules:
+      - Total P&L >= target (50% of max credit) -> CLOSE (take profit)
+      - Total P&L <= stop (-1% of capital) -> CLOSE (cut loss)
+      - Regime broke (range -> trend) -> CLOSE (edge gone)
+      - Otherwise HOLD (multi-day)
+    """
+    if not positions:
+        return {"action": "HOLD", "rationale": "no positions to manage"}
+
+    # Dedupe positions by (strike, option_type) — the same leg can appear
+    # twice with a truncated symbol (e.g. NIFTY22400PE == NIFTY29OCT2622400PE).
+    # Sum qty for duplicates so P&L isn't double-counted.
+    deduped = {}
+    for sym, pos in positions.items():
+        key = (float(pos.get("strike") or 0), str(pos.get("option_type") or "").upper())
+        if key in deduped:
+            deduped[key]["qty"] = float(deduped[key].get("qty") or 0) + float(pos.get("qty") or 0)
+        else:
+            deduped[key] = dict(pos)
+
+    # Compute total P&L across all unique legs
+    total_pnl = 0.0
+    for key, pos in deduped.items():
+        qty = float(pos.get("qty") or 0)
+        avg = float(pos.get("avg_price") or 0)
+        ltp = float(pos.get("ltp") or avg)
+        pnl = (ltp - avg) * qty if qty > 0 else (avg - ltp) * abs(qty)
+        total_pnl += pnl
+
+    # Target/stop as % of capital. Options need room to breathe:
+    #   target = +1% of capital (bank profit when the range works)
+    #   stop   = -2% of capital (cut loss before it grows)
+    target = capital * 0.01   # +1% of capital
+    stop = -capital * 0.02    # -2% of capital
+
+    if total_pnl >= target:
+        return {
+            "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
+            "edge_score": 100,
+            "rationale": f"target hit: P&L {total_pnl:+,.0f} >= {target:+,.0f} — take profit",
+            "regime": regime,
+        }
+    if total_pnl <= stop:
+        return {
+            "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
+            "edge_score": 0,
+            "rationale": f"stop hit: P&L {total_pnl:+,.0f} <= {stop:+,.0f} — cut loss",
+            "regime": regime,
+        }
+    # Edge check: if the regime broke (range -> trend), close
+    if regime.get("trending") and regime.get("direction") in ("bullish", "bearish"):
+        return {
+            "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
+            "edge_score": 0,
+            "rationale": f"regime broke: {regime['direction']} trend (ADX {regime.get('adx'):.0f}) — iron condor edge gone, close",
+            "regime": regime,
+        }
+    return {
+        "action": "HOLD", "symbol": None, "qty": 0, "price": 0,
+        "edge_score": 0,
+        "rationale": f"holding {len(positions)} legs — P&L {total_pnl:+,.0f} within target/stop, edge persists",
+        "regime": regime,
+    }
+
+
 # ===== Main entry =====
 
 def decide(context: dict) -> dict:
@@ -275,41 +345,10 @@ def decide(context: dict) -> dict:
     # (vwap_bounce, rsi_reversion) close at EOD.
     if positions:
         r = _regime(candles, intraday, vix)
-        # Determine if the open structure is multi-day-friendly
-        multi_day_ok = False
-        for sym in positions:
-            s = str(sym).upper()
-            if "CE" in s or "PE" in s:
-                # iron_condor = 4 legs (2 short + 2 long) -> multi-day friendly
-                # momentum = single directional -> can carry if trend persists
-                multi_day_ok = True
-                break
-        # EOD check: after 15:00 IST, close day-trade structures; allow
-        # multi-day structures to carry if edge persists.
-        h, m = now.hour, now.minute
-        is_eod = (h == 15 and m >= 0) or h > 15
-        if is_eod and not multi_day_ok:
-            return {
-                "action": "CLOSE", "structure": None, "symbol": "ALL",
-                "qty": 0, "price": 0, "edge_score": 0,
-                "rationale": f"EOD ({now.strftime('%H:%M')}) — day-trade structure, close to bank P&L",
-                "regime": r,
-            }
-        # Multi-day: hold if the regime still supports the position's edge
-        if multi_day_ok and not is_eod:
-            return {
-                "action": "HOLD", "structure": None, "symbol": None,
-                "qty": 0, "price": 0, "edge_score": 0,
-                "rationale": f"holding {len(positions)} open position(s) — multi-day setup, edge persists in {r['direction']}/{r['vol']} regime",
-                "regime": r,
-            }
-        # EOD + multi-day: let the brain decide (default HOLD to carry winner)
-        return {
-            "action": "HOLD", "structure": None, "symbol": None,
-            "qty": 0, "price": 0, "edge_score": 0,
-            "rationale": f"holding {len(positions)} open position(s) — multi-day setup, carry winner into tomorrow",
-            "regime": r,
-        }
+        # Real position management: target/stop/edge-based exits.
+        capital = float(paper.get("cash") or 100000)
+        mgmt = manage_positions(positions, r, capital)
+        return mgmt
 
     r = _regime(candles, intraday, vix)
 
