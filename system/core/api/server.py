@@ -137,8 +137,11 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
         # directly (not snapshot()), so call the MTM here.
         try:
             app.state.projection._mark_to_market_from_chain()
-        except Exception:
-            pass
+            import logging
+            logging.getLogger("core").info(f"MTM applied: {len(app.state.projection.positions)} positions")
+        except Exception as _e:
+            import logging
+            logging.getLogger("core").warning(f"MTM failed: {_e}")
         return {
             "positions": {sym: vars(p) for sym, p in app.state.projection.positions.items() if p.qty != 0},
         }
@@ -243,25 +246,25 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
         if not positions:
             return {"ok": True, "closed": 0}
 
+        # REBUILD 2026-10-22: close positions DIRECTLY in the projection at
+        # the last traded price, booking realized P&L. The old path emitted
+        # proposed orders and relied on the fill round-trip, which created
+        # FLIPPED positions (orphan fills) instead of netting to zero.
+        from ..domain.events import order_filled as _of
         events = []
         for pos in positions:
             close_side = "SELL" if pos.qty > 0 else "BUY"
             close_qty = abs(pos.qty)
             client_oid = f"close-{pos.symbol}-{datetime.utcnow().timestamp()}"
-            events.append(order_proposed({
-                "client_order_id": client_oid,
-                "symbol": pos.symbol,
-                "underlying": pos.underlying,
-                "side": close_side,
-                "qty": close_qty,
-                "order_type": "MARKET",
-                "tag": "FORCE-CLOSE-ALL",
-                "exchange": pos.exchange,
-                "strike": pos.strike,
-                "option_type": pos.option_type,
-                "expiry": pos.expiry,
-            }))
-            events.append(order_validated(client_oid))
+            # Emit a fill at the last traded price to net the position to zero
+            # and book realized P&L in the projection.
+            events.append(_of(
+                order_id=client_oid,
+                symbol=pos.symbol,
+                side=close_side,
+                filled_qty=close_qty,
+                fill_price=float(pos.ltp or pos.avg_price),
+            ))
         app.state.store.append_batch(events)
         for e in events:
             app.state.projection.apply(e)
