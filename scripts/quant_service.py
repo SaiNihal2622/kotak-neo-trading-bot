@@ -2430,17 +2430,6 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
                 _session_open = float(_nifty_agg.get("session_open") or 0)
                 if _session_open:
                     log(f"strategy-library: using STALE session_open={_session_open} from candles_aggregate (intraday_levels.json missing 'open' for NIFTY)")
-        _sel_ctx = {
-            "spot": _spot,
-            "vix": _vix,
-            "session_open": _session_open,
-            # FIX 2026-09-21 13:50: convert candle context dict (per-symbol → indicators)
-            # into the list-of-OHLCV-dicts shape that select_strategy expects.
-            # Without this, select_strategy iterates a dict and hits 'str' has no .get.
-            "candles": _build_candles_list_for_strategy(context.get("candles")),
-            "now": datetime.now(),
-            "vwap": float(_nifty.get("vwap") or 0),
-        }
         # REBUILD 2026-10-22: use the reasoning-based decision engine instead
         # of the template strategy library. The engine reads real indicators
         # (RSI/ADX/EMA/MACD/VWAP/VIX) and scores every candidate setup by edge
@@ -2468,17 +2457,14 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             }
             log(f"STRATEGY-LIBRARY: decision-engine selected {_de.get('structure')} (edge: {_de.get('edge_score')}/100, legs={len(_de_plan.get('legs', []))})")
         else:
-            # FIX 2026-09-29 12:00: was silent. Now log WHY no strategy
-            # matched so we can diagnose recurring zeros.
-            closes = [c.get("c", 0) for c in _sel_ctx.get("candles", []) if c.get("c")]
-            _spot_v = _sel_ctx.get("spot", 0)
-            _sopen_v = _sel_ctx.get("session_open", 0)
-            _vix_v = _sel_ctx.get("vix", 0)
-            _spct = (_spot_v - _sopen_v) / _sopen_v * 100 if (_spot_v and _sopen_v) else 0
+            # REBUILD 2026-10-22: decision engine returned HOLD (no setup
+            # cleared the edge bar, or positions held). Log the reason.
             log(
-                f"STRATEGY-LIBRARY: no-match spot={_spot_v} session_open={_sopen_v} "
-                f"vix={_vix_v} session_pct={_spct:+.2f}% n_closes={len(closes)} "
-                f"(iron_condor needs: vix<15 AND abs(session_pct)<0.7)"
+                f"STRATEGY-LIBRARY: decision-engine HOLD "
+                f"action={_de.get('action')} edge={_de.get('edge_score')} "
+                f"regime={(_de.get('regime') or {}).get('direction')}/"
+                f"{(_de.get('regime') or {}).get('vol')} "
+                f"rationale={(_de.get('rationale') or '')[:80]}"
             )
     except Exception as _strat_err:
         log(f"strategy-library-err: {_strat_err}")
