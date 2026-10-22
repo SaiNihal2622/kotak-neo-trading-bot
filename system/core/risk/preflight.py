@@ -225,6 +225,17 @@ class PreFlight:
             return PreflightResult(ok=False, reason="no price for cost estimation", gate="pricing")
         est_cost = qty * price
         cap = cash * self.max_per_trade_pct
+        # FIX 2026-10-22 (ROOT CAUSE): a 1-lot options trade (75 x ~Rs.160 =
+        # Rs.12,000) exceeds the 5% cap on a Rs.100k account, so EVERY minimum
+        # options trade was rejected as per_trade_cap and nothing ever filled.
+        # The cap exists to stop OVERSIZED legs, not minimum-size trades. Allow
+        # any leg up to 1 lot (the minimum executable size) regardless of
+        # notional; cap only applies above 1 lot.
+        _lot = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65, "MIDCPNIFTY": 120}.get(
+            str(order.get("underlying", "")).upper(), 75)
+        _n_lots = max(1, int(round(qty / _lot)))
+        if _n_lots <= 1:
+            return PreflightResult(ok=True)
         if est_cost > cap:
             return PreflightResult(
                 ok=False,
