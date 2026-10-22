@@ -410,6 +410,7 @@ class StateProjection:
         for the primary symbol, so other held positions showed ltp=avg (pnl=0).
         """
         import json as _j
+        import re
         from pathlib import Path as _P
         try:
             # FIX 2026-10-22: read from option_chains.json (the reliable
@@ -436,8 +437,15 @@ class StateProjection:
                 tick = self.ticks.get(sym)
                 if tick and tick.ltp and tick.ltp > 0:
                     continue
-                _strike = int(float(getattr(pos, "strike", 0) or 0))
-                _opt = str(getattr(pos, "option_type", "") or "").upper()
+                # Parse strike + option type from the SYMBOL itself (robust):
+                # NIFTY29OCT2622750CE -> strike 22750, CE. The position's
+                # strike/option_type fields may be 0/empty in the live
+                # projection, so don't rely on them.
+                _m = re.search(r"(\d{5})(CE|PE)$", sym)
+                if not _m:
+                    continue
+                _strike = int(_m.group(1))
+                _opt = _m.group(2)
                 key = f"{_strike}_{_opt}"
                 s = strikes.get(key)
                 if not s:
