@@ -27,6 +27,60 @@ from typing import Optional, Dict, Any, List
 DATA = Path("data_cache")
 
 
+def _read_candle_history(sym: str = "NIFTY", timeframe: str = "1m", n: int = 60) -> list:
+    """Read real OHLCV bar history from the candle JSONL files.
+
+    Returns a list of {open, high, low, close, volume} dicts (oldest first).
+    This is how the system detects research-backed candle patterns — reading
+    the full history, not the 3-bar in-memory snapshot.
+    """
+    p = DATA / "candles" / f"{sym}_{timeframe}.jsonl"
+    if not p.exists():
+        return []
+    rows = []
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines()[-n:]:
+            b = json.loads(line)
+            rows.append({
+                "open": b.get("o"), "high": b.get("h"),
+                "low": b.get("l"), "close": b.get("c"),
+                "volume": b.get("v", 0),
+            })
+    except Exception:
+        pass
+    return [r for r in rows if r.get("close") is not None]
+
+
+def _detect_candle_patterns(bars: list) -> Dict[str, float]:
+    """Detect research-backed candle patterns (pandas_ta, 130+ patterns).
+
+    Returns a dict of pattern -> last value (-1, 0, +1). Only includes
+    patterns that FIRED on the latest bar. Empty if bars too few.
+    """
+    if len(bars) < 3:
+        return {}
+    try:
+        import pandas as pd
+        import pandas_ta as ta
+        df = pd.DataFrame(bars)
+        out = {}
+        for pat in ["cdl_doji", "cdl_engulfing", "cdl_hammer", "cdl_invertedhammer",
+                    "cdl_shootingstar", "cdl_marubozu", "cdl_morningstar", "cdl_eveningstar",
+                    "cdl_threewhitesoldiers", "cdl_threeblackcrows", "cdl_piercing",
+                    "cdl_darkcloudcover", "cdl_harami", "cdl_hangingman", "cdl_star",
+                    "cdl_beltabhold"]:
+            try:
+                res = getattr(ta.cdl_pattern, pat)(df["open"], df["high"], df["low"], df["close"])
+                last = float(res.iloc[-1])
+                if last != 0:
+                    out[pat] = last
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return {}
+
+
 # ===== Regime detection =====
 
 def _regime(candles: dict, intraday: dict, vix: float) -> Dict[str, Any]:
@@ -71,6 +125,12 @@ def _regime(candles: dict, intraday: dict, vix: float) -> Dict[str, Any]:
     else:
         direction = "mixed"
 
+    # Research-backed candle patterns from the full history
+    try:
+        patterns = _detect_candle_patterns(_read_candle_history())
+    except Exception:
+        patterns = {}
+
     return {
         "trending": trending,
         "direction": direction,
@@ -86,6 +146,7 @@ def _regime(candles: dict, intraday: dict, vix: float) -> Dict[str, Any]:
         "vwap_dev": vwap_dev,
         "atr": atr,
         "vwap": vwap,
+        "patterns": patterns,
     }
 
 
@@ -149,6 +210,20 @@ def _score_momentum(r: dict) -> Optional[dict]:
         score += 10; reasons.append(f"strong trend ADX={r['adx']:.0f}")
     if r["direction"] in ("bullish", "bearish"):
         score += 5; reasons.append(f"{r['direction']} regime")
+    # Research-backed candle patterns confirm the trend direction
+    pat = r.get("patterns") or {}
+    bull_pat = any(pat.get(k, 0) > 0 for k in
+                   ("cdl_threewhitesoldiers", "cdl_morningstar", "cdl_piercing",
+                    "cdl_hammer", "cdl_beltabhold"))
+    bear_pat = any(pat.get(k, 0) < 0 for k in
+                   ("cdl_threeblackcrows", "cdl_eveningstar", "cdl_darkcloudcover",
+                    "cdl_shootingstar", "cdl_hangingman"))
+    if r["direction"] == "bullish" and bull_pat:
+        score += 15; reasons.append("bullish candle pattern confirms")
+    elif r["direction"] == "bearish" and bear_pat:
+        score += 15; reasons.append("bearish candle pattern confirms")
+    elif bull_pat or bear_pat:
+        score += 5; reasons.append("candle pattern present, trend pending")
     direction = "long_call" if r["direction"] == "bullish" else "long_put"
     return {"structure": "momentum", "score": min(score, 100),
             "reasons": reasons, "direction": direction}
