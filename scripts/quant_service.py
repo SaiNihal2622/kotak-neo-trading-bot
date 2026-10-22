@@ -2987,6 +2987,17 @@ def write_decision(decision: dict, context_snapshot: dict = None, event: dict = 
                     if _has_ce and _has_pe:
                         _blocked = True
                         _reason = f"position-stack-gate: already holding {_strat} (CE+PE open)"
+                else:
+                    # FIX 2026-10-22 (over-trading): single-leg strategies
+                    # (vwap_bounce, long_call, long_put, nifty_cash_long) were
+                    # re-opened every cycle even when the SAME underlying already
+                    # had an open position -> the bridge kept rejecting with
+                    # position_cap and the brain churned. Block re-opening the
+                    # same underlying when a position already exists for it.
+                    _und = str(decision.get("underlying", "") or "").upper()
+                    if _und and any(_und in s for s in _strat_strikes):
+                        _blocked = True
+                        _reason = f"position-stack-gate: already holding {_und} position ({_strat}); manage it instead of stacking"
             if _blocked:
                 log(f"ACTION-SUPPRESSED: {_reason}; managing existing positions instead of stacking")
                 action_doc["actions"] = []
