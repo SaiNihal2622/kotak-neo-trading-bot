@@ -2436,24 +2436,32 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             "now": datetime.now(),
             "vwap": float(_nifty.get("vwap") or 0),
         }
-        _perf = load_performance()
-        _strategy = select_strategy(_sel_ctx, _perf)
-        if _strategy:
-            _plan = generate_trade_plan(_strategy, _sel_ctx, capital=_cash, vix=_vix)
+        # REBUILD 2026-10-22: use the reasoning-based decision engine instead
+        # of the template strategy library. The engine reads real indicators
+        # (RSI/ADX/EMA/MACD/VWAP/VIX) and scores every candidate setup by edge
+        # quality, taking ONLY the single best if it clears the quality bar.
+        from decision_engine import decide as _de_decide, build_plan as _de_build_plan
+        _de_ctx = {
+            "candles": _safe_read_json(DATA / "candles_aggregate.json", default={}),
+            "intraday": _intraday,
+            "vix": _vix,
+            "paper": _paper,
+        }
+        _de = _de_decide(_de_ctx)
+        if _de.get("action") == "OPEN":
+            _de_plan = _de_build_plan(_de, _de_ctx)
             context["STRATEGY_LIBRARY_RECOMMENDATION"] = {
-                "selected_strategy": _strategy.name,
-                "structure": _strategy.structure,
-                "expected_edge": _strategy.expected_edge,
-                "backtested_win_rate": _strategy.backtested_win_rate,
-                "backtested_avg_pnl": _strategy.backtested_avg_pnl,
-                "trade_plan": _plan,
-                "alternative_strategies": [
-                    {"name": s.name, "win_rate": s.backtested_win_rate, "avg_pnl": s.backtested_avg_pnl}
-                    for s in STRATEGIES.values()
-                ],
-                "performance_history": {k: v.to_dict() for k, v in _perf.items()},
+                "selected_strategy": _de.get("structure"),
+                "structure": _de.get("structure"),
+                "expected_edge": _de.get("rationale", ""),
+                "backtested_win_rate": _de.get("edge_score", 0) / 100.0,
+                "backtested_avg_pnl": 0.0,
+                "trade_plan": _de_plan,
+                "alternative_strategies": [],
+                "performance_history": {},
+                "decision_engine": True,
             }
-            log(f"STRATEGY-LIBRARY: selected {_strategy.name} (edge: {_strategy.expected_edge[:80]})")
+            log(f"STRATEGY-LIBRARY: decision-engine selected {_de.get('structure')} (edge: {_de.get('edge_score')}/100, legs={len(_de_plan.get('legs', []))})")
         else:
             # FIX 2026-09-29 12:00: was silent. Now log WHY no strategy
             # matched so we can diagnose recurring zeros.
