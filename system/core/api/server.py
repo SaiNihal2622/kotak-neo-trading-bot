@@ -132,6 +132,13 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
 
     @app.get("/api/positions")
     async def get_positions():
+        # FIX 2026-10-22 (MTM): mark positions to market from the chain so the
+        # dashboard shows TRUE P&L. This endpoint serializes projection.positions
+        # directly (not snapshot()), so call the MTM here.
+        try:
+            app.state.projection._mark_to_market_from_chain()
+        except Exception:
+            pass
         return {
             "positions": {sym: vars(p) for sym, p in app.state.projection.positions.items() if p.qty != 0},
         }
