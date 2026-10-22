@@ -470,8 +470,15 @@ class BrainBridge:
                 payload = {
                     "strategy": str(action.get("strategy", "")),
                     "underlying": str(action.get("underlying", "")),
-                    "legs": action.get("legs", []),
-                    "rationale": str(action.get("rationale", ""))[:100],
+                    # FIX 2026-10-22 (double-fill): rationale changes every cycle
+                    # (the LLM re-writes it), so the fingerprint changed each
+                    # cycle and the SAME trade was re-submitted -> double fill
+                    # (qty 75 plan filled as 150). Key on the actual trade
+                    # identity (strategy+underlying+strike+side), NOT rationale.
+                    "legs": [
+                        {k: leg.get(k) for k in ("side", "strike", "opt_type", "qty")}
+                        for leg in (action.get("legs") or []) if isinstance(leg, dict)
+                    ],
                 }
                 fp = hashlib.md5(_json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
                 sym = str(action.get("symbol") or
