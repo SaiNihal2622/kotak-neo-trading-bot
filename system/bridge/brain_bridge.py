@@ -167,7 +167,23 @@ class BrainBridge:
             side = str(leg.get("side", "BUY")).upper()
             strike = int(leg.get("strike", 0) or 0)
             opt = str(leg.get("opt_type", "")).upper()
-            expiry = str(leg.get("expiry", ""))
+            expiry = str(leg.get("expiry", "") or action.get("expiry", "") or "")
+            # FIX 2026-10-22 (ROOT CAUSE of expired-contract phantom fills):
+            # the brain emits expiry="WEEKLY" (or leaves it empty), and
+            # strptime fails -> exp_str stays "WEEKLY" -> symbol becomes
+            # NIFTYWEEKLY22750CE (invalid) or NIFTY22750CE (no expiry), which
+            # the broker resolves to a WRONG/EXPIRED contract -> phantom fills
+            # at garbage prices on stale Oct-1 symbols. Resolve WEEKLY/empty to
+            # the CURRENT weekly expiry (next Thursday) before building the
+            # symbol.
+            if not expiry or expiry.upper() in ("WEEKLY", "WEEK", "NEXT_WEEKLY"):
+                import datetime as _dt
+                _today = _dt.date.today()
+                _days_ahead = (3 - _today.weekday()) % 7  # Thursday=3
+                if _days_ahead == 0:
+                    _days_ahead = 7  # today IS expiry Thursday -> next week
+                _exp_date = _today + _dt.timedelta(days=_days_ahead)
+                expiry = _exp_date.strftime("%Y-%m-%d")
             order_type = str(leg.get("order_type", "MARKET")).upper()
             # PHASE 5 FIX 2026-09-30: detect CAS legs (segment="nse_cm") —
             # for CAS, qty is already in shares (e.g., 75 = 1 lot of NIFTY),
@@ -299,11 +315,22 @@ class BrainBridge:
                 out.append(leg)
                 continue
             notional = qty * price
+            lot = self._lot_qty(str(leg.get("underlying", "NIFTY")))
+            # FIX 2026-10-22 (ROOT CAUSE): the old logic dropped EVERY 1-lot
+            # options trade — 1 lot NIFTY CE = 75 x ~Rs.160 = Rs.12,000 which
+            # exceeds the Rs.5,000 (5%) cap, so every OPEN was rejected as
+            # no_legs_after_cap and NOTHING ever filled. The cap exists to stop
+            # OVERSIZED legs (the Rs.396k bug), not minimum-size trades. Allow
+            # any leg up to 1 lot (the minimum executable size) regardless of
+            # notional; cap only ABOVE 1 lot.
+            n_lots = max(1, int(round(qty / lot)))
+            if n_lots <= 1:
+                out.append(leg)
+                continue
             if notional <= cap:
                 out.append(leg)
                 continue
             # reduce qty to fit the cap, rounded down to a lot multiple
-            lot = self._lot_qty(str(leg.get("underlying", "NIFTY")))
             max_qty = int(cap / price)
             max_qty = max(0, (max_qty // lot) * lot)
             if max_qty < lot:
