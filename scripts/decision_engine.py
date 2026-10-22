@@ -207,6 +207,22 @@ def _build_legs(decision: dict, spot: float, vix: float, capital: float = 100000
     return []
 
 
+def resolve_expiry(now=None) -> str:
+    """Resolve the current weekly expiry (next Thursday) as YYYY-MM-DD.
+
+    The SYSTEM owns expiry resolution — it computes the real date itself
+    instead of passing a "WEEKLY" placeholder for the bridge to guess.
+    NIFTY/BANKNIFTY weekly options expire on Thursday.
+    """
+    from datetime import date, timedelta
+    today = (now or datetime.now()).date()
+    days_ahead = (3 - today.weekday()) % 7  # Thursday=3
+    if days_ahead == 0:
+        days_ahead = 7  # today IS expiry Thursday -> next week
+    exp = today + timedelta(days=days_ahead)
+    return exp.strftime("%Y-%m-%d")
+
+
 def build_plan(decision: dict, context: dict) -> dict:
     """Attach concrete legs + sizing to a decision. Returns a trade_plan dict."""
     candles = context.get("candles") or {}
@@ -221,7 +237,7 @@ def build_plan(decision: dict, context: dict) -> dict:
         "structure": decision.get("structure"),
         "underlying": "NIFTY",
         "n_lots": legs[0]["qty"] if legs else 1,
-        "expiry": "WEEKLY",
+        "expiry": resolve_expiry(),
         "max_hold_minutes": 300,
         "rationale": decision.get("rationale", ""),
         "legs": legs,
