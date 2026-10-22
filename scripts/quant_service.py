@@ -943,13 +943,18 @@ NSE INTRADAY TRADING RULES — KNOW BEFORE YOU ACT:
   (no_new_trades_after: 14:30 IST, set in config/intraday.no_new_trades_after).
 - Force-square-off at 15:15 IST (intraday default; SOFT gate — LLM can override
   via ai_override_intraday=true on the action). HARD force-square at 15:25.
+- MULTI-DAY SETUPS (REBUILD 2026-10-22): iron_condor and momentum structures
+  are multi-day friendly — you MAY carry them overnight if the edge persists
+  (set allow_overnight=true). Day-trade structures (vwap_bounce, rsi_reversion)
+  close at EOD. The decision engine scores edge; trust it. Don't force-square a
+  winning multi-day position just because it's 15:15 — carry the winner.
 - After 14:30 IST: NEW entries are SUPPRESSED by default — but you CAN override by
   setting `ai_override_intraday: true` on the OPEN action when:
     a) VIX > 18 (you see a vol expansion you want to capture),
     b) index has moved >1% from session open (trend continuation), or
     c) it's a closing-auction straddle/strangle for 15:00-15:15 vol capture.
   Use sparingly — overrides are logged and audited.
-- After 15:00 IST: only CLOSE actions are valid.
+- After 15:00 IST: only CLOSE actions are valid for day-trade structures;
 - Outside 09:15-15:30 IST: only CLOSE actions are valid. HOLD otherwise.
 - Ai can hold overnight if it has a clear edge (allow_overnight=true). Don't be
   afraid to carry a winner into tomorrow. Force-square is a SUGGESTION, not a rule.

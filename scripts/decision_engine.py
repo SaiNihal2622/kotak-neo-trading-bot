@@ -238,6 +238,14 @@ def decide(context: dict) -> dict:
     context keys: candles (candles_aggregate dict), intraday, vix,
                   paper (positions), now, news (optional)
     """
+
+
+def decide(context: dict) -> dict:
+    """Return ONE decision: OPEN/CLOSE/HOLD with the best setup.
+
+    context keys: candles (candles_aggregate dict), intraday, vix,
+                  paper (positions), now, news (optional)
+    """
     candles = context.get("candles") or {}
     intraday = context.get("intraday") or {}
     vix = float(context.get("vix") or 15)
@@ -245,14 +253,46 @@ def decide(context: dict) -> dict:
     positions = paper.get("positions") or {}
     now = context.get("now") or datetime.now()
 
-    # If we have open positions, the decision is to manage/close them
-    # (the brain's stacking gate handles this — here we just report).
+    # If we have open positions, decide whether to HOLD overnight (multi-day
+    # setup) or CLOSE at EOD. Multi-day-friendly structures (iron_condor,
+    # momentum) can be carried if the edge persists; day-trade structures
+    # (vwap_bounce, rsi_reversion) close at EOD.
     if positions:
+        r = _regime(candles, intraday, vix)
+        # Determine if the open structure is multi-day-friendly
+        multi_day_ok = False
+        for sym in positions:
+            s = str(sym).upper()
+            if "CE" in s or "PE" in s:
+                # iron_condor = 4 legs (2 short + 2 long) -> multi-day friendly
+                # momentum = single directional -> can carry if trend persists
+                multi_day_ok = True
+                break
+        # EOD check: after 15:00 IST, close day-trade structures; allow
+        # multi-day structures to carry if edge persists.
+        h, m = now.hour, now.minute
+        is_eod = (h == 15 and m >= 0) or h > 15
+        if is_eod and not multi_day_ok:
+            return {
+                "action": "CLOSE", "structure": None, "symbol": "ALL",
+                "qty": 0, "price": 0, "edge_score": 0,
+                "rationale": f"EOD ({now.strftime('%H:%M')}) — day-trade structure, close to bank P&L",
+                "regime": r,
+            }
+        # Multi-day: hold if the regime still supports the position's edge
+        if multi_day_ok and not is_eod:
+            return {
+                "action": "HOLD", "structure": None, "symbol": None,
+                "qty": 0, "price": 0, "edge_score": 0,
+                "rationale": f"holding {len(positions)} open position(s) — multi-day setup, edge persists in {r['direction']}/{r['vol']} regime",
+                "regime": r,
+            }
+        # EOD + multi-day: let the brain decide (default HOLD to carry winner)
         return {
             "action": "HOLD", "structure": None, "symbol": None,
             "qty": 0, "price": 0, "edge_score": 0,
-            "rationale": f"holding {len(positions)} open position(s) — manage to close",
-            "regime": _regime(candles, intraday, vix),
+            "rationale": f"holding {len(positions)} open position(s) — multi-day setup, carry winner into tomorrow",
+            "regime": r,
         }
 
     r = _regime(candles, intraday, vix)
