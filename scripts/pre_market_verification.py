@@ -150,10 +150,32 @@ def _check_open_path():
             }],
             "dry_run": True,
         }
-        resp = _http_json(f"{CORE_URL}/api/plan", {}, method="POST", body=plan)
-        if not resp or not resp.get("ok"):
-            return ("FAIL", f"open path rejected: {resp.get('detail', resp)}")
-        return ("ok", f"open path OK (plan accepted, dry_run)")
+        # FIX 2026-10-22: POSTing /api/plan emits ORDER_PROPOSED events even for
+        # dry_run plans -> the gateway FILLS them -> this 08:15 harness was
+        # POLLUTING the live book every pre-open (created a real NIFTY23100CE
+        # position this morning at avg 50.85). Use a READ-ONLY preflight check
+        # (PreFlight.check_order) instead - it validates the path without
+        # emitting any order events.
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        try:
+            from system.core.risk.preflight import PreFlight
+            from system.core.domain.state import StateProjection
+            pf = PreFlight()
+            st = StateProjection()
+            chk = {
+                "symbol": f"NIFTY22OCT26{key.replace('_','')}",
+                "underlying": "NIFTY", "side": "BUY", "qty": 75,
+                "strike": strike, "option_type": opt, "order_type": "LIMIT",
+                "price": _ask, "product": "MIS", "exchange": "NFO",
+                "expiry": "2026-10-22",
+            }
+            res = pf.check_order(chk, st)
+            if res.ok:
+                return ("ok", "open path OK (read-only preflight, no fills created)")
+            return ("FAIL", f"open path rejected: {res.reason} (gate={res.gate})")
+        except Exception as _pf_e:
+            return ("WARN", f"open path preflight err: {_pf_e}")
     except Exception as e:
         return ("WARN", f"open path err: {e}")
 
