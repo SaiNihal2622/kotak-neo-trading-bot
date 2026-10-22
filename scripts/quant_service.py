@@ -2220,10 +2220,18 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
     # Augment context with candle data (OHLCV + indicators + patterns) for the symbols in events
     try:
         event_syms = list({(e.get("symbol") or "").upper() for e in (events or []) if e.get("symbol")})
-        if event_syms:
-            ctx_candles = get_candle_context_for_llm(event_syms)
-            if ctx_candles:
-                context["candles"] = ctx_candles
+        # FIX 2026-10-22 (ROOT CAUSE of n_closes=0 / never-trades): candles were
+        # only populated when event_syms was non-empty. On a periodic scan with
+        # no events (most cycles), context["candles"] stayed unset -> the
+        # strategy selector got [] -> returned None -> HOLD every cycle. The
+        # brain only traded on event triggers, never on its own periodic scan.
+        # Always include NIFTY candles (the primary underlying) so the selector
+        # can evaluate every cycle.
+        if not event_syms:
+            event_syms = ["NIFTY"]
+        ctx_candles = get_candle_context_for_llm(event_syms)
+        if ctx_candles:
+            context["candles"] = ctx_candles
     except Exception:
         pass
     # Augment context with alpha (vol forecast, IV, regime, exec quality, portfolio risk, Kelly)
