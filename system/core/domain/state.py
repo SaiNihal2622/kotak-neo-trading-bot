@@ -404,6 +404,57 @@ class StateProjection:
 
         pos.pnl = (fill_price - pos.avg_price) * pos.qty if pos.qty else 0.0
 
+    def _mark_to_market_from_chain(self) -> None:
+        """FIX 2026-10-22 (MTM bug): mark positions to market from the chain
+        file when no live MARKET_TICK exists for that symbol. Ticks only flow
+        for the primary symbol, so other held positions showed ltp=avg (pnl=0).
+        """
+        import json as _j
+        from pathlib import Path as _P
+        try:
+            # FIX 2026-10-22: read from option_chains.json (the reliable
+            # aggregate written by the analyzer with cross-checked spot) FIRST;
+            # fall back to the per-symbol file only if missing. The per-symbol
+            # option_chain_<UND>.json can go stale (wrong spot/strikes).
+            strikes = {}
+            for _cand in [_P("data_cache") / "option_chains.json",
+                          _P("data_cache") / "option_chain_NIFTY.json"]:
+                if _cand.exists():
+                    try:
+                        _dc = _j.loads(_cand.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if "chains" in _dc:
+                        _dc = (_dc.get("chains") or {}).get("NIFTY") or {}
+                    _s = _dc.get("strikes", {}) or {}
+                    if _s:
+                        strikes = _s
+                        break
+            for sym, pos in self.positions.items():
+                if pos.qty == 0:
+                    continue
+                tick = self.ticks.get(sym)
+                if tick and tick.ltp and tick.ltp > 0:
+                    continue
+                _strike = int(float(getattr(pos, "strike", 0) or 0))
+                _opt = str(getattr(pos, "option_type", "") or "").upper()
+                key = f"{_strike}_{_opt}"
+                s = strikes.get(key)
+                if not s:
+                    for _k, _v in strikes.items():
+                        if sym.endswith(_k.replace("_", "")):
+                            s = _v
+                            break
+                if not s:
+                    continue
+                _ltp = float(s.get("ltp") or s.get("price") or s.get("bid") or 0)
+                if _ltp > 0:
+                    pos.ltp = _ltp
+                    pos.pnl = (pos.ltp - pos.avg_price) * pos.qty
+        except Exception:
+            pass
+
+
     def snapshot(self) -> dict:
         """Serialize current state for API responses.
 
@@ -444,6 +495,14 @@ class StateProjection:
             return True
 
         live_orders = [o for o in self.orders.values() if _is_fresh_proposal(o)]
+
+        # FIX 2026-10-22 (MTM bug): positions only got live ltp from MARKET_TICK
+        # events, but ticks only flow for ONE symbol (the primary). The other
+        # held symbols showed ltp=avg (pnl=0). Mark to market from the chain.
+        try:
+            self._mark_to_market_from_chain()
+        except Exception:
+            pass
 
         snap = {
             "ts": self.last_brain_decision_ts,
