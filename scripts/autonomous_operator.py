@@ -44,7 +44,7 @@ NSSM = r"C:\Tools\nssm\nssm-2.24\win64\nssm.exe"
 CORE_URL = os.environ.get("KOTAK_CORE_URL", "http://127.0.0.1:8510")
 CORE_SERVICES = [
     "KotakBotPaper", "KotakQuantService", "KotakCoreAPI", "KotakExecGateway",
-    "KotakDashboard", "KotakBrainBridge", "KotakHttpServer", "KotakMavisRealtime",
+    "KotakDashboard", "KotakBrainBridge", "KotakHttpServer",
 ]
 MIN_RESTART_GAP = 300  # don't restart a service more than once per 5 min
 
