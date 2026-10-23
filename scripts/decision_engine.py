@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 DATA = Path("data_cache")
+ROOT = Path(__file__).resolve().parent.parent  # project root (kotak-neo-bot)
 
 
 def _read_candle_history(sym: str = "NIFTY", timeframe: str = "1m", n: int = 60) -> list:
@@ -81,6 +82,54 @@ def _detect_candle_patterns(bars: list) -> Dict[str, float]:
         return {}
 
 
+# ===== Kronos forecast (predictive edge) =====
+
+_KRONOS = {"loaded": False, "predictor": None, "last_forecast": None, "last_ts": 0}
+
+
+def _kronos_forecast(bars: list, pred_len: int = 5) -> dict | None:
+    """Use the Kronos foundation model to forecast the next N candles.
+
+    Returns {direction, next_close, last_close, pct} or None if unavailable.
+    Kronos is a financial candlestick foundation model (trained on 45+
+    exchanges) that forecasts future OHLCV from historical K-lines.
+    """
+    if len(bars) < 20:
+        return None
+    try:
+        import time as _t
+        # Cache: only re-forecast every 60s (model is slow on CPU)
+        if _KRONOS["last_forecast"] and _t.time() - _KRONOS["last_ts"] < 60:
+            return _KRONOS["last_forecast"]
+        if not _KRONOS["loaded"]:
+            import sys as _sys
+            _sys.path.insert(0, str(ROOT.parent / "kronos"))
+            from model import Kronos, KronosTokenizer, KronosPredictor
+            _KRONOS["tokenizer"] = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-2k")
+            _KRONOS["model"] = Kronos.from_pretrained("NeoQuasar/Kronos-mini")
+            _KRONOS["predictor"] = KronosPredictor(_KRONOS["model"], _KRONOS["tokenizer"], max_context=512)
+            _KRONOS["loaded"] = True
+        import pandas as pd
+        import datetime
+        df = pd.DataFrame(bars[-20:])
+        ts = pd.Series([datetime.datetime.now() - datetime.timedelta(minutes=len(df)-i) for i in range(len(df))])
+        y_ts = pd.Series([datetime.datetime.now() + datetime.timedelta(minutes=i+1) for i in range(pred_len)])
+        pred = _KRONOS["predictor"].predict(df=df, x_timestamp=ts, y_timestamp=y_ts,
+                                             pred_len=pred_len, T=1.0, top_p=0.9, sample_count=1)
+        last_close = float(df["close"].iloc[-1])
+        next_close = float(pred["close"].iloc[-1])
+        res = {
+            "direction": "UP" if next_close > last_close else "DOWN",
+            "next_close": next_close, "last_close": last_close,
+            "pct": (next_close - last_close) / last_close * 100 if last_close else 0,
+        }
+        _KRONOS["last_forecast"] = res
+        _KRONOS["last_ts"] = _t.time()
+        return res
+    except Exception as e:
+        return None
+
+
 # ===== Regime detection =====
 
 def _regime(candles: dict, intraday: dict, vix: float) -> Dict[str, Any]:
@@ -131,6 +180,12 @@ def _regime(candles: dict, intraday: dict, vix: float) -> Dict[str, Any]:
     except Exception:
         patterns = {}
 
+    # Kronos foundation model forecast (predictive edge)
+    try:
+        kf = _kronos_forecast(_read_candle_history())
+    except Exception:
+        kf = None
+
     return {
         "trending": trending,
         "direction": direction,
@@ -147,6 +202,7 @@ def _regime(candles: dict, intraday: dict, vix: float) -> Dict[str, Any]:
         "atr": atr,
         "vwap": vwap,
         "patterns": patterns,
+        "forecast": kf,
     }
 
 
@@ -210,6 +266,15 @@ def _score_momentum(r: dict) -> Optional[dict]:
         score += 10; reasons.append(f"strong trend ADX={r['adx']:.0f}")
     if r["direction"] in ("bullish", "bearish"):
         score += 5; reasons.append(f"{r['direction']} regime")
+    # Kronos foundation-model forecast confirms the trend direction
+    kf = r.get("forecast") or {}
+    if kf:
+        if r["direction"] == "bullish" and kf.get("direction") == "UP":
+            score += 15; reasons.append(f"Kronos forecasts UP ({kf.get('pct',0):+.2f}%)")
+        elif r["direction"] == "bearish" and kf.get("direction") == "DOWN":
+            score += 15; reasons.append(f"Kronos forecasts DOWN ({kf.get('pct',0):+.2f}%)")
+        elif kf.get("direction"):
+            score += 5; reasons.append("Kronos forecast present")
     # Research-backed candle patterns confirm the trend direction
     pat = r.get("patterns") or {}
     bull_pat = any(pat.get(k, 0) > 0 for k in
