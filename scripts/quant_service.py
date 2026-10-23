@@ -2320,66 +2320,11 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
             }
     except Exception:
         pass
-    # FIX 2026-09-09 18:15: strategy library recommendation. 30-day backtest
-    # showed iron_condor (100% win), long_put (62.5% win), long_call (0% win)
-    # as the strategies with real edge. The LLM was opening vague "bear
-    # put verticals" with no strategy attribution. Now the library tells
-    # the brain WHICH strategy to run based on current market conditions.
-
-    # FIX 2026-09-21 13:50: helper that converts the per-symbol candle-context
-    # dict ({"NIFTY": {"bar_1m": {o,h,l,c}, ...}}) into the list-of-OHLCV
-    # dicts that select_strategy iterates with .get("c"). Without this,
-    # iterating a string-keyed dict raised AttributeError on each periodic
-    # scan.
-    def _build_candles_list_for_strategy(candle_ctx) -> list:
-        """FIX 2026-09-29 12:25: previously only returned the latest 1m bar per
-        symbol (~5 bars total). Strategy library needs 15+ bars for RSI-14.
-        Read 20+ recent 1m bars from the per-symbol JSONL candle file so
-        select_strategy has enough history to compute indicators.
-        """
-        if not candle_ctx or not isinstance(candle_ctx, dict):
-            return []
-        out = []
-        # First, try to get many bars from the JSONL candle files
-        try:
-            for sym in candle_ctx.keys():
-                jsonl = DATA / "candles" / f"{sym}_1m.jsonl"
-                if not jsonl.exists():
-                    continue
-                # Read last 20 bars (oldest first so RSI/slopes are correct)
-                with open(jsonl, "r", encoding="utf-8") as fh:
-                    lines = fh.readlines()[-20:]
-                for line in lines:
-                    try:
-                        _bar = json.loads(line)
-                        if all(k in _bar for k in ("o", "h", "l", "c")):
-                            out.append({
-                                "o": _bar["o"],
-                                "h": _bar["h"],
-                                "l": _bar["l"],
-                                "c": _bar["c"],
-                                "v": _bar.get("v", 0),
-                            })
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        # Fallback: at least include the latest 1m bar per symbol from
-        # the candle_ctx payload (covers the case where JSONL doesn't
-        # exist yet for newly-added symbols).
-        if not out:
-            for sym, payload in candle_ctx.items():
-                if not isinstance(payload, dict):
-                    continue
-                bar = payload.get("bar_1m") or {}
-                if bar and all(k in bar for k in ("o", "h", "l", "c")):
-                    out.append({"o": bar["o"], "h": bar["h"], "l": bar["l"], "c": bar["c"], "v": bar.get("n_ticks", 0)})
-        return out
+    # REBUILD 2026-10-22: the template strategy_library is DEAD CODE
+    # (select_strategy/generate_trade_plan are never called — the decision
+    # engine replaced them). Removed the import + dead helpers. Context is
+    # built for the decision engine below.
     try:
-        # REBUILD 2026-10-22: the template strategy_library is DEAD CODE
-        # (select_strategy/generate_trade_plan are never called — the decision
-        # engine replaced them). Removed the import. Context still built for
-        # the decision engine below.
         _paper = _safe_read_json(DATA / "paper_state.json", default={})
         _cash = float(_paper.get("cash", 100000))
         _positions = _paper.get("positions", {}) or {}
@@ -3160,39 +3105,6 @@ def _spawn_llm_thread(events: list, context: dict, paper: dict) -> None:
     import threading  # FIX 2026-09-07: redundant; already at module level. kept for clarity.
     _LLM_THREAD = threading.Thread(target=_runner, daemon=True)
     _LLM_THREAD.start()
-
-
-def _strategy_library_enforcement(context: dict) -> dict | None:
-    """FIX 2026-09-17: REMOVED. The user requested no static templates and full
-    24/7 LLM-driven dynamics. The LLM is the SOLE decision-maker; if it says
-    HOLD, the bot honors HOLD. The LLM is re-prompted every cycle with fresh
-    data, so any genuine edge that emerges is picked up within minutes.
-
-    Returns None (no enforcement).
-    """
-    return None
-
-
-def _anti_template_check(context: dict) -> dict | None:
-    """FIX 2026-09-17: REMOVED. The user requested no static templates and full
-    24/7 LLM-driven dynamics. The LLM is the SOLE decision-maker; if it says
-    HOLD, the bot honors HOLD. The LLM is re-prompted every cycle with fresh
-    data, so any genuine edge that emerges is picked up within minutes.
-
-    Returns None (no enforcement).
-    """
-    return None
-
-
-def _system_enforcement_check(context: dict) -> dict | None:
-    """FIX 2026-09-17: REMOVED. The user requested no static templates and full
-    24/7 LLM-driven dynamics. The LLM is the SOLE decision-maker; if it says
-    HOLD, the bot honors HOLD. The LLM is re-prompted every cycle with fresh
-    data, so any genuine edge that emerges is picked up within minutes.
-
-    Returns None (no enforcement).
-    """
-    return None
 
 
 def _periodic_scan(context: dict) -> dict:
@@ -4001,42 +3913,6 @@ def watch_loop():
                                 _scan_ctx["recent_rejections"] = _recent_rejects
                     except Exception as _rj_err:
                         log(f"recent-rejections: {_rj_err}")
-                    try:
-                        # Anti-template check runs FIRST — catches the
-                        # "60+ identical HOLDs in a row" pattern that the
-                        # silence-based system_enforcement misses. If it
-                        # fires, it writes system_enforced_action.json and
-                        # the bot executes the action.
-                        _anti_template = _anti_template_check(_scan_ctx)
-                        if _anti_template is not None:
-                            log(f"ANTI-TEMPLATE: streak={_anti_template.get('consecutive_holds')}, "
-                                f"action={_anti_template['actions'][0]['type']} {_anti_template['actions'][0].get('underlying','?')}, "
-                                f"rationale='{_anti_template.get('template_fingerprint','')[:40]}...'")
-                            SERVICE_STATE["anti_template_fires"] = SERVICE_STATE.get("anti_template_fires", 0) + 1
-                    except Exception as e:
-                        log(f"anti-template-err: {e}")
-                    try:
-                        # Strategy library enforcement — runs the iron
-                        # condor (100% win rate in 4-day backtest) when
-                        # conditions are right and the LLM is silent/template.
-                        _strat_lib = _strategy_library_enforcement(_scan_ctx)
-                        if _strat_lib is not None:
-                            log(f"STRATEGY-LIBRARY: firing {_strat_lib['actions'][0]['strategy']} "
-                                f"(vix={_strat_lib.get('vix', 0):.1f}, "
-                                f"max_move={_strat_lib.get('max_session_move', 0):+.2f}%)")
-                            SERVICE_STATE["strategy_library_fires"] = SERVICE_STATE.get("strategy_library_fires", 0) + 1
-                    except Exception as e:
-                        log(f"strategy-library-enforce-err: {e}")
-                    try:
-                        # System enforcement runs after anti-template — if
-                        # it fires, it writes system_enforced_action.json.
-                        # The LLM still gets called below so the user sees
-                        # what the brain thinks.
-                        _enforced = _system_enforcement_check(_scan_ctx)
-                        if _enforced is not None:
-                            log(f"SYSTEM-ENFORCEMENT: fallback trade written (will be picked up by bot)")
-                    except Exception as e:
-                        log(f"system-enforcement-err: {e}")
                     try:
                         # REBUILD 2026-10-22: HARD position management. Run the
                         # decision engine's manage_positions every cycle; if it
