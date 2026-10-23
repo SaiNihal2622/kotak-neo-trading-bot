@@ -153,10 +153,11 @@ class KotakOperator:
     def _job_data(self):
         """Refresh market data context.
 
-        NOTE: candle_engine.py is a long-running daemon (never exits), so it
-        must NOT be spawned as a subprocess here. The brain's candle_engine
-        already writes fresh candles_aggregate.json; this job just ensures the
-        context is re-read by _job_market. If candles are stale, log it.
+        The operator is the DECISION + EXECUTION layer. The DATA layer
+        (live feed -> candle_engine -> candles_aggregate.json) is produced by
+        the data feed service. This job just verifies candles are fresh and
+        re-reads them via _job_market. candle_engine has no run_once and needs
+        live ticks, so it cannot run standalone here.
         """
         try:
             ca = _safe_read(DATA / "candles_aggregate.json", {})
