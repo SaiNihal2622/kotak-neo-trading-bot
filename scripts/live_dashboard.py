@@ -25,6 +25,7 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import urlopen, Request
 from urllib.error import URLError
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DCACHE = os.path.join(ROOT, "data_cache")
@@ -328,11 +329,11 @@ def _compute_mtm() -> dict:
     Returns per-leg MTM and total. Used by /api/mtm endpoint."""
     import math
     try:
-        ps = json.loads((_Path(DCACHE) / "paper_state.json").read_text(encoding="utf-8"))
+        ps = json.loads((Path(DCACHE) / "paper_state.json").read_text(encoding="utf-8"))
     except Exception:
         return {"error": "paper_state unreadable"}
     try:
-        chains = json.loads((_Path(DCACHE) / "option_chains.json").read_text(encoding="utf-8"))
+        chains = json.loads((Path(DCACHE) / "option_chains.json").read_text(encoding="utf-8"))
     except Exception:
         chains = {}
 
