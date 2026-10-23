@@ -155,7 +155,7 @@ def paper_state():
         "cash": j.get("cash", 0),
         "starting_capital": j.get("starting_capital", 0) or j.get("_reset_starting_capital", 100000),
         "realized_pnl": j.get("realized_pnl", 0),
-        "unrealized_pnl": sum(max(0, p.get("pnl") or 0) for p in positions.values()) if isinstance(positions, dict) else 0,
+        "unrealized_pnl": sum(p.get("pnl") or 0 for p in positions.values()) if isinstance(positions, dict) else 0,
         "open_positions_count": len(positions),
         "open_orders_count": len(orders),
         "today_fills": today_fills,
@@ -328,11 +328,11 @@ def _compute_mtm() -> dict:
     Returns per-leg MTM and total. Used by /api/mtm endpoint."""
     import math
     try:
-        ps = json.loads((DATA / "paper_state.json").read_text(encoding="utf-8"))
+        ps = json.loads((_Path(DCACHE) / "paper_state.json").read_text(encoding="utf-8"))
     except Exception:
         return {"error": "paper_state unreadable"}
     try:
-        chains = json.loads((DATA / "option_chains.json").read_text(encoding="utf-8"))
+        chains = json.loads((_Path(DCACHE) / "option_chains.json").read_text(encoding="utf-8"))
     except Exception:
         chains = {}
 

@@ -69,7 +69,7 @@ def _regime_from_day(prev_rows, bar):
     # directional movement ratio (proxy; the live path reads real ADX).
     closes = [b['close'] for b in prev_rows][-14:]
     if len(closes) < 14:
-        return 0.0
+        return 0.0, 0.0  # tuple to match caller's _adx, _sess unpacking
     ups = sum(1 for i in range(1, len(closes)) if closes[i] > closes[i-1])
     downs = len(closes) - 1 - ups
     dm = abs(ups - downs)
