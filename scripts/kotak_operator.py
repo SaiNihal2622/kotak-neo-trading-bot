@@ -150,6 +150,24 @@ class KotakOperator:
     # ------------------------------------------------------------------
     # Jobs
     # ------------------------------------------------------------------
+    def _job_data(self):
+        """Run the candle engine + data pipeline so the operator is self-contained.
+
+        The crypto bot runs its own data pipeline in-process. The Kotak
+        operator must too, or it depends on external services writing
+        candles_aggregate.json. This job invokes candle_engine to refresh
+        candles/indicators, then _job_market reads them.
+        """
+        try:
+            r = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "candle_engine.py")],
+                capture_output=True, text=True, timeout=120, cwd=str(ROOT),
+            )
+            if r.returncode != 0:
+                log.warning(f"candle_engine rc={r.returncode}: {r.stderr[-200:]}")
+        except Exception as e:
+            log.warning(f"data job err: {e}")
+
     def _job_market(self):
         """Read live market data (NIFTY spot, VIX, candles) into context."""
         candles = _safe_read(DATA / "candles_aggregate.json", {})
@@ -283,6 +301,7 @@ class KotakOperator:
         pass
 
     def register_jobs(self):
+        self.scheduler.add("data", self._job_data, every_sec=60)
         self.scheduler.add("market", self._job_market, every_sec=5)
         self.scheduler.add("decide", self._job_decide, every_sec=15)
         self.scheduler.add("execute", self._job_execute, every_sec=15)
