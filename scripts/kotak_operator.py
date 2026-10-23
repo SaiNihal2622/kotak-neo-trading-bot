@@ -151,20 +151,19 @@ class KotakOperator:
     # Jobs
     # ------------------------------------------------------------------
     def _job_data(self):
-        """Run the candle engine + data pipeline so the operator is self-contained.
+        """Refresh market data context.
 
-        The crypto bot runs its own data pipeline in-process. The Kotak
-        operator must too, or it depends on external services writing
-        candles_aggregate.json. This job invokes candle_engine to refresh
-        candles/indicators, then _job_market reads them.
+        NOTE: candle_engine.py is a long-running daemon (never exits), so it
+        must NOT be spawned as a subprocess here. The brain's candle_engine
+        already writes fresh candles_aggregate.json; this job just ensures the
+        context is re-read by _job_market. If candles are stale, log it.
         """
         try:
-            r = subprocess.run(
-                [sys.executable, str(ROOT / "scripts" / "candle_engine.py")],
-                capture_output=True, text=True, timeout=120, cwd=str(ROOT),
-            )
-            if r.returncode != 0:
-                log.warning(f"candle_engine rc={r.returncode}: {r.stderr[-200:]}")
+            ca = _safe_read(DATA / "candles_aggregate.json", {})
+            n = (ca.get("symbols") or {}).get("NIFTY") or {}
+            spot = n.get("ltp")
+            if not spot:
+                log.warning("data job: no NIFTY spot in candles_aggregate (stale?)")
         except Exception as e:
             log.warning(f"data job err: {e}")
 
