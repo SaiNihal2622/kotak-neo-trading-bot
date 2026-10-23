@@ -458,20 +458,29 @@ def manage_positions(positions: dict, regime: dict, capital: float = 100000.0) -
 
 # ===== Main entry =====
 
+def _market_open() -> bool:
+    """NSE equity-derivatives hours: 09:15-15:30 IST, Mon-Fri."""
+    try:
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=5, minutes=30)))
+        if now.weekday() >= 5:
+            return False
+        t = now.time()
+        return _dt.time(9, 15) <= t <= _dt.time(15, 30)
+    except Exception:
+        return False
+
+
 def decide(context: dict) -> dict:
     """Return ONE decision: OPEN/CLOSE/HOLD with the best setup.
 
     context keys: candles (candles_aggregate dict), intraday, vix,
                   paper (positions), now, news (optional)
     """
-
-
-def decide(context: dict) -> dict:
-    """Return ONE decision: OPEN/CLOSE/HOLD with the best setup.
-
-    context keys: candles (candles_aggregate dict), intraday, vix,
-                  paper (positions), now, news (optional)
-    """
+    # HARD market-hours gate: never trade outside NSE hours
+    if not _market_open():
+        return {"action": "HOLD", "structure": "market-closed",
+                "edge_score": 0, "rationale": "NSE closed - no trading outside 09:15-15:30 IST"}
     candles = context.get("candles") or {}
     intraday = context.get("intraday") or {}
     vix = float(context.get("vix") or 15)

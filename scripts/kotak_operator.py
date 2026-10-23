@@ -195,8 +195,31 @@ class KotakOperator:
         self.state["spot"] = spot
         self.state["last_tick"] = _now_iso()
 
+    def _market_open(self) -> bool:
+        """NSE equity-derivatives hours: 09:15-15:30 IST, Mon-Fri.
+        The operator must NEVER trade outside these hours (stale data,
+        no fills, phantom losses)."""
+        try:
+            import datetime as _dt
+            now = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=5, minutes=30)))
+            if now.weekday() >= 5:  # Sat/Sun
+                return False
+            t = now.time()
+            return _dt.time(9, 15) <= t <= _dt.time(15, 30)
+        except Exception:
+            return False
+
     def _job_decide(self):
         """Run the decision engine — the SOLE selector."""
+        # HARD market-hours gate: never trade outside NSE hours
+        if not self._market_open():
+            self.state["last_decision"] = {
+                "action": "HOLD", "structure": "market-closed",
+                "edge_score": 0, "rationale": "NSE closed - no trading outside 09:15-15:30 IST",
+                "ts": _now_iso(),
+            }
+            self.state["tick_count"] += 1
+            return
         if not self.context:
             return
         from decision_engine import decide
