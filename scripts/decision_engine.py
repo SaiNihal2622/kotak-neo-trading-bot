@@ -269,15 +269,15 @@ def _build_legs(decision: dict, spot: float, vix: float, capital: float = 100000
         pe_short = atm - 100
         pe_long = pe_short - 100
         return [
-            {"side": "SELL", "qty": n_lots, "strike": ce_short, "opt_type": "CE", "order_type": "LIMIT", "price": target_leg_price},
-            {"side": "BUY", "qty": n_lots, "strike": ce_long, "opt_type": "CE", "order_type": "LIMIT", "price": target_leg_price * 0.3},
-            {"side": "SELL", "qty": n_lots, "strike": pe_short, "opt_type": "PE", "order_type": "LIMIT", "price": target_leg_price},
-            {"side": "BUY", "qty": n_lots, "strike": pe_long, "opt_type": "PE", "order_type": "LIMIT", "price": target_leg_price * 0.3},
+            {"side": "SELL", "qty": n_lots * lot_size, "strike": ce_short, "opt_type": "CE", "order_type": "LIMIT", "price": target_leg_price},
+            {"side": "BUY", "qty": n_lots * lot_size, "strike": ce_long, "opt_type": "CE", "order_type": "LIMIT", "price": target_leg_price * 0.3},
+            {"side": "SELL", "qty": n_lots * lot_size, "strike": pe_short, "opt_type": "PE", "order_type": "LIMIT", "price": target_leg_price},
+            {"side": "BUY", "qty": n_lots * lot_size, "strike": pe_long, "opt_type": "PE", "order_type": "LIMIT", "price": target_leg_price * 0.3},
         ]
     if structure in ("momentum", "vwap_bounce", "rsi_reversion"):
         opt_type = "CE" if direction == "long_call" else "PE"
         return [
-            {"side": "BUY", "qty": n_lots, "strike": atm, "opt_type": opt_type, "order_type": "MARKET", "price": None}
+            {"side": "BUY", "qty": n_lots * lot_size, "strike": atm, "opt_type": opt_type, "order_type": "MARKET", "price": None}
         ]
     return []
 

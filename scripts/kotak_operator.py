@@ -151,20 +151,30 @@ class KotakOperator:
     # Jobs
     # ------------------------------------------------------------------
     def _job_data(self):
-        """Refresh market data context.
+        """Refresh candles from live prices (self-contained data pipeline).
 
-        The operator is the DECISION + EXECUTION layer. The DATA layer
-        (live feed -> candle_engine -> candles_aggregate.json) is produced by
-        the data feed service. This job just verifies candles are fresh and
-        re-reads them via _job_market. candle_engine has no run_once and needs
-        live ticks, so it cannot run standalone here.
+        Mirrors the brain's _candle_refresh: get_engine -> fetch_live_prices
+        -> tick_many -> aggregate_to_file. This makes the operator fully
+        self-contained — it produces its own candles, no dependency on the
+        brain service.
         """
         try:
-            ca = _safe_read(DATA / "candles_aggregate.json", {})
-            n = (ca.get("symbols") or {}).get("NIFTY") or {}
-            spot = n.get("ltp")
-            if not spot:
-                log.warning("data job: no NIFTY spot in candles_aggregate (stale?)")
+            sys.path.insert(0, str(ROOT / "scripts"))
+            from candle_engine import get_engine, fetch_live_prices
+            eng = get_engine()
+            prices = fetch_live_prices()
+            if prices:
+                eng.tick_many(prices)
+            try:
+                eng.backfill_session_opens_from_yfinance()
+            except Exception:
+                pass
+            eng.aggregate_to_file()
+            try:
+                eng.save_all()
+            except Exception:
+                pass
+            self.state["last_data_refresh"] = _now_iso()
         except Exception as e:
             log.warning(f"data job err: {e}")
 
@@ -211,6 +221,24 @@ class KotakOperator:
         if ok:
             self.state["actions_taken"] += 1
 
+    def _resolve_price(self, strike, opt) -> float:
+        """Resolve a real option price from option_chains.json so the core's
+        position-cap preflight has a price to check."""
+        try:
+            ca = _safe_read(DATA / "option_chains.json", {})
+            chain = (ca.get("chains") or {}).get("NIFTY") or {}
+            strikes = chain.get("strikes") or {}
+            s = strikes.get(f"{strike}_{opt}")
+            if not s:
+                for k, v in strikes.items():
+                    if v.get("strike") == strike and str(v.get("opt_type","")).upper() == opt:
+                        s = v; break
+            if s:
+                return float(s.get("price") or s.get("bid") or s.get("ask") or s.get("last_price") or 0)
+        except Exception as e:
+            log.warning(f"resolve-price err: {e}")
+        return 0.0
+
     def _execute_open(self, decision: dict) -> bool:
         """POST a multi-leg plan to the core /api/plan."""
         try:
@@ -219,12 +247,14 @@ class KotakOperator:
             legs = []
             for leg in plan.get("legs", []):
                 sym = f"NIFTY{leg['strike']}{leg['opt_type']}"
+                # Resolve a REAL price from the chain for the preflight cap check
+                p_price = self._resolve_price(leg["strike"], leg["opt_type"])
                 legs.append({
                     "client_order_id": f"oop-{int(time.time()*1000)}",
                     "symbol": sym, "underlying": "NIFTY",
                     "side": leg["side"], "qty": leg["qty"],
                     "order_type": leg.get("order_type", "MARKET"),
-                    "product": "MIS", "price": leg.get("price", 0),
+                    "product": "MIS", "price": p_price,
                     "tag": "KOTAK-OPERATOR", "strike": leg["strike"],
                     "option_type": leg["opt_type"], "expiry": plan.get("expiry",""),
                     "exchange": "NFO",
