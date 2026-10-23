@@ -2178,23 +2178,22 @@ def _try_atomic_judgments_decision(context: dict, events: list) -> Optional[dict
         legacy = aggregator_to_legacy_decision(
             judged, plan_qty=plan_qty, trade_plan=trade_plan or None,
         )
-        # FIX 2026-09-29 12:10: when the strategy library finds NO match,
-        # trade_plan is {} and aggregator_to_legacy_decision returns
-        # type=OPEN with no underlying/no legs. The bot then logs
-        # "ACTION-WRITTEN: OPEN None" + "LLM-DECISION: OPEN legs=0"
-        # and skips placement. That's noise + wasted cycles. Downgrade
-        # the action to HOLD with a clear reason so the bot stays flat.
+        # REBUILD 2026-10-22: when the DECISION ENGINE finds no high-edge
+        # setup (edge < 70), it returns HOLD and no trade_plan. Without a
+        # trade_plan, aggregator_to_legacy_decision would return type=OPEN
+        # with no underlying/no legs -> "OPEN None legs=0" noise. Downgrade
+        # to HOLD with an accurate reason so the bot stays flat.
         if not trade_plan:
             legacy["type"] = "HOLD"
             legacy["rationale"] = (
                 f"SixJudgments → {action_str} (tier {tier}, mult {judged.aggregated.qty_multiplier:.2f}) "
-                f"BUT strategy library found no match (no trade_plan); "
+                f"BUT decision engine found no high-edge setup (edge < 70, no trade_plan); "
                 f"downgraded to HOLD. " + judged.aggregated.rationale
             )
             legacy.pop("target_qty", None)
             log(
                 f"ATOMIC-DOWNGRADE: SixJudgments={action_str} tier={tier} → HOLD "
-                f"(strategy library returned no trade_plan; can't place orders without legs)"
+                f"(decision engine returned no high-edge setup; can't place orders without legs)"
             )
         _write_atomic_judgments_metric(
             parse_ok=True, action=action_str, tier=tier, fired=fired,
@@ -2377,11 +2376,10 @@ def invoke_llm_decision(events: list, context: dict) -> dict:
                     out.append({"o": bar["o"], "h": bar["h"], "l": bar["l"], "c": bar["c"], "v": bar.get("n_ticks", 0)})
         return out
     try:
-        from strategy_library import (
-            select_strategy, generate_trade_plan, load_performance, save_performance,
-            STRATEGIES,
-        )
-        # Build context for selector
+        # REBUILD 2026-10-22: the template strategy_library is DEAD CODE
+        # (select_strategy/generate_trade_plan are never called — the decision
+        # engine replaced them). Removed the import. Context still built for
+        # the decision engine below.
         _paper = _safe_read_json(DATA / "paper_state.json", default={})
         _cash = float(_paper.get("cash", 100000))
         _positions = _paper.get("positions", {}) or {}
