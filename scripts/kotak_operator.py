@@ -185,16 +185,65 @@ class KotakOperator:
         action = decision.get("action")
         if action not in ("OPEN", "CLOSE"):
             return
-        # Build the action doc in the bridge-compatible shape
-        doc = {
-            "ts": _now_iso(),
-            "source": "kotak_operator",
-            "actions": [decision],
-            "consumed": False,
-            "rationale": decision.get("rationale", ""),
-        }
-        _safe_write(DATA / "quant_actions.json", doc)
-        self.state["actions_taken"] += 1
+        # Execute DIRECTLY via the core API (no file-based bridge indirection)
+        if action == "OPEN":
+            ok = self._execute_open(decision)
+        else:
+            ok = self._execute_close()
+        if ok:
+            self.state["actions_taken"] += 1
+
+    def _execute_open(self, decision: dict) -> bool:
+        """POST a multi-leg plan to the core /api/plan."""
+        try:
+            from decision_engine import build_plan
+            plan = build_plan(decision, self.context)
+            legs = []
+            for leg in plan.get("legs", []):
+                sym = f"NIFTY{leg['strike']}{leg['opt_type']}"
+                legs.append({
+                    "client_order_id": f"oop-{int(time.time()*1000)}",
+                    "symbol": sym, "underlying": "NIFTY",
+                    "side": leg["side"], "qty": leg["qty"],
+                    "order_type": leg.get("order_type", "MARKET"),
+                    "product": "MIS", "price": leg.get("price", 0),
+                    "tag": "KOTAK-OPERATOR", "strike": leg["strike"],
+                    "option_type": leg["opt_type"], "expiry": plan.get("expiry",""),
+                    "exchange": "NFO",
+                })
+            body = {
+                "strategy": decision.get("structure", ""), "underlying": "NIFTY",
+                "legs": legs, "target": 0.0, "stop": 0.0, "reason": decision.get("rationale",""),
+                "dry_run": False,
+            }
+            # Use the core's state projection - resolve spot
+            import urllib.request
+            def _post(path, payload):
+                req = urllib.request.Request(f"http://127.0.0.1:8510{path}",
+                    data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    return r.status, r.read().decode()
+            st, resp = _post("/api/plan", body)
+            log.info(f"OPEN via core: status={st} resp={resp[:120]}")
+            return st == 200
+        except Exception as e:
+            log.warning(f"execute-open err: {e}")
+            return False
+
+    def _execute_close(self) -> bool:
+        """POST /api/close_all to square all positions."""
+        import urllib.request
+        try:
+            req = urllib.request.Request("http://127.0.0.1:8510/api/close_all",
+                data=json.dumps({"reason": "position management"}).encode(),
+                headers={"Content-Type":"application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                resp = r.read().decode()
+            log.info(f"CLOSE via core: {resp[:100]}")
+            return True
+        except Exception as e:
+            log.warning(f"execute-close err: {e}")
+            return False
 
     def _job_manage(self):
         """Close positions on target/stop/edge."""
