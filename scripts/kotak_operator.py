@@ -144,6 +144,7 @@ class KotakOperator:
             "last_tick": "",
             "last_decision_at": "",
             "actions_taken": 0,
+            "last_executed_sig": "",
         }
         self.register_jobs()
 
@@ -183,7 +184,18 @@ class KotakOperator:
         candles = _safe_read(DATA / "candles_aggregate.json", {})
         liveness = _safe_read(DATA / "liveness.json", {})
         intraday = _safe_read(DATA / "intraday_levels.json", {})
+        # FIX 2026-10-26: read REAL positions from the core API, not the stale
+        # paper_state.json. The operator was deciding OPEN because paper_state
+        # had empty positions while the core's live state had 300 qty from
+        # duplicate fills -> infinite OPEN retry rejected by position_cap.
         paper = _safe_read(DATA / "paper_state.json", {})
+        try:
+            import urllib.request as _ur
+            _st = json.loads(_ur.urlopen("http://127.0.0.1:8510/api/state", timeout=4).read())
+            paper = {"cash": (_st.get("account") or {}).get("cash", paper.get("cash", 100000)),
+                     "positions": _st.get("positions") or {}}
+        except Exception:
+            pass
         self.context = {
             "candles": candles,
             "intraday": intraday,
@@ -236,11 +248,21 @@ class KotakOperator:
         action = decision.get("action")
         if action not in ("OPEN", "CLOSE"):
             return
+        # FIX 2026-10-26: execute each decision EXACTLY ONCE. _job_execute runs
+        # every 15s and was re-submitting the same OPEN plan with a new
+        # timestamp order_id each time -> the gateway filled every one
+        # (duplicate fills). Track the decision signature we already acted on.
+        sig = f"{action}:{decision.get('ts','')}:{decision.get('structure','')}"
+        if self.state.get("last_executed_sig") == sig:
+            return
         # Execute DIRECTLY via the core API (no file-based bridge indirection)
         if action == "OPEN":
             ok = self._execute_open(decision)
         else:
             ok = self._execute_close()
+        # Set the guard on BOTH success and failure: a rejected OPEN (e.g.
+        # position_cap) must not retry every 15s forever.
+        self.state["last_executed_sig"] = sig
         if ok:
             self.state["actions_taken"] += 1
 
