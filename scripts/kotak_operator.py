@@ -145,7 +145,9 @@ class KotakOperator:
             "last_decision_at": "",
             "actions_taken": 0,
             "last_executed_sig": "",
+            "last_close_at": 0.0,   # epoch sec of last CLOSE (cooldown)
         }
+        self.cooldown_sec = 900  # 15 min: no re-OPEN right after a CLOSE
         self.register_jobs()
 
     # ------------------------------------------------------------------
@@ -255,6 +257,19 @@ class KotakOperator:
         sig = f"{action}:{decision.get('ts','')}:{decision.get('structure','')}"
         if self.state.get("last_executed_sig") == sig:
             return
+        # COOLDOWN: after a CLOSE, do NOT re-OPEN for cooldown_sec. This stops
+        # the OPEN/CLOSE/OPEN oscillation (re-entering right after a stop-out
+        # or take-profit churns the account and books losses).
+        if action == "OPEN":
+            since_close = time.time() - float(self.state.get("last_close_at") or 0)
+            if since_close < self.cooldown_sec:
+                self.state["last_decision"] = {
+                    "action": "HOLD", "structure": "cooldown",
+                    "edge_score": 0,
+                    "rationale": f"cooldown {int(self.cooldown_sec-since_close)}s after CLOSE - no re-entry",
+                    "ts": _now_iso(),
+                }
+                return
         # Execute DIRECTLY via the core API (no file-based bridge indirection)
         if action == "OPEN":
             ok = self._execute_open(decision)
@@ -327,11 +342,21 @@ class KotakOperator:
         """POST /api/close_all to square all positions."""
         import urllib.request
         try:
+            # FIX 2026-10-31 (zero-P&L closes): hitting /api/positions runs the
+            # core's _mark_to_market_from_chain() on the SHARED projection,
+            # updating pos.ltp to LIVE prices. close_all then fills at the real
+            # price and books true P&L. Without this, close_all used pos.ltp
+            # which stayed == avg_price (the open price) -> every close = 0.
+            try:
+                urllib.request.urlopen("http://127.0.0.1:8510/api/positions", timeout=5).read()
+            except Exception:
+                pass
             req = urllib.request.Request("http://127.0.0.1:8510/api/close_all",
                 data=json.dumps({"reason": "position management"}).encode(),
                 headers={"Content-Type":"application/json"}, method="POST")
             with urllib.request.urlopen(req, timeout=15) as r:
                 resp = r.read().decode()
+            self.state["last_close_at"] = time.time()  # start cooldown
             log.info(f"CLOSE via core: {resp[:100]}")
             return True
         except Exception as e:
@@ -356,6 +381,26 @@ class KotakOperator:
             }], "consumed": False}
             _safe_write(DATA / "quant_actions.json", doc)
 
+    def _job_chain(self):
+        """Run the option-chain analyzer every 5 min during market hours.
+
+        FIX 2026-10-31 (stale-chain root cause): the BRAIN used to schedule
+        scripts/option_chain_analyzer.py every 5 min. When the brain was
+        disabled (operator is sole trader), NOTHING refreshed the chain —
+        option_chains.json froze at 2026-10-23 and every fill/close since used
+        5-day-old prices (zero/phantom P&L). The operator now owns this job.
+        """
+        if not self._market_open():
+            return
+        try:
+            subprocess.run(
+                [str(ROOT / ".venv" / "Scripts" / "python.exe"), "-u",
+                 str(ROOT / "scripts" / "option_chain_analyzer.py")],
+                cwd=str(ROOT), timeout=150, capture_output=True, text=True)
+            self.state["last_chain_refresh"] = _now_iso()
+        except Exception as e:
+            log.warning(f"chain job err: {e}")
+
     def _job_heal(self):
         """Check services, restart wedged ones."""
         services = ["KotakBotPaper", "KotakQuantService", "KotakCoreAPI", "KotakExecGateway",
@@ -376,6 +421,7 @@ class KotakOperator:
         pass
 
     def register_jobs(self):
+        self.scheduler.add("chain", self._job_chain, every_sec=300)
         self.scheduler.add("data", self._job_data, every_sec=60)
         self.scheduler.add("market", self._job_market, every_sec=5)
         self.scheduler.add("decide", self._job_decide, every_sec=15)

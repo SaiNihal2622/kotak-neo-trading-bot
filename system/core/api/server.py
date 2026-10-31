@@ -242,6 +242,15 @@ def create_app(db_path: str = "data_cache/state.db") -> FastAPI:
 
     @app.post("/api/close_all")
     async def close_all():
+        # FIX 2026-10-28 (P&L bug): mark positions to market from the chain
+        # BEFORE closing. Without this, pos.ltp stayed equal to avg_price (the
+        # open price), so every close fill booked ZERO realized P&L even when
+        # the option moved. MTM was only called in /api/positions, not here.
+        try:
+            app.state.projection._mark_to_market_from_chain()
+        except Exception as _mtm_e:
+            import logging
+            logging.getLogger("core").warning(f"close_all MTM failed: {_mtm_e}")
         positions = [p for p in app.state.projection.positions.values() if p.qty != 0]
         if not positions:
             return {"ok": True, "closed": 0}
