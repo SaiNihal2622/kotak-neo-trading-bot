@@ -186,8 +186,15 @@ def _regime(candles: dict, intraday: dict, vix: float) -> Dict[str, Any]:
     except Exception:
         kf = None
 
+    # Raw bar history for breakout / range_fade / pullback strategies
+    try:
+        _bars = _read_candle_history()
+    except Exception:
+        _bars = []
+
     return {
         "trending": trending,
+        "_bars": _bars,
         "direction": direction,
         "vol": vol,
         "adx": adx,
@@ -339,10 +346,29 @@ def _build_legs(decision: dict, spot: float, vix: float, capital: float = 100000
             {"side": "SELL", "qty": n_lots * lot_size, "strike": pe_short, "opt_type": "PE", "order_type": "LIMIT", "price": target_leg_price},
             {"side": "BUY", "qty": n_lots * lot_size, "strike": pe_long, "opt_type": "PE", "order_type": "LIMIT", "price": target_leg_price * 0.3},
         ]
-    if structure in ("momentum", "vwap_bounce", "rsi_reversion"):
+    if structure in ("momentum", "vwap_bounce", "rsi_reversion",
+                    "trend_follow_simple", "breakout", "pullback_trend",
+                    "range_fade"):
         opt_type = "CE" if direction == "long_call" else "PE"
         return [
             {"side": "BUY", "qty": n_lots * lot_size, "strike": atm, "opt_type": opt_type, "order_type": "MARKET", "price": None}
+        ]
+    if structure == "straddle":
+        return [
+            {"side": "BUY", "qty": n_lots * lot_size, "strike": atm, "opt_type": "CE", "order_type": "MARKET", "price": None},
+            {"side": "BUY", "qty": n_lots * lot_size, "strike": atm, "opt_type": "PE", "order_type": "MARKET", "price": None},
+        ]
+    if structure == "strangle":
+        return [
+            {"side": "BUY", "qty": n_lots * lot_size, "strike": atm + 100, "opt_type": "CE", "order_type": "MARKET", "price": None},
+            {"side": "BUY", "qty": n_lots * lot_size, "strike": atm - 100, "opt_type": "PE", "order_type": "MARKET", "price": None},
+        ]
+    if structure == "put_spread":
+        short_strike = atm - 50
+        long_strike = atm - 100
+        return [
+            {"side": "SELL", "qty": n_lots * lot_size, "strike": short_strike, "opt_type": "PE", "order_type": "LIMIT", "price": target_leg_price},
+            {"side": "BUY", "qty": n_lots * lot_size, "strike": long_strike, "opt_type": "PE", "order_type": "LIMIT", "price": target_leg_price * 0.3},
         ]
     return []
 
@@ -440,12 +466,18 @@ def manage_positions(positions: dict, regime: dict, capital: float = 100000.0) -
             "rationale": f"stop hit: P&L {total_pnl:+,.0f} <= {stop:+,.0f} — cut loss",
             "regime": regime,
         }
-    # Edge check: if the regime broke (range -> trend), close
-    if regime.get("trending") and regime.get("direction") in ("bullish", "bearish"):
+    # Edge check: ONLY close on regime-break if we hold a MULTI-LEG NEUTRAL
+    # spread (iron condor: >=2 positions). The Position class doesn't track a
+    # structure tag, so use a robust proxy: a neutral premium-seller holds
+    # 2+ legs (short CE + short PE). A SINGLE directional leg (trend-following
+    # long call / put) must be HELD and ridden — closing it the moment the
+    # market trends was the bug that made us miss moves like +207pts.
+    n_nonzero = len([p for p in positions.values() if float(p.get("qty") or 0) != 0])
+    if n_nonzero >= 2 and regime.get("trending") and regime.get("direction") in ("bullish", "bearish"):
         return {
             "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
             "edge_score": 0,
-            "rationale": f"regime broke: {regime['direction']} trend (ADX {regime.get('adx'):.0f}) — iron condor edge gone, close",
+            "rationale": f"regime broke: {regime['direction']} trend (ADX {regime.get('adx'):.0f}) — multi-leg neutral edge gone, close",
             "regime": regime,
         }
     return {
@@ -501,18 +533,18 @@ def decide(context: dict) -> dict:
 
     r = _regime(candles, intraday, vix)
 
-    # Score all candidate setups
-    candidates = []
-    for scorer in (_score_iron_condor, _score_vwap_bounce,
-                   _score_momentum, _score_rsi_extreme):
-        try:
-            c = scorer(r)
-            if c:
-                candidates.append(c)
-        except Exception:
-            continue
+    # Score EVERY strategy in the bible against the CURRENT regime, and take
+    # the single best. This makes the engine regime-aware: trend-following
+    # fires on a strong-trend day, mean-reversion in a range, premium-selling
+    # in low vol, volatility plays when IV spikes — the right tool for the
+    # market we're actually in.
+    try:
+        from strategy_bible import best_strategy
+        best = best_strategy(r)
+    except Exception:
+        best = None
 
-    if not candidates:
+    if not best:
         return {
             "action": "HOLD", "structure": None, "symbol": None,
             "qty": 0, "price": 0, "edge_score": 0,
@@ -520,10 +552,10 @@ def decide(context: dict) -> dict:
             "regime": r,
         }
 
-    # Best-of-best: only the single highest-edge setup, and only if it
-    # clears the quality bar (>= 70). Otherwise HOLD.
-    best = max(candidates, key=lambda c: c["score"])
-    if best["score"] < 70:
+    # Best-of-best: only if it clears the quality bar (>= 65). Otherwise HOLD
+    # and preserve capital. Lower threshold than before (70) so genuine trend
+    # setups aren't gated out, but still no forced trades.
+    if best["score"] < 65:
         return {
             "action": "HOLD", "structure": None, "symbol": None,
             "qty": 0, "price": 0, "edge_score": best["score"],
