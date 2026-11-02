@@ -323,11 +323,15 @@ def _build_legs(decision: dict, spot: float, vix: float, capital: float = 100000
     """Build concrete option legs for the chosen structure.
 
     Returns a list of {side, qty, strike, opt_type, order_type, price}.
+    Underlying-aware: lot_size + strike step come from the decision (set by
+    the multi-underlying decide_all).
     """
     if not spot:
         return []
-    atm = round(spot / 50) * 50  # NIFTY strikes are 50pt apart
-    lot_size = 75  # NIFTY
+    underlying = decision.get("underlying") or "NIFTY"
+    step = int(decision.get("strike_step") or STRIKE_STEPS.get(underlying, 50))
+    lot_size = int(decision.get("lot_size") or LOT_SIZES.get(underlying, 75))
+    atm = round(spot / step) * step  # NIFTY
     # Vol-targeted sizing: risk ~1% of capital per trade
     n_lots = max(1, int(capital * 0.01 / (spot * 0.005 * lot_size)))
     n_lots = min(n_lots, 10)
@@ -390,10 +394,12 @@ def resolve_expiry(now=None) -> str:
 
 
 def build_plan(decision: dict, context: dict) -> dict:
-    """Attach concrete legs + sizing to a decision. Returns a trade_plan dict."""
+    """Attach concrete legs + sizing to a decision. Returns a trade_plan dict.
+    Underlying-aware: spot comes from the decision's underlying, not NIFTY."""
+    und = decision.get("underlying") or "NIFTY"
     candles = context.get("candles") or {}
-    n = (candles.get("symbols") or {}).get("NIFTY") or {}
-    spot = float(n.get("ltp") or 0)
+    n = (candles.get("symbols") or {}).get(und) or {}
+    spot = float(n.get("ltp") or decision.get("spot") or 0)
     vix = float(context.get("vix") or 15)
     paper = context.get("paper") or {}
     capital = float(paper.get("cash") or 100000)
@@ -401,7 +407,7 @@ def build_plan(decision: dict, context: dict) -> dict:
     return {
         "strategy": decision.get("structure"),
         "structure": decision.get("structure"),
-        "underlying": "NIFTY",
+        "underlying": und,
         "n_lots": legs[0]["qty"] if legs else 1,
         "expiry": resolve_expiry(),
         "max_hold_minutes": 300,
@@ -570,4 +576,100 @@ def decide(context: dict) -> dict:
         "rationale": f"{best['structure']} edge {best['score']:.0f}/100 — {'; '.join(best['reasons'])}",
         "regime": r,
         "direction": best["direction"],
+    }
+
+
+
+# ===== Multi-underlying selection (the full market, not just NIFTY) =====
+
+LOT_SIZES = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65,
+             "MIDCPNIFTY": 120, "SENSEX": 20}
+STRIKE_STEPS = {"NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50,
+                "MIDCPNIFTY": 50, "SENSEX": 100}
+
+
+def _underlying_context(sym: str, candles: dict, intraday: dict, option_chains: dict) -> Optional[dict]:
+    """Build a per-underlying context (candles + intraday + chain) so the
+    strategy bible can score this index on its own. Returns None if no data."""
+    n = (candles.get("symbols") or {}).get(sym) or {}
+    ind = n.get("indicators") or {}
+    spot = float(n.get("ltp") or 0)
+    if not spot:
+        return None
+    id_sym = intraday.get(sym) if isinstance(intraday, dict) else None
+    if not isinstance(id_sym, dict):
+        id_sym = intraday
+    chain = (option_chains.get("chains") or {}).get(sym) or {}
+    return {
+        "candles": {"symbols": {sym: n}},
+        "intraday": id_sym,
+        "vix": float((intraday.get("_vix") if isinstance(intraday, dict) else 0) or 15),
+        "underlying": sym,
+        "spot": spot,
+        "indicators": ind,
+        "chain": chain,
+        "lot_size": LOT_SIZES.get(sym, 75),
+        "strike_step": STRIKE_STEPS.get(sym, 50),
+    }
+
+
+def decide_all(context: dict) -> dict:
+    """Score every strategy on EVERY live underlying, take the single best
+    opportunity across the whole market. Returns a decision dict with the
+    chosen underlying attached (under symbol as f"{UND}:{strike}:{opt}")."""
+    import strategy_bible
+    candles = context.get("candles") or {}
+    intraday = context.get("intraday") or {}
+    option_chains = context.get("option_chains") if isinstance(context.get("option_chains"), dict) else None
+    # If chains not passed separately, reuse the live file already read
+    if option_chains is None and isinstance(context, dict):
+        option_chains = context.get("chains")
+    if option_chains is None:
+        try:
+            option_chains = json.loads((DATA / "option_chains.json").read_text(encoding="utf-8"))
+        except Exception:
+            option_chains = {}
+    chains = (option_chains.get("chains") or {}) if isinstance(option_chains, dict) else {}
+
+    best_overall = None
+    for sym in LOT_SIZES:
+        ctx = _underlying_context(sym, candles, intraday, option_chains)
+        if not ctx or not ctx["spot"]:
+            continue
+        r = _regime({**ctx["candles"], "_underlying": sym}, ctx["intraday"], ctx["vix"])
+        r["spot"] = ctx["spot"]
+        r["underlying"] = sym
+        r["_bars"] = _read_candle_history(sym) if False else r.get("_bars")
+        try:
+            b = strategy_bible.best_strategy(r)
+        except Exception:
+            b = None
+        if b:
+            b["underlying"] = sym
+            b["lot_size"] = ctx["lot_size"]
+            b["strike_step"] = ctx["strike_step"]
+            if not best_overall or b["score"] > best_overall["score"]:
+                best_overall = b
+
+    if not best_overall:
+        return {"action": "HOLD", "structure": None, "symbol": None,
+                "qty": 0, "price": 0, "edge_score": 0,
+                "rationale": "no setup has edge in any live underlying — preserve capital",
+                "regime": None}
+    if best_overall["score"] < 65:
+        return {"action": "HOLD", "structure": None, "symbol": None,
+                "qty": 0, "price": 0, "edge_score": best_overall["score"],
+                "rationale": f"best {best_overall['underlying']} {best_overall['structure']} edge {best_overall['score']:.0f} < 65 — wait",
+                "regime": None}
+    return {
+        "action": "OPEN",
+        "structure": best_overall["structure"],
+        "underlying": best_overall["underlying"],
+        "symbol": best_overall["underlying"],
+        "direction": best_overall["direction"],
+        "qty": 1, "price": 0,
+        "edge_score": best_overall["score"],
+        "lot_size": best_overall["lot_size"],
+        "strike_step": best_overall["strike_step"],
+        "rationale": f"{best_overall['underlying']} {best_overall['structure']} edge {best_overall['score']:.0f}/100 — {'; '.join(best_overall['reasons'])}",
     }

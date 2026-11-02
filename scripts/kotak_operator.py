@@ -198,11 +198,13 @@ class KotakOperator:
                      "positions": _st.get("positions") or {}}
         except Exception:
             pass
+        chains = _safe_read(DATA / "option_chains.json", {})
         self.context = {
             "candles": candles,
             "intraday": intraday,
             "liveness": liveness,
             "paper": paper,
+            "option_chains": chains,
             "vix": float((liveness.get("snapshot") or {}).get("vix", 15)),
         }
         spot = ((candles.get("symbols") or {}).get("NIFTY") or {}).get("ltp")
@@ -236,8 +238,11 @@ class KotakOperator:
             return
         if not self.context:
             return
-        from decision_engine import decide
-        decision = decide(self.context)
+        # FIX 2026-11-02: score ALL live underlyings (NIFTY, BANKNIFTY,
+        # FINNIFTY, MIDCPNIFTY, SENSEX) and take the single best opportunity
+        # across the whole market — not just NIFTY.
+        from decision_engine import decide_all
+        decision = decide_all(self.context)
         self.state["last_decision"] = decision
         self.state["last_decision_at"] = _now_iso()
         self.state["tick_count"] += 1
@@ -281,12 +286,12 @@ class KotakOperator:
         if ok:
             self.state["actions_taken"] += 1
 
-    def _resolve_price(self, strike, opt) -> float:
+    def _resolve_price(self, strike, opt, underlying: str = "NIFTY") -> float:
         """Resolve a real option price from option_chains.json so the core's
-        position-cap preflight has a price to check."""
+        position-cap preflight has a price to check (underlying-aware)."""
         try:
             ca = _safe_read(DATA / "option_chains.json", {})
-            chain = (ca.get("chains") or {}).get("NIFTY") or {}
+            chain = (ca.get("chains") or {}).get(underlying) or {}
             strikes = chain.get("strikes") or {}
             s = strikes.get(f"{strike}_{opt}")
             if not s:
@@ -304,14 +309,15 @@ class KotakOperator:
         try:
             from decision_engine import build_plan
             plan = build_plan(decision, self.context)
+            und = decision.get("underlying") or "NIFTY"
             legs = []
             for leg in plan.get("legs", []):
-                sym = f"NIFTY{leg['strike']}{leg['opt_type']}"
+                sym = f"{und}{leg['strike']}{leg['opt_type']}"
                 # Resolve a REAL price from the chain for the preflight cap check
-                p_price = self._resolve_price(leg["strike"], leg["opt_type"])
+                p_price = self._resolve_price(leg["strike"], leg["opt_type"], und)
                 legs.append({
                     "client_order_id": f"oop-{int(time.time()*1000)}",
-                    "symbol": sym, "underlying": "NIFTY",
+                    "symbol": sym, "underlying": und,
                     "side": leg["side"], "qty": leg["qty"],
                     "order_type": leg.get("order_type", "MARKET"),
                     "product": "MIS", "price": p_price,
