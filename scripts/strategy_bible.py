@@ -62,6 +62,12 @@ def _score_trend_follow(r) -> Optional[dict]:
     # Kronos alignment
     if _kf_direction(r) == ("UP" if bull else "DOWN"):
         score += 15; reasons.append(f"Kronos confirms {lbl} ({_kf_pct(r):+.2f}%)")
+    # Full-chain confirm: skew direction confirms sentiment
+    ch = r.get("chain") or {}
+    if bull and ch.get("skew") is not None and ch["skew"] < 0:
+        score += 8; reasons.append(f"negative skew ({ch['skew']:.1%}) — calls priced up")
+    elif bear and ch.get("skew") is not None and ch["skew"] > 0:
+        score += 8; reasons.append(f"positive skew ({ch['skew']:.1%}) — puts priced up")
     # Candle patterns
     pat = r.get("patterns") or {}
     if bull:

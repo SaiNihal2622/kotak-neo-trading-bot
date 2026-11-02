@@ -210,7 +210,68 @@ def _regime(candles: dict, intraday: dict, vix: float) -> Dict[str, Any]:
         "vwap": vwap,
         "patterns": patterns,
         "forecast": kf,
+        # ---- Full-chain metrics (Option B: genuinely use the option chain) ----
+        "chain": _chain_metrics(candles.get("_chain") or {}),
     }
+
+
+def _chain_metrics(chain: dict) -> dict:
+    """Derive usable signals from the full option chain (IV, OI, skew).
+
+    chain: the underlying's chain dict from option_chains.json
+           {spot, strikes: {"22600_CE": {iv, oi, delta, ...}, ...}}
+    Returns {atm_iv, max_oi_call, max_oi_put, max_oi_strike, pcr_oi,
+             call_iv, put_iv, skew} — None-safe.
+    """
+    out = {"atm_iv": None, "max_oi_call": None, "max_oi_put": None,
+           "max_oi_strike": None, "pcr_oi": None, "call_iv": None,
+           "put_iv": None, "skew": None, "n_strikes": 0}
+    try:
+        strikes = chain.get("strikes") or {}
+        if not strikes:
+            return out
+        spot = float(chain.get("spot") or 0)
+        calls, puts = {}, {}
+        max_oi_call = max_oi_put = 0.0
+        max_oi_strike = 0.0
+        sum_call_iv = sum_put_iv = 0.0
+        n_call = n_put = 0
+        for key, s in strikes.items():
+            try:
+                strike = float(s.get("strike") or 0)
+                opt = str(s.get("opt_type") or key.split("_")[-1]).upper()
+                oi = float(s.get("oi") or 0)
+                iv = float(s.get("iv") or 0)
+            except Exception:
+                continue
+            if opt == "CE":
+                calls[strike] = {"oi": oi, "iv": iv}
+                sum_call_iv += iv; n_call += 1
+                if oi > max_oi_call: max_oi_call = oi; max_oi_strike = strike
+            elif opt == "PE":
+                puts[strike] = {"oi": oi, "iv": iv}
+                sum_put_iv += iv; n_put += 1
+                if oi > max_oi_put: max_oi_put = oi
+        out["n_strikes"] = len(strikes)
+        if n_call and n_put:
+            out["call_iv"] = sum_call_iv / n_call
+            out["put_iv"] = sum_put_iv / n_put
+            out["skew"] = out["put_iv"] - out["call_iv"]
+            out["pcr_oi"] = max_oi_put / max_oi_call if max_oi_call > 0 else None
+        out["max_oi_call"] = max_oi_call
+        out["max_oi_put"] = max_oi_put
+        out["max_oi_strike"] = max_oi_strike
+        # ATM IV: nearest strike to spot
+        if spot and calls or spot and puts:
+            best = None
+            for strike, s in {**calls, **puts}.items():
+                if best is None or abs(strike - spot) < abs(best - spot):
+                    best = strike
+            if best is not None:
+                out["atm_iv"] = (calls.get(best) or puts.get(best) or {}).get("iv")
+    except Exception:
+        pass
+    return out
 
 
 # ===== Setup scoring =====
@@ -420,21 +481,30 @@ def build_plan(decision: dict, context: dict) -> dict:
 
 # ===== Position management =====
 
-def manage_positions(positions: dict, regime: dict, capital: float = 100000.0) -> dict:
-    """Decide whether to CLOSE open positions based on target/stop/edge.
+def manage_positions(positions: dict, regime: dict, capital: float = 100000.0,
+                     peak_state: dict | None = None) -> dict:
+    """Decide whether to CLOSE / HOLD / TRAIL open positions — LIVE management.
 
-    Returns a decision dict. Rules:
-      - Total P&L >= target (50% of max credit) -> CLOSE (take profit)
-      - Total P&L <= stop (-1% of capital) -> CLOSE (cut loss)
-      - Regime broke (range -> trend) -> CLOSE (edge gone)
-      - Otherwise HOLD (multi-day)
+    Returns a decision dict. Rules (Option B — ride winning moves):
+      - STOP: total P&L <= -2% of capital -> CLOSE (never let a loss grow)
+      - TARGET: total P&L >= +1.5% of capital -> CLOSE (bank a solid win)
+      - TRAIL: once P&L >= +0.5%, trail a stop at (peak - 0.8% of capital).
+        This lets a winning position keep riding while guaranteeing we keep
+        most of the profit if it reverses. This is the "capture the move,
+        not just the first 1%" behaviour.
+      - REGIME-BREAK: only closes 2+ leg NEUTRAL spreads (iron condor) when a
+        trend breaks the range. Single directional legs ride the trend.
+      - EOD: day-trade structures close at 15:20 IST.
+      - Otherwise HOLD (multi-day).
+
+    peak_state: {sym: peak_pnl} tracked by the operator so the trail survives
+    across decide cycles (the projection itself doesn't store peaks).
     """
     if not positions:
         return {"action": "HOLD", "rationale": "no positions to manage"}
 
     # Dedupe positions by (strike, option_type) — the same leg can appear
     # twice with a truncated symbol (e.g. NIFTY22400PE == NIFTY29OCT2622400PE).
-    # Sum qty for duplicates so P&L isn't double-counted.
     deduped = {}
     for sym, pos in positions.items():
         key = (float(pos.get("strike") or 0), str(pos.get("option_type") or "").upper())
@@ -443,42 +513,84 @@ def manage_positions(positions: dict, regime: dict, capital: float = 100000.0) -
         else:
             deduped[key] = dict(pos)
 
-    # Compute total P&L across all unique legs
+    # Compute per-leg and total P&L
+    leg_pnl = {}
     total_pnl = 0.0
     for key, pos in deduped.items():
         qty = float(pos.get("qty") or 0)
         avg = float(pos.get("avg_price") or 0)
         ltp = float(pos.get("ltp") or avg)
         pnl = (ltp - avg) * qty if qty > 0 else (avg - ltp) * abs(qty)
+        leg_pnl[key] = pnl
         total_pnl += pnl
 
-    # Target/stop as % of capital. Options need room to breathe:
-    #   target = +1% of capital (bank profit when the range works)
-    #   stop   = -2% of capital (cut loss before it grows)
-    target = capital * 0.01   # +1% of capital
-    stop = -capital * 0.02    # -2% of capital
+    n_nonzero = len([p for p in positions.values() if float(p.get("qty") or 0) != 0])
 
-    if total_pnl >= target:
-        return {
-            "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
-            "edge_score": 100,
-            "rationale": f"target hit: P&L {total_pnl:+,.0f} >= {target:+,.0f} — take profit",
-            "regime": regime,
-        }
+    # Targets / stops as % of capital. Options need room to breathe:
+    stop = -capital * 0.02        # -2% hard stop — cut before it grows
+    trail_arm = capital * 0.005   # +0.5% -> trailing stop arms
+    trail_gap = capital * 0.008   # trail 0.8% below the peak
+    target = capital * 0.015      # +1.5% bank a solid win
+
+    # ---- 1) Hard stop: never let a loss run ----
     if total_pnl <= stop:
         return {
             "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
             "edge_score": 0,
-            "rationale": f"stop hit: P&L {total_pnl:+,.0f} <= {stop:+,.0f} — cut loss",
+            "rationale": f"stop hit: P&L {total_pnl:+,.0f} <= {stop:+,.0f} — cut loss, protect capital",
             "regime": regime,
         }
-    # Edge check: ONLY close on regime-break if we hold a MULTI-LEG NEUTRAL
-    # spread (iron condor: >=2 positions). The Position class doesn't track a
-    # structure tag, so use a robust proxy: a neutral premium-seller holds
-    # 2+ legs (short CE + short PE). A SINGLE directional leg (trend-following
-    # long call / put) must be HELD and ridden — closing it the moment the
-    # market trends was the bug that made us miss moves like +207pts.
-    n_nonzero = len([p for p in positions.values() if float(p.get("qty") or 0) != 0])
+
+    # ---- 2) Track the peak for the trailing stop ----
+    if peak_state is None:
+        peak_state = {}
+    for key in deduped:
+        cur = leg_pnl.get(key, 0.0)
+        peak_state[key] = max(float(peak_state.get(key, cur)), cur)
+
+    # ---- 3) TARGET: bank a solid win ----
+    if total_pnl >= target:
+        return {
+            "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
+            "edge_score": 100,
+            "rationale": f"target hit: P&L {total_pnl:+,.0f} >= {target:+,.0f} — bank the win",
+            "regime": regime,
+        }
+
+    # ---- 4) TRAILING STOP: ride winners, keep most of the profit ----
+    worst_leg_drawdown = 0.0
+    trailed_leg = None
+    for key in deduped:
+        cur = leg_pnl.get(key, 0.0)
+        peak = float(peak_state.get(key) or cur)
+        if peak >= trail_arm:
+            dd = peak - cur
+            if dd >= trail_gap:
+                trailed_leg = key
+                worst_leg_drawdown = dd
+    if trailed_leg is not None:
+        return {
+            "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
+            "edge_score": 80,
+            "rationale": f"trailing stop: leg {trailed_leg[0]}{trailed_leg[1]} fell {worst_leg_drawdown:+.0f} from peak {peak_state.get(trailed_leg,0):+.0f} — lock profit, ride next time",
+            "regime": regime,
+        }
+
+    # ---- 5) EOD close for day-trade structures ----
+    try:
+        from datetime import datetime as _dt, time as _dtm, timezone as _tz
+        now = _dt.now(_tz(_dt.timedelta(hours=5, minutes=30)))
+        if _dtm(15, 20) <= now.time() <= _dtm(15, 30):
+            return {
+                "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
+                "edge_score": 50,
+                "rationale": f"EOD close: P&L {total_pnl:+,.0f} at 15:20 — options decay overnight",
+                "regime": regime,
+            }
+    except Exception:
+        pass
+
+    # ---- 6) Regime-break: only multi-leg NEUTRAL spreads close on trend ----
     if n_nonzero >= 2 and regime.get("trending") and regime.get("direction") in ("bullish", "bearish"):
         return {
             "action": "CLOSE", "symbol": "ALL", "qty": 0, "price": 0,
@@ -486,15 +598,16 @@ def manage_positions(positions: dict, regime: dict, capital: float = 100000.0) -
             "rationale": f"regime broke: {regime['direction']} trend (ADX {regime.get('adx'):.0f}) — multi-leg neutral edge gone, close",
             "regime": regime,
         }
+
+    # ---- 7) HOLD: let it work ----
+    armed = [k for k in deduped if float(peak_state.get(k, 0)) >= trail_arm]
+    trail_txt = f", trail armed on {len(armed)} leg(s)" if armed else ""
     return {
         "action": "HOLD", "symbol": None, "qty": 0, "price": 0,
         "edge_score": 0,
-        "rationale": f"holding {len(positions)} legs — P&L {total_pnl:+,.0f} within target/stop, edge persists",
+        "rationale": f"holding {len(positions)} legs — P&L {total_pnl:+,.0f} within stop/target{trail_txt}, edge persists",
         "regime": regime,
     }
-
-
-# ===== Main entry =====
 
 def _market_open() -> bool:
     """NSE equity-derivatives hours: 09:15-15:30 IST, Mon-Fri."""
@@ -636,7 +749,8 @@ def decide_all(context: dict) -> dict:
         ctx = _underlying_context(sym, candles, intraday, option_chains)
         if not ctx or not ctx["spot"]:
             continue
-        r = _regime({**ctx["candles"], "_underlying": sym}, ctx["intraday"], ctx["vix"])
+        r = _regime({**ctx["candles"], "_underlying": sym, "_chain": ctx.get("chain") or {}},
+                    ctx["intraday"], ctx["vix"])
         r["spot"] = ctx["spot"]
         r["underlying"] = sym
         r["_bars"] = _read_candle_history(sym) if False else r.get("_bars")

@@ -370,22 +370,41 @@ class KotakOperator:
             return False
 
     def _job_manage(self):
-        """Close positions on target/stop/edge."""
+        """LIVE position management: target / trailing stop / EOD close.
+
+        Runs continuously and closes DIRECTLY via the core API (the old
+        version only wrote quant_actions.json and never executed). Tracks a
+        per-leg peak P&L so the trailing stop survives across decide cycles.
+        """
         if not self.context:
             return
         positions = (self.context.get("paper") or {}).get("positions") or {}
         if not positions:
             return
+        # Refresh positions from the core (live MTM) so management sees real
+        # prices — /api/positions triggers the chain MTM on the projection.
+        import urllib.request as _ur
+        try:
+            _live = json.loads(_ur.urlopen("http://127.0.0.1:8510/api/positions", timeout=5).read())
+            live_positions = _live.get("positions") or {}
+            if live_positions:
+                positions = live_positions
+        except Exception:
+            pass
         from decision_engine import manage_positions, _regime
         regime = _regime(self.context["candles"], self.context["intraday"], self.context["vix"])
-        mgmt = manage_positions(positions, regime, float((self.context.get("paper") or {}).get("cash", 100000)))
+        if not hasattr(self, "peak_state"):
+            self.peak_state = {}
+        mgmt = manage_positions(positions, regime,
+                                float((self.context.get("paper") or {}).get("cash", 100000)),
+                                peak_state=self.peak_state)
         if mgmt.get("action") == "CLOSE":
-            doc = {"ts": _now_iso(), "source": "kotak_operator", "actions": [{
-                "type": "CLOSE", "underlying": "ALL", "expiry": "", "strategy": "position_management",
-                "legs": [], "target": None, "stop": None, "max_hold_minutes": 0,
-                "rationale": mgmt.get("rationale", "position management close"),
-            }], "consumed": False}
-            _safe_write(DATA / "quant_actions.json", doc)
+            # Execute the close directly (MTM-before-close is handled inside
+            # _execute_close) — book REAL P&L at live prices.
+            ok = self._execute_close()
+            self.state["last_manage"] = {"action": "CLOSE", "rationale": mgmt.get("rationale",""),
+                                          "ok": ok, "ts": _now_iso()}
+            log.info(f"MANAGE CLOSE: {mgmt.get('rationale','')} ok={ok}")
 
     def _job_chain(self):
         """Run the option-chain analyzer every 5 min during market hours.
@@ -432,7 +451,7 @@ class KotakOperator:
         self.scheduler.add("market", self._job_market, every_sec=5)
         self.scheduler.add("decide", self._job_decide, every_sec=15)
         self.scheduler.add("execute", self._job_execute, every_sec=15)
-        self.scheduler.add("manage", self._job_manage, every_sec=30)
+        self.scheduler.add("manage", self._job_manage, every_sec=5)
         self.scheduler.add("heal", self._job_heal, every_sec=60)
         self.scheduler.add("heartbeat", self._job_heartbeat, every_sec=30)
         self.scheduler.add("llm_probe", self._job_llm_probe, every_sec=300)
