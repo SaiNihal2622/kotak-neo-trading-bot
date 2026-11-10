@@ -235,6 +235,7 @@ class KotakOperator:
                 "ts": _now_iso(),
             }
             self.state["tick_count"] += 1
+            self.state["last_executed_sig"] = ""
             return
         if not self.context:
             return
@@ -249,6 +250,9 @@ class KotakOperator:
 
     def _job_execute(self):
         """Write OPEN/CLOSE to quant_actions.json (gated)."""
+        # HARD market-hours gate: never execute outside NSE hours
+        if not self._market_open():
+            return
         decision = self.state.get("last_decision") or {}
         if not decision:
             return
