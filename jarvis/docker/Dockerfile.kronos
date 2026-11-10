@@ -1,0 +1,47 @@
+# Dockerfile for Kronos Forecast - Financial Foundation Model
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System dependencies for ML
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libffi-dev \
+    libssl-dev \
+    libblas-dev \
+    liblapack-dev \
+    libatlas-base-dev \
+    gfortran \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies for ML
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    torch==2.14.1+cpu \
+    einops==0.8.1 \
+    huggingface_hub==0.33.1 \
+    safetensors==0.6.2 \
+    pandas==2.2.2 \
+    numpy==1.26.4 \
+    tqdm==4.67.1 \
+    matplotlib==3.9.3
+
+# Copy application code
+COPY scripts/ ./scripts/
+COPY data/ ./data/
+
+# Create model directory
+RUN mkdir -p /app/models /app/logs
+
+# Set working directory
+WORKDIR /app
+
+# Health check
+HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
+    CMD python -c "from model.kronos import Kronos; print('Kronos ready')" || exit 1
+
+# Default command
+CMD ["python", "scripts/kronos_forecast_service.py"]

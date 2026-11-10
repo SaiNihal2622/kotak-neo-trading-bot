@@ -1,0 +1,37 @@
+# Dockerfile for Kotak Operator - NSE Options Trading
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libffi-dev \
+    libssl-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY scripts/ ./scripts/
+COPY system/ ./system/
+COPY kotak_bot/ ./kotak_bot/
+COPY data/ ./data/
+
+# Create directories
+RUN mkdir -p /app/logs /app/secrets
+
+# Set working directory
+WORKDIR /app
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8510/api/state')" || exit 1
+
+# Default command
+CMD ["python", "scripts/kotak_operator.py"]

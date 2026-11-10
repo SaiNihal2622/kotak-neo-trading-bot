@@ -1,0 +1,273 @@
+# Jarvis / OpenClaw VPS Docker Compose
+# Complete autonomous trading system - 24/7 operation
+# Kotak Neo NSE | Crypto Options | Crypto Funded | Forex Funded
+# Multi-strategy decision engine with trailing exits + real-time chain data
+
+version: "3.8"
+
+services:
+  # ============================================
+  # CORE TRADING ENGINE
+  # ============================================
+  kotak-operator:
+    build:
+      context: ..
+      dockerfile: jarvis/docker/Dockerfile.operator
+    container_name: kotak-operator
+    restart: unless-stopped
+    environment:
+      - ENV=production
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Kolkata
+      - MARKET_HOURS_START=09:15
+      - MARKET_HOURS_END=15:30
+      - LOG_LEVEL=INFO
+      - MAX_POSITIONS=5
+      - RISK_PER_TRADE=0.01
+      - MAX_LOSS_PER_TRADE=0.02
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./secrets:/app/secrets:ro
+      - ./scripts:/app/scripts:ro
+    networks:
+      - jarvis-net
+    depends_on:
+      - redis
+      - postgres
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8510/api/state')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart_policy:
+      condition: on-failure
+      delay: 10s
+      max_attempts: 5
+
+  kronos-forecast:
+    build:
+      context: ..
+      dockerfile: jarvis/docker/Dockerfile.kronos
+    container_name: kronos-forecast
+    restart: unless-stopped
+    environment:
+      - ENV=production
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Kolkata
+      - PREDICTION_INTERVAL=60
+      - MODEL_PATH=/app/models/kronos-mini
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data
+    networks:
+      - jarvis-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Note: Remove GPU section if running on CPU-only VPS
+
+  strategy-bible:
+    build:
+      context: ..
+      dockerfile: jarvis/docker/Dockerfile.strategy
+    container_name: strategy-bible
+    restart: unless-stopped
+    environment:
+      - ENV=production
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Kolkata
+      - DECISION_INTERVAL=5
+      - MIN_EDGE_SCORE=65
+    volumes:
+      - ./data:/app/data
+      - ./scripts:/app/scripts:ro
+      - ./logs:/app/logs
+    networks:
+      - jarvis-net
+    depends_on:
+      - kronos-forecast
+      - redis
+
+  # ============================================
+  # CRYPTO OPTIONS TRADING
+  # ============================================
+  crypto-options-bot:
+    build:
+      context: ..
+      dockerfile: jarvis/docker/Dockerfile.crypto-options
+    container_name: crypto-options-bot
+    restart: unless-stopped
+    environment:
+      - ENV=production
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+      - DERIBIT_NETWORK=mainnet
+      - CRYPTO_SYMBOLS=BTC,ETH
+      - MAX_POSITIONS_CRYPTO=3
+      - RISK_PER_TRADE_CRYPTO=0.02
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+      - ./logs:/app/logs
+    networks:
+      - jarvis-net
+    depends_on:
+      - redis
+
+  crypto-funded-bot:
+    build:
+      context: ..
+      dockerfile: jarvis/docker/Dockerfile.crypto-funded
+    container_name: crypto-funded-bot
+    restart: unless-stopped
+    environment:
+      - ENV=production
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+      - FUNDED_ACCOUNT_TYPE=crypto
+      - MAX_DAILY_LOSS=0.05
+      - PROFIT_TARGET=0.10
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+      - ./logs:/app/logs
+    networks:
+      - jarvis-net
+    depends_on:
+      - redis
+
+  # ============================================
+  # FOREX FUNDED ACCOUNT
+  # ============================================
+  forex-funded-bot:
+    build:
+      context: ..
+      dockerfile: jarvis/docker/Dockerfile.forex-funded
+    container_name: forex-funded-bot
+    restart: unless-stopped
+    environment:
+      - ENV=production
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+      - SYMBOLS=XAUUSD,EURUSD,GBPUSD,USDJPY
+      - MAX_POSITIONS=3
+      - RISK_PER_TRADE=0.02
+      - PROFIT_TARGET=0.10
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+      - ./logs:/app/logs
+    networks:
+      - jarvis-net
+    depends_on:
+      - redis
+
+  # ============================================
+  # JARVIS AI ASSISTANT / Vibe Coding Interface
+  # ============================================
+  jarvis-ai:
+    build:
+      context: ..
+      dockerfile: jarvis/docker/Dockerfile.jarvis
+    container_name: jarvis-ai
+    restart: unless-stopped
+    environment:
+      - ENV=production
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Kolkata
+      - JARVIS_PORT=8080
+      - WEBSOCKET_PORT=8081
+      - MODEL_PROVIDER=openrouter
+      - MAX_TOKENS=4096
+      - TEMPERATURE=0.7
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+      - ./scripts:/app/scripts:ro
+      - ./jarvis/app:/app/app
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    networks:
+      - jarvis-net
+    depends_on:
+      - redis
+      - postgres
+
+  # ============================================
+  # ADZIGA AD AGENCY (Sweet Desire)
+  # ============================================
+  adziga-agency:
+    build:
+      context: ..
+      dockerfile: jarvis/docker/Dockerfile.adziga
+    container_name: adziga-agency
+    restart: unless-stopped
+    environment:
+      - ENV=production
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Kolkata
+      - ADZIGA_PORT=8090
+      - INSTAGRAM_USERNAME=sweet_desire_uae
+      - CONTENT_DIR=/app/content
+    volumes:
+      - ./sweet-desire:/app/content:ro
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    ports:
+      - "8090:8090"
+    networks:
+      - jarvis-net
+    depends_on:
+      - redis
+      - postgres
+
+  # ============================================
+  # INFRASTRUCTURE
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - ./data/redis:/data
+    networks:
+      - jarvis-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=jarvis
+      - POSTGRES_PASSWORD=jarvis_dev_change_me
+      - POSTGRES_DB=jarvis_trading
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - jarvis-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jarvis"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  jarvis-net:
+    driver: bridge
+
+volumes:
+  data:
+  logs:
+  models:

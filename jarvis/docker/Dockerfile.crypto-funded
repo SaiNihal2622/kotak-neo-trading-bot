@@ -1,0 +1,29 @@
+# Dockerfile for Crypto Funded Account Bot
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libffi-dev \
+    libssl-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+COPY kotak_bot/ ./kotak_bot/
+COPY scripts/ ./scripts/
+COPY data/ ./data/
+
+RUN mkdir -p /app/logs /app/secrets
+
+WORKDIR /app
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8512/health')" || exit 1
+
+CMD ["python", "scripts/crypto_funded_bot.py"]
